@@ -18,12 +18,13 @@
 	<parent>
 		<groupId>org.springframework.boot</groupId>
 		<artifactId>spring-boot-starter-parent</artifactId>
-		<version>4.1.1</version>
+		<version>4.1.2</version>
 		<relativePath/> <!-- lookup parent from repository -->
 	</parent>
 
 	<modules>
 		<module>autumn-data-jdbc</module>
+		<module>autumn-data-jdbc-spring-boot-starter</module>
 		<module>autumn-data-meta</module>
 	</modules>
 
@@ -51,6 +52,11 @@
 			<dependency>
 				<groupId>xyz.wewin.autumn</groupId>
 				<artifactId>autumn-data-jdbc</artifactId>
+				<version>${project.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>xyz.wewin.autumn</groupId>
+				<artifactId>autumn-data-jdbc-spring-boot-starter</artifactId>
 				<version>${project.version}</version>
 			</dependency>
 			<dependency>

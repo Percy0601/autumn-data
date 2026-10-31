@@ -9,7 +9,7 @@
 	</parent>
 	<artifactId>autumn-data-jdbc</artifactId>
 	<name>autumn-data-jdbc</name>
-	<description>零反射 JDBC 仓储：Spring Data 注解风格 + 编译期处理（参考 Micronaut Data）。数据源 HikariCP。</description>
+	<description>零反射 JDBC 仓储：Spring Data 注解风格 + 编译期处理（参考 Micronaut Data）。核心零 Spring 依赖，数据源 HikariCP；Spring Boot 集成见 autumn-data-jdbc-spring-boot-starter。</description>
 
 	<properties>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -18,20 +18,20 @@
 	</properties>
 
 	<dependencies>
-		<!-- HikariCP 连接池 + JdbcClient / JdbcTemplate（Spring Boot 默认数据源 starter） -->
+		<!-- 核心模块零 Spring：只保留连接池与 JDK java.sql/javax.sql。版本由父 BOM（spring-boot-starter-parent）管理 -->
 		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-jdbc</artifactId>
+			<groupId>com.zaxxer</groupId>
+			<artifactId>HikariCP</artifactId>
 		</dependency>
-<!--		&lt;!&ndash; Spring Data 注解与仓储基类：Repository / CrudRepository / @Query / @Param / @Modifying &ndash;&gt;-->
-<!--		<dependency>-->
-<!--			<groupId>org.springframework.data</groupId>-->
-<!--			<artifactId>spring-data-commons</artifactId>-->
-<!--		</dependency>-->
 		<!-- JPA 注解（@Entity / @Table / @Id / @Column / @GeneratedValue），供编译期读取实体元数据 -->
 		<dependency>
 			<groupId>jakarta.persistence</groupId>
 			<artifactId>jakarta.persistence-api</artifactId>
+		</dependency>
+		<!-- 日志门面（仅 API，不带实现；Spring 集成见 autumn-data-jdbc-spring-boot-starter） -->
+		<dependency>
+			<groupId>org.slf4j</groupId>
+			<artifactId>slf4j-api</artifactId>
 		</dependency>
 
 		<!-- 测试：H2 内存库（验证方言识别与未来生成的仓储） -->
