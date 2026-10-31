@@ -8,7 +8,8 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 | --- | --- | --- |
 | `autumn-data-jdbc` | 零反射 JDBC 仓储 | 采用 **Spring Data 注解风格**（`Repository` / `CrudRepository` / `@Query` / `@Param`），并参考 **Micronaut Data** 在**编译期**通过注解处理器生成实现类，运行时零反射。核心**不依赖 Spring**，数据源连接池使用 **HikariCP**。 |
 | `autumn-data-jdbc-spring-boot-starter` | Spring Boot 集成层（唯一使用方入口） | 约定大于配置：只引这一个依赖 + `spring.datasource.*` 即可用。仿 MyBatis 分层（引擎零 Spring / 集成层依赖 Boot），自动配置 `Dialect` Bean，支持 `autumn.data.jdbc.dialect` 显式指定或按 `DataSource` 元数据自动识别。 |
-| `autumn-data-jdbc-spring-boot-starter-using` | 使用方示例（不发布） | 只依赖上面这个 starter + `spring.datasource` 配置，用 H2 内存库做端到端集成测试，验证约定大于配置的开箱体验。 |
+| `autumn-data-jdbc-compiler` | JSR-269 注解处理器 | 编译期为 `@AutumnRepository` 接口生成 `<名称>Impl`；仅 `annotationProcessorPaths` 使用，**运行时不依赖**。当前为管道版（约定校验 + 骨架生成），实体元数据/SQL/RowMapper 生成为下一步。 |
+| `autumn-data-jdbc-spring-boot-starter-using` | 使用方示例（不发布） | **使用驱动开发的主战场**：只引 starter + 挂 compiler 处理器，在这里写后续所有用法（单表、一对多、多对一、派生查询），以用法倒逼核心实现。 |
 | `autumn-data-meta` | 轻量动态 SQL 引擎 | 对标 **MyBatis** 但更轻量，支持**运行时动态加载**；用 **FreeMarker（.ftl）** 语法替代 MyBatis 的 XML SQL。数据源连接池同样使用 **HikariCP**。 |
 
 两个模块均内置多数据库方言（`Dialect`）抽象，至少支持 **MySQL** 与 **PostgreSQL**，并可通过 `DialectResolver` 根据 `DataSource` 的元数据自动识别。
@@ -23,6 +24,9 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 - [x] 依赖精简：`autumn-data-jdbc` 去掉 `spring-boot-starter-jdbc`，只留 `HikariCP` + `slf4j-api` + `jakarta.persistence-api`
 - [x] 新增 `autumn-data-jdbc-spring-boot-starter`（`Dialect` 自动配置 + `autumn.data.jdbc.*` 配置项 + 冒烟测试）
 - [x] 新增 `autumn-data-jdbc-spring-boot-starter-using`（使用方示例：只引 starter，H2 集成测试验证开箱体验；不发布）
+- [x] 新增 `autumn-data-jdbc-compiler`（JSR-269 管道版：`@AutumnRepository` 约定校验 + `CrudRepository` 实现骨架生成，端到端已验证）
+- [ ] compiler 下一版：实体元数据提取（`@Entity`/`@Id`/`@Column`）→ INSERT/SELECT/DELETE SQL + RowMapper 生成
+- [ ] 派生查询解析器（`findByNameAndAge`，按 docs/spring-data-derived-query.md 第 1~6 节）
 - [ ] `autumn-data-meta` 同步去 Spring 依赖（同样挪到各自 starter）
 - [ ] `autumn-data-jdbc`：编译期注解处理器（零反射实现生成）
 - [ ] `autumn-data-meta`：FreeMarker 动态 Mapper 执行引擎

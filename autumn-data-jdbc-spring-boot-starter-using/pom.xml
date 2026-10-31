@@ -55,4 +55,28 @@
 		</dependency>
 	</dependencies>
 
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.apache.maven.plugins</groupId>
+				<artifactId>maven-compiler-plugin</artifactId>
+				<configuration>
+					<!-- 编译期处理器：autumn-data-jdbc-compiler 只在 APT 阶段使用，运行时不依赖 -->
+					<annotationProcessorPaths>
+						<path>
+							<groupId>xyz.wewin.autumn</groupId>
+							<artifactId>autumn-data-jdbc-compiler</artifactId>
+							<version>${project.version}</version>
+						</path>
+						<path>
+							<groupId>xyz.wewin.autumn</groupId>
+							<artifactId>autumn-data-jdbc</artifactId>
+							<version>${project.version}</version>
+						</path>
+					</annotationProcessorPaths>
+				</configuration>
+			</plugin>
+		</plugins>
+	</build>
+
 </project>

@@ -24,6 +24,7 @@
 
 	<modules>
 		<module>autumn-data-jdbc</module>
+		<module>autumn-data-jdbc-compiler</module>
 		<module>autumn-data-jdbc-spring-boot-starter</module>
 		<module>autumn-data-jdbc-spring-boot-starter-using</module>
 		<module>autumn-data-meta</module>
@@ -53,6 +54,11 @@
 			<dependency>
 				<groupId>xyz.wewin.autumn</groupId>
 				<artifactId>autumn-data-jdbc</artifactId>
+				<version>${project.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>xyz.wewin.autumn</groupId>
+				<artifactId>autumn-data-jdbc-compiler</artifactId>
 				<version>${project.version}</version>
 			</dependency>
 			<dependency>
