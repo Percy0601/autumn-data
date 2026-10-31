@@ -25,6 +25,7 @@
 	<modules>
 		<module>autumn-data-jdbc</module>
 		<module>autumn-data-jdbc-spring-boot-starter</module>
+		<module>autumn-data-jdbc-spring-boot-starter-using</module>
 		<module>autumn-data-meta</module>
 	</modules>
 
