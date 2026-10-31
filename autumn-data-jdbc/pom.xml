@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<parent>
+		<groupId>xyz.wewin.autumn</groupId>
+		<artifactId>autumn-data</artifactId>
+		<version>0.0.1-SNAPSHOT</version>
+	</parent>
+	<artifactId>autumn-data-jdbc</artifactId>
+	<name>autumn-data-jdbc</name>
+	<description>零反射 JDBC 仓储：Spring Data 注解风格 + 编译期处理（参考 Micronaut Data）。数据源 HikariCP。</description>
+
+	<properties>
+		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+		<project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+		<java.version>25</java.version>
+	</properties>
+
+	<dependencies>
+		<!-- HikariCP 连接池 + JdbcClient / JdbcTemplate（Spring Boot 默认数据源 starter） -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-jdbc</artifactId>
+		</dependency>
+		<!-- Spring Data 注解与仓储基类：Repository / CrudRepository / @Query / @Param / @Modifying -->
+		<dependency>
+			<groupId>org.springframework.data</groupId>
+			<artifactId>spring-data-commons</artifactId>
+		</dependency>
+		<!-- JPA 注解（@Entity / @Table / @Id / @Column / @GeneratedValue），供编译期读取实体元数据 -->
+		<dependency>
+			<groupId>jakarta.persistence</groupId>
+			<artifactId>jakarta.persistence-api</artifactId>
+		</dependency>
+
+		<!-- 测试：H2 内存库（验证方言识别与未来生成的仓储） -->
+		<dependency>
+			<groupId>com.h2database</groupId>
+			<artifactId>h2</artifactId>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+</project>

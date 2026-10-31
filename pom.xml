@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+
+	<groupId>xyz.wewin.autumn</groupId>
+	<artifactId>autumn-data</artifactId>
+	<version>0.0.1-SNAPSHOT</version>
+	<packaging>pom</packaging>
+	<name>autumn-data</name>
+	<description>Autumn 数据访问层：零反射 JDBC 仓储（编译期处理）+ FreeMarker 动态 SQL 引擎</description>
+
+	<!--
+		兼容 Maven 4.x：本项目沿用 POM Model 4.0.0（Maven 3 / 4 通用），
+		父 POM 采用 spring-boot-starter-parent 4.1.1（已支持 Maven 4 构建）。
+		后续如需启用 Maven 4 专属特性，可平滑迁移到 4.1.0 model。
+	-->
+	<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+		<version>4.1.1</version>
+		<relativePath/> <!-- lookup parent from repository -->
+	</parent>
+
+	<modules>
+		<module>autumn-data-jdbc</module>
+		<module>autumn-data-meta</module>
+	</modules>
+
+	<properties>
+		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+		<project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+		<java.version>25</java.version>
+		<maven.compiler.source>25</maven.compiler.source>
+		<maven.compiler.target>25</maven.compiler.target>
+		<!-- Jakarta Persistence 3.2（对齐 Spring Boot 4 / Jakarta EE 11） -->
+		<jakarta.persistence-api.version>3.2.0</jakarta.persistence-api.version>
+	</properties>
+
+	<dependencies>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+
+	<dependencyManagement>
+		<dependencies>
+			<!-- 内部模块 -->
+			<dependency>
+				<groupId>xyz.wewin.autumn</groupId>
+				<artifactId>autumn-data-jdbc</artifactId>
+				<version>${project.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>xyz.wewin.autumn</groupId>
+				<artifactId>autumn-data-meta</artifactId>
+				<version>${project.version}</version>
+			</dependency>
+			<!-- JPA 注解（@Entity/@Table/@Id/@Column），供 jdbc 模块在编译期读取实体元数据 -->
+			<dependency>
+				<groupId>jakarta.persistence</groupId>
+				<artifactId>jakarta.persistence-api</artifactId>
+				<version>${jakarta.persistence-api.version}</version>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
+
+</project>
