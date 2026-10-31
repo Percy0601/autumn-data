@@ -16,8 +16,24 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 - [x] 根 POM / `.gitignore` / `.gitattributes` / Maven Wrapper
 - [x] `autumn-data-jdbc` 模块骨架 + 多数据库 `Dialect`
 - [x] `autumn-data-meta` 模块骨架 + FreeMarker 配置 + 多数据库 `Dialect`
+- [x] Spring Data 派生查询（方法名约定）规范文档：[docs/spring-data-derived-query.md](docs/spring-data-derived-query.md)
+- [ ] 依赖精简：核心模块去掉 `spring-boot-starter-jdbc`，只留 `HikariCP`（详见下方「依赖策略」）
 - [ ] `autumn-data-jdbc`：编译期注解处理器（零反射实现生成）
 - [ ] `autumn-data-meta`：FreeMarker 动态 Mapper 执行引擎
+
+## 依赖策略
+
+核心模块只依赖 JDK + HikariCP（+ 编译期注解），不透传 Spring 运行时库；Spring Boot 集成放在独立的 `autumn-data-spring-boot-starter`（规划中）里，供使用方按需引入。
+
+| 模块 | 运行时依赖 | 编译期依赖 | test |
+| --- | --- | --- | --- |
+| `autumn-data-jdbc` | `com.zaxxer:HikariCP`、`javax.sql.DataSource`（JDK） | `jakarta.persistence:jakarta.persistence-api`（实体注解）、APT（待加） | H2 |
+| `autumn-data-meta` | `com.zaxxer:HikariCP`、`org.freemarker:freemarker` | — | H2 |
+
+说明：
+- `spring-boot-starter-jdbc` 传递引入 `spring-boot-starter` → `spring-boot` + `snakeyaml` + `logback` + `jsp` 等，以及 `spring-jdbc`/`spring-tx`，对「编译期生成 SQL、运行时零反射」的核心库属于额外负担。
+- MyBatis 自身的核心包 `org.mybatis:mybatis` 只依赖 `org.slf4j:slf4j-api`；`mybatis-spring-boot-starter` 里的 Spring 依赖来自 `mybatis-spring`（Spring 集成层），不是引擎必需。autumn 采用同样分层。
+- 根 POM 的 `spring-boot-starter-parent` 仅作 BOM/构建用途，不进入发布产物的依赖树。
 
 ## 构建
 
@@ -32,8 +48,7 @@ mvn -B clean install -DskipTests
 ## 技术栈
 
 - Java 25
-- Spring Boot 4.1.1（Spring Framework 7 / Jakarta EE 11）
-- Spring Data Commons（注解与仓储基类）
-- HikariCP（数据源连接池，由 `spring-boot-starter-jdbc` 引入）
+- Spring Boot 4.1.1 父 POM（仅作 BOM 与构建约定）
+- HikariCP（数据源连接池，核心模块直接声明，不经由 `spring-boot-starter-jdbc`）
 - FreeMarker（替代 MyBatis XML）
 - 目标数据库：MySQL、PostgreSQL（方言可扩展）

@@ -23,11 +23,11 @@
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-jdbc</artifactId>
 		</dependency>
-		<!-- Spring Data 注解与仓储基类：Repository / CrudRepository / @Query / @Param / @Modifying -->
-		<dependency>
-			<groupId>org.springframework.data</groupId>
-			<artifactId>spring-data-commons</artifactId>
-		</dependency>
+<!--		&lt;!&ndash; Spring Data 注解与仓储基类：Repository / CrudRepository / @Query / @Param / @Modifying &ndash;&gt;-->
+<!--		<dependency>-->
+<!--			<groupId>org.springframework.data</groupId>-->
+<!--			<artifactId>spring-data-commons</artifactId>-->
+<!--		</dependency>-->
 		<!-- JPA 注解（@Entity / @Table / @Id / @Column / @GeneratedValue），供编译期读取实体元数据 -->
 		<dependency>
 			<groupId>jakarta.persistence</groupId>
