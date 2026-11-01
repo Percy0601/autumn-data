@@ -2,6 +2,8 @@ package xyz.wewin.autumn.data.jdbc.compiler;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
 import java.util.stream.Collectors;
 
 import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Association;
@@ -10,16 +12,17 @@ import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Column;
 /**
  * 生成 {@code <名称>Impl} 的 Java 源码文本。
  *
- * <p>运行期形态：{@code @Service} + 构造注入 {@code AutumnJdbc}（唯一的运行期协作者，里面收着
- * JDBC 客户端、方言与取数上限），SQL 来自编译期落盘的 properties 资源，结果集映射是生成的显式取值代码
- * —— 全程零反射。</p>
+ * <p>运行期形态：构造注入核心 {@code AutumnJdbc}（唯一的运行期协作者，里面收着方言与取数上限），
+ * SQL 在编译期直接内联为生成类里的 {@code private static final String} 常量（不再落盘 properties、不再运行期加载），
+ * 结果集映射是生成的显式取值代码 —— 全程零反射、运行期零资源 I/O。</p>
  *
  * <p>一对多：一条父查询 + 一条按外键 {@code IN} 的子查询，再按外键分组写回集合；
  * 子查询行数由 {@code AutumnJdbc#queryLimited} 按 {@code associationLimit} 截断。</p>
  */
 final class ImplementationSource {
 
-	private static final String SQL_STATEMENTS = "xyz.wewin.autumn.data.jdbc.sql.SqlStatements";
+	/** 运行期仅保留的 SQL 动态拼接助手（把 {@code IN (:ids)} 按参数个数展开成 {@code ?}）。 */
+	private static final String SQL_HELPER = "xyz.wewin.autumn.data.jdbc.sql.Sql";
 
 	private static final String AUTUMN_JDBC = "xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc";
 
@@ -33,8 +36,8 @@ final class ImplementationSource {
 	}
 
 	static String generate(String interfaceSimpleName, String implSimpleName, String entity, String id,
-			EntityMetadata meta, String sqlResource, boolean paging) {
-		return new Generation(interfaceSimpleName, implSimpleName, entity, id, meta, sqlResource, paging).render();
+			EntityMetadata meta, Map<String, String> statements, boolean paging) {
+		return new Generation(interfaceSimpleName, implSimpleName, entity, id, meta, statements, paging).render();
 	}
 
 	/** 一次生成的上下文，方法各自返回一段源码文本。 */
@@ -50,18 +53,18 @@ final class ImplementationSource {
 
 		private final EntityMetadata meta;
 
-		private final String sqlResource;
+		private final Map<String, String> statements;
 
 		private final boolean paging;
 
 		private Generation(String interfaceSimpleName, String implSimpleName, String entity, String id,
-				EntityMetadata meta, String sqlResource, boolean paging) {
+				EntityMetadata meta, Map<String, String> statements, boolean paging) {
 			this.interfaceSimpleName = interfaceSimpleName;
 			this.implSimpleName = implSimpleName;
 			this.entity = entity;
 			this.id = id;
 			this.meta = meta;
-			this.sqlResource = sqlResource;
+			this.statements = statements;
 			this.paging = paging;
 		}
 
@@ -76,10 +79,13 @@ final class ImplementationSource {
 			.append(AutoRepositoryProcessor.class.getName())
 			.append("\")\n");
 		sb.append("public class ").append(this.implSimpleName).append(" implements ")
-				.append(this.interfaceSimpleName).append(" {\n\n");
-			sb.append("\tprivate static final ").append(SQL_STATEMENTS).append(" SQL = ")
-				.append(SQL_STATEMENTS).append(".load(\"").append(this.sqlResource).append("\");\n\n");
-			sb.append(rowMapperField(this.meta, "ROW_MAPPER", this.entity));
+			.append(this.interfaceSimpleName).append(" {\n\n");
+		// SQL 在编译期内联为常量：运行期零资源加载、零解析（仅 IN 子句占位符展开留在 Sql.inClause）
+		for (Entry<String, String> statement : this.statements.entrySet()) {
+			sb.append("\tprivate static final String ").append(sqlConst(statement.getKey())).append(" = \"")
+				.append(escapeJava(statement.getValue())).append("\";\n\n");
+		}
+		sb.append(rowMapperField(this.meta, "ROW_MAPPER", this.entity));
 			for (Association association : eagerAssociations()) {
 				sb.append(childRowMapperField(association));
 			}
@@ -91,9 +97,9 @@ final class ImplementationSource {
 			sb.append(method("java.util.Optional<" + this.entity + "> findById(" + this.id + " id)",
 					findByIdBody()));
 			sb.append(method("boolean existsById(" + this.id + " id)",
-					"return this.autumn.count(SQL.get(\"" + CrudSqlGenerator.EXISTS_BY_ID + "\"), id) > 0;"));
+					"return this.autumn.count(" + sqlConst(CrudSqlGenerator.EXISTS_BY_ID) + ", id) > 0;"));
 			sb.append(method("java.util.List<" + this.entity + "> findAll()",
-					loaded("this.autumn.query(SQL.get(\"" + CrudSqlGenerator.SELECT_ALL + "\"), ROW_MAPPER)")));
+					loaded("this.autumn.query(" + sqlConst(CrudSqlGenerator.SELECT_ALL) + ", ROW_MAPPER)")));
 			if (this.paging) {
 				sb.append(method(PAGE + "<" + this.entity + "> findAll(" + PAGEABLE + " pageable)",
 						findAllPageableBody()));
@@ -101,9 +107,9 @@ final class ImplementationSource {
 			sb.append(method("java.util.List<" + this.entity + "> findAllById(java.util.List<" + this.id + "> ids)",
 					findAllByIdBody()));
 			sb.append(method("long count()",
-					"return this.autumn.count(SQL.get(\"" + CrudSqlGenerator.COUNT + "\"));"));
+					"return this.autumn.count(" + sqlConst(CrudSqlGenerator.COUNT) + ");"));
 			sb.append(method("void deleteById(" + this.id + " id)",
-					"this.autumn.update(SQL.get(\"" + CrudSqlGenerator.DELETE_BY_ID + "\"), id);"));
+					"this.autumn.update(" + sqlConst(CrudSqlGenerator.DELETE_BY_ID) + ", id);"));
 			sb.append(method("void delete(" + this.entity + " entity)",
 					"deleteById(entity." + this.meta.id().getter() + "());"));
 			sb.append(method("void deleteAllById(java.util.List<? extends " + this.id + "> ids)",
@@ -111,7 +117,7 @@ final class ImplementationSource {
 			sb.append(method("void deleteAll(java.util.List<? extends " + this.entity + "> entities)",
 					deleteAllBody()));
 			sb.append(method("void deleteAll()",
-					"this.autumn.update(SQL.get(\"" + CrudSqlGenerator.DELETE_ALL + "\"));"));
+					"this.autumn.update(" + sqlConst(CrudSqlGenerator.DELETE_ALL) + ");"));
 			sb.append(privateMethod("insert", "void", this.entity + " entity", insertBody()));
 			for (Association association : eagerAssociations()) {
 				sb.append(childRowMethod(association));
@@ -136,6 +142,36 @@ final class ImplementationSource {
 					sb.append("\t\t");
 				}
 				sb.append(line).append('\n');
+			}
+			return sb.toString();
+		}
+
+		/** SQL 常量名：{@code <key>} → {@code SQL_<KEY 大写，驼峰边界加下划线>}，作生成类里的常量名。 */
+		private static String sqlConst(String key) {
+			StringBuilder sb = new StringBuilder("SQL_");
+			for (int i = 0; i < key.length(); i++) {
+				char c = key.charAt(i);
+				if (i > 0 && Character.isUpperCase(c)) {
+					sb.append('_');
+				}
+				sb.append(Character.toUpperCase(c));
+			}
+			return sb.toString();
+		}
+
+		/** 把 SQL 文本转义成 Java 字符串字面量片段（仅处理会破坏字符串的字符）。 */
+		private static String escapeJava(String value) {
+			StringBuilder sb = new StringBuilder(value.length());
+			for (int i = 0; i < value.length(); i++) {
+				char c = value.charAt(i);
+				switch (c) {
+					case '"' -> sb.append("\\\"");
+					case '\\' -> sb.append("\\\\");
+					case '\n' -> sb.append("\\n");
+					case '\r' -> sb.append("\\r");
+					case '\t' -> sb.append("\\t");
+					default -> sb.append(c);
+				}
 			}
 			return sb.toString();
 		}
@@ -213,7 +249,7 @@ final class ImplementationSource {
 					"}",
 					"java.util.Map<Object, java.util.List<" + elementType + ">> grouped = new java.util.HashMap<>();",
 					"for (java.util.Map.Entry<Object, " + elementType + "> entry : this.autumn.queryLimited("
-							+ "SQL.inClause(\"" + association.statementKey() + "\", parentIds.size()), "
+							+ SQL_HELPER + ".inClause(" + sqlConst(association.statementKey()) + ", parentIds.size()), "
 							+ association.mapperField() + ", parentIds.toArray())) {",
 					"\tgrouped.computeIfAbsent(entry.getKey(), key -> new java.util.ArrayList<>())"
 							+ ".add(entry.getValue());",
@@ -252,7 +288,7 @@ final class ImplementationSource {
 		}
 
 		private String updateCall() {
-			return "this.autumn.update(SQL.get(\"" + CrudSqlGenerator.UPDATE + "\"), "
+			return "this.autumn.update(" + sqlConst(CrudSqlGenerator.UPDATE) + ", "
 					+ valueArguments(this.meta.updateColumns()) + ", entity." + this.meta.id().getter() + "());";
 		}
 
@@ -284,8 +320,8 @@ final class ImplementationSource {
 					"\tfor (S entity : inserts) {",
 					"\t\trows.add(new Object[] { " + valueArguments(this.meta.insertColumns()) + " });",
 					"\t}",
-					"\tjava.util.List<java.lang.Number> keys = this.autumn.batchInsertReturningKeys(SQL.get(\""
-							+ CrudSqlGenerator.INSERT + "\"), \"" + this.meta.id().column() + "\", rows);",
+					"\tjava.util.List<java.lang.Number> keys = this.autumn.batchInsertReturningKeys("
+							+ sqlConst(CrudSqlGenerator.INSERT) + ", \"" + this.meta.id().column() + "\", rows);",
 					"\t" + backfillKeys("inserts", "keys"),
 					"}",
 					"if (!updates.isEmpty()) {",
@@ -294,7 +330,7 @@ final class ImplementationSource {
 					"\t\trows.add(new Object[] { " + valueArguments(this.meta.updateColumns()) + ", entity."
 							+ this.meta.id().getter() + "() });",
 					"\t}",
-					"\tthis.autumn.batchUpdate(SQL.get(\"" + CrudSqlGenerator.UPDATE + "\"), rows);",
+					"\tthis.autumn.batchUpdate(" + sqlConst(CrudSqlGenerator.UPDATE) + ", rows);",
 					"}",
 					"return entities;");
 			return String.join("\n", body);
@@ -311,8 +347,8 @@ final class ImplementationSource {
 		}
 
 		private String findByIdBody() {
-			String select = "this.autumn.queryOptional(SQL.get(\"" + CrudSqlGenerator.SELECT_BY_ID
-					+ "\"), ROW_MAPPER, id)";
+			String select = "this.autumn.queryOptional(" + sqlConst(CrudSqlGenerator.SELECT_BY_ID)
+					+ ", ROW_MAPPER, id)";
 			if (eagerAssociations().isEmpty()) {
 				return "return " + select + ";";
 			}
@@ -336,8 +372,8 @@ final class ImplementationSource {
 		}
 
 		private String findAllPageableBody() {
-			String select = "this.autumn.page(SQL.get(\"" + CrudSqlGenerator.PAGE_ALL + "\"), SQL.get(\""
-					+ CrudSqlGenerator.COUNT + "\"), ROW_MAPPER, pageable)";
+			String select = "this.autumn.page(" + sqlConst(CrudSqlGenerator.PAGE_ALL) + ", "
+					+ sqlConst(CrudSqlGenerator.COUNT) + ", ROW_MAPPER, pageable)";
 			if (eagerAssociations().isEmpty()) {
 				return "return " + select + ";";
 			}
@@ -352,14 +388,14 @@ final class ImplementationSource {
 		}
 
 		private String findAllByIdBody() {
-			String query = "this.autumn.query(SQL.inClause(\"" + CrudSqlGenerator.SELECT_BY_IDS + "\", ids.size()),"
-					+ " ROW_MAPPER, ids.toArray())";
+			String query = "this.autumn.query(" + SQL_HELPER + ".inClause(" + sqlConst(CrudSqlGenerator.SELECT_BY_IDS)
+					+ ", ids.size()), ROW_MAPPER, ids.toArray())";
 			return "if (ids.isEmpty()) {\n" + "\treturn java.util.List.of();\n" + "}\n" + loaded(query);
 		}
 
 		private String deleteAllByIdBody() {
-			return "if (!ids.isEmpty()) {\n" + "\tthis.autumn.update(SQL.inClause(\""
-					+ CrudSqlGenerator.DELETE_BY_IDS + "\", ids.size()), ids.toArray());\n" + "}";
+			return "if (!ids.isEmpty()) {\n" + "\tthis.autumn.update(" + SQL_HELPER + ".inClause("
+					+ sqlConst(CrudSqlGenerator.DELETE_BY_IDS) + ", ids.size()), ids.toArray());\n" + "}";
 		}
 
 		/** 批量删：一条 {@code IN} 语句，不再逐行 DELETE。 */
@@ -367,20 +403,19 @@ final class ImplementationSource {
 			return "if (entities.isEmpty()) {\n" + "\treturn;\n" + "}\n"
 					+ "java.util.List<Object> ids = new java.util.ArrayList<>(entities.size());\n"
 					+ "for (" + this.entity + " entity : entities) {\n" + "\tids.add(entity." + this.meta.id().getter()
-					+ "());\n" + "}\n" + "this.autumn.update(SQL.inClause(\"" + CrudSqlGenerator.DELETE_BY_IDS
-					+ "\", ids.size()), ids.toArray());";
+					+ "());\n" + "}\n" + "this.autumn.update(" + SQL_HELPER + ".inClause("
+					+ sqlConst(CrudSqlGenerator.DELETE_BY_IDS) + ", ids.size()), ids.toArray());";
 		}
 
 		private String insertBody() {
 			List<Column> columns = this.meta.insertColumns();
 			if (!this.meta.id().generated()) {
-				return "this.autumn.update(SQL.get(\"" + CrudSqlGenerator.INSERT + "\"), " + valueArguments(columns)
+				return "this.autumn.update(" + sqlConst(CrudSqlGenerator.INSERT) + ", " + valueArguments(columns)
 						+ ");";
 			}
 			StringBuilder sb = new StringBuilder("java.lang.Number generatedKey = this.autumn.insertReturningKey(")
-				.append("SQL.get(\"")
-				.append(CrudSqlGenerator.INSERT)
-				.append("\"), \"")
+				.append(sqlConst(CrudSqlGenerator.INSERT))
+				.append(", \"")
 				.append(this.meta.id().column())
 				.append("\", ")
 				.append(valueArguments(columns))

@@ -23,5 +23,10 @@
 - 生成 SQL 未用 `Dialect.quoteIdentifier()`，保留字标识符有隐患。
 - record 实体、多对多装配、@Query 自定义 SQL 待做。
 
+## 设计原则（用户 2026-11-01 明确指导）
+**尽量把逻辑下沉到编译期（代码生成），让运行时尽可能精简。** 具体应用：SQL 不再落盘为 `.properties` 运行时加载，而是编译期直接内联成生成类里的 `private static final String` 常量；运行时只保留一个极小的 `Sql.inClause`（把 `IN (:ids)` 按运行期参数个数展开成 `?`）。后续凡是能编译期决定的都优先编译期做（方言分页若要更瘦可改为编译期指定方言）。
+
+**代码生成方式建议（用户 2026-11-01 建议，非强制）**：compiler 当前用 `StringBuilder` 拼装生成源码；若拼装变复杂、难维护，可引入 **FreeMarker 模板引擎**做代码生成（项目 `autumn-data-meta` 已用 FreeMarker 做动态 SQL，属既有的同族能力）。当前为保持 compiler 零额外依赖仍用 StringBuilder，待生成体膨胀再评估切模板。
+
 ## 协作归属（用户陈述）
 方向/创意=用户；实现落地部分功劳=阿里千问。

@@ -20,7 +20,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * 处理器进程内自测：用系统 {@link JavaCompiler} 编译内存源码，验证约定校验、
- * {@code <名称>Impl} 生成，以及 SQL 以 {@code .properties} 落到编译输出目录。
+ * {@code <名称>Impl} 生成，以及标准 CRUD SQL 在编译期内联为生成类里的
+ * {@code private static final String} 常量（运行期零资源 I/O）。
  */
 class AutoRepositoryProcessorTests {
 
@@ -168,7 +169,7 @@ class AutoRepositoryProcessorTests {
 	private final JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
 
 	@Test
-	void generatesServiceImplementationAndSqlResource(@TempDir Path dir) throws Exception {
+	void generatesServiceImplementationWithInlinedSql(@TempDir Path dir) throws Exception {
 		Compilation result = compile(dir, List.of(new Source("demo/User.java", USER_ENTITY),
 				new Source("demo/UserRepository.java", VALID_REPO)));
 		assertThat(result.errorMessages()).isEmpty();
@@ -183,19 +184,23 @@ class AutoRepositoryProcessorTests {
 				"public UserRepositoryImpl(xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc autumn)");
 		assertThat(source).contains("row.setAge(rs.getInt(\"age\"))");
 		assertThat(source).contains("row.setCreatedAt(rs.getObject(\"created_at\", java.time.LocalDateTime.class))");
-		// 批量写：新行一条带生成键的批量 INSERT，已有行一条批量 UPDATE
-		assertThat(source).contains("this.autumn.batchInsertReturningKeys(SQL.get(\"insert\"), \"id\", rows)");
-		assertThat(source).contains("this.autumn.batchUpdate(SQL.get(\"update\"), rows)");
-		// 批量删：一条 IN，不再逐行 DELETE
-		assertThat(source).contains("this.autumn.update(SQL.inClause(\"deleteByIds\", ids.size()), ids.toArray())");
-
-		Path properties = dir.resolve("classes/META-INF/autumn-data/sql/demo/UserRepository.properties");
-		assertThat(properties).exists();
-		assertThat(Files.readString(properties)).contains("insert=INSERT INTO demo_user (name, age, created_at) VALUES (?, ?, ?)")
-			.contains("selectAll=SELECT id, name, age, created_at FROM demo_user")
-			.contains("pageAll=SELECT id, name, age, created_at FROM demo_user ORDER BY id")
-			.contains("update=UPDATE demo_user SET name = ?, age = ?, created_at = ? WHERE id = ?")
-			.contains("selectByIds=SELECT id, name, age, created_at FROM demo_user WHERE id IN (:ids)");
+		// 批量写：新行一条带生成键的批量 INSERT，已有行一条批量 UPDATE（引用编译期内联的 SQL 常量）
+		assertThat(source).contains("this.autumn.batchInsertReturningKeys(SQL_INSERT, \"id\", rows)");
+		assertThat(source).contains("this.autumn.batchUpdate(SQL_UPDATE, rows)");
+		// 批量删：一条 IN，不再逐行 DELETE（IN 占位符在运行期由 Sql.inClause 展开）
+		assertThat(source).contains(
+				"this.autumn.update(xyz.wewin.autumn.data.jdbc.sql.Sql.inClause(SQL_DELETE_BY_IDS, ids.size()), ids.toArray())");
+		// SQL 在编译期内联为生成类常量，不再落盘 .properties
+		assertThat(source).contains(
+				"private static final String SQL_INSERT = \"INSERT INTO demo_user (name, age, created_at) VALUES (?, ?, ?)\"");
+		assertThat(source).contains(
+				"private static final String SQL_SELECT_ALL = \"SELECT id, name, age, created_at FROM demo_user\"");
+		assertThat(source).contains("private static final String SQL_PAGE_ALL"
+				+ " = \"SELECT id, name, age, created_at FROM demo_user ORDER BY id\"");
+		assertThat(source).contains("private static final String SQL_UPDATE"
+				+ " = \"UPDATE demo_user SET name = ?, age = ?, created_at = ? WHERE id = ?\"");
+		assertThat(source).contains("private static final String SQL_SELECT_BY_IDS"
+				+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE id IN (:ids)\"");
 	}
 
 	@Test
@@ -206,8 +211,8 @@ class AutoRepositoryProcessorTests {
 		String source = Files.readString(dir.resolve("gen/demo/PagedUserRepositoryImpl.java"));
 		assertThat(source).contains(
 				"public xyz.wewin.autumn.data.jdbc.page.Page<demo.User> findAll(xyz.wewin.autumn.data.jdbc.page.Pageable pageable)");
-		// 分页片段不在编译期写死，交给运行期方言拼
-		assertThat(source).contains("this.autumn.page(SQL.get(\"pageAll\"), SQL.get(\"count\"), ROW_MAPPER, pageable)");
+		// 分页片段不在编译期写死，交给运行期方言拼；两条语句都引用编译期内联常量
+		assertThat(source).contains("this.autumn.page(SQL_PAGE_ALL, SQL_COUNT, ROW_MAPPER, pageable)");
 	}
 
 	@Test
@@ -217,20 +222,20 @@ class AutoRepositoryProcessorTests {
 				new Source("demo/CustomerRepository.java", ASSOCIATION_REPO)));
 		assertThat(result.errorMessages()).isEmpty();
 
-		String properties = Files
-			.readString(dir.resolve("classes/META-INF/autumn-data/sql/demo/CustomerRepository.properties"));
-		// 子表自己把外键映射成列时不重复选；mappedBy 从子侧 @JoinColumn 解析出 owner_id
-		assertThat(properties).contains(
-				"ordersByParentIds=SELECT id, user_id, memo FROM demo_order WHERE user_id IN (:ids) ORDER BY id");
-		assertThat(properties).contains(
-				"byOwnerByParentIds=SELECT id, user_id, memo, owner_id FROM demo_order WHERE owner_id IN (:ids) ORDER BY id");
-		// fetch = LAZY 不生成装配语句
-		assertThat(properties).doesNotContain("lazyOrdersByParentIds");
-
 		String source = Files.readString(dir.resolve("gen/demo/CustomerRepositoryImpl.java"));
+		// 子表自己把外键映射成列时不重复选；mappedBy 从子侧 @JoinColumn 解析出 owner_id
+		// SQL 已内联为生成类常量（注意常量名是 SQL_<KEY 大写>）
+		assertThat(source).contains(
+				"private static final String SQL_ORDERS_BY_PARENT_IDS = \"SELECT id, user_id, memo FROM demo_order WHERE user_id IN (:ids) ORDER BY id\"");
+		assertThat(source).contains("private static final String SQL_BY_OWNER_BY_PARENT_IDS"
+				+ " = \"SELECT id, user_id, memo, owner_id FROM demo_order WHERE owner_id IN (:ids) ORDER BY id\"");
+		// fetch = LAZY 不生成装配语句
+		assertThat(source).doesNotContain("SQL_LAZY_ORDERS_BY_PARENT_IDS");
+
 		// 第二条语句按父主键 IN 批量取子行，且走 queryLimited（受 associationLimit 截断）
 		assertThat(source).contains("private void attachOrders(java.util.List<demo.Customer> parents)");
-		assertThat(source).contains("this.autumn.queryLimited(SQL.inClause(\"ordersByParentIds\", parentIds.size())");
+		assertThat(source).contains(
+				"this.autumn.queryLimited(xyz.wewin.autumn.data.jdbc.sql.Sql.inClause(SQL_ORDERS_BY_PARENT_IDS, parentIds.size())");
 		assertThat(source).contains("grouped.computeIfAbsent(entry.getKey(), key -> new java.util.ArrayList<>())");
 		assertThat(source).contains("attachOrders(rows);");
 		// Set 形态的关联从分组结果转成 LinkedHashSet
@@ -243,13 +248,14 @@ class AutoRepositoryProcessorTests {
 		Compilation result = compile(dir, List.of(new Source("demo/Account.java", PLAIN_ENTITY),
 				new Source("demo/AccountRepository.java", ASSIGNED_ID_REPO)));
 		assertThat(result.errorMessages()).isEmpty();
-		String properties = Files
-			.readString(dir.resolve("classes/META-INF/autumn-data/sql/demo/AccountRepository.properties"));
 		// 无 @Table/@Column：表名取类名、列名取驼峰转下划线；无 @GeneratedValue：主键参与 INSERT
-		assertThat(properties).contains("selectAll=SELECT account_id, balance FROM account")
-			.contains("insert=INSERT INTO account (account_id, balance) VALUES (?, ?)");
-		// 主键非自增：拿不到生成键，批量写退化为逐条 upsert
+		// SQL 内联为生成类常量
 		String source = Files.readString(dir.resolve("gen/demo/AccountRepositoryImpl.java"));
+		assertThat(source).contains(
+				"private static final String SQL_SELECT_ALL = \"SELECT account_id, balance FROM account\"");
+		assertThat(source).contains(
+				"private static final String SQL_INSERT = \"INSERT INTO account (account_id, balance) VALUES (?, ?)\"");
+		// 主键非自增：拿不到生成键，批量写退化为逐条 upsert
 		assertThat(source).doesNotContain("batchInsertReturningKeys");
 		assertThat(source).contains("saved.add(save(entity))");
 	}

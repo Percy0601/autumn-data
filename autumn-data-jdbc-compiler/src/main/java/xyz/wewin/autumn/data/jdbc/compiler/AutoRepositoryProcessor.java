@@ -31,9 +31,10 @@ import javax.tools.StandardLocation;
  * JSR-269 注解处理器：为 {@code @AutumnRepository} 接口生成 {@code <名称>Impl} 实现。
  *
  * <p>流程：校验约定（必须是接口、必须继承 {@code Repository<T, ID>}）→ 提取实体元数据
- * （{@link EntityIntrospector}，含一对多关联）→ 生成标准 CRUD / 分页 / 子表加载的 SQL 并以
- * {@code .properties} 资源写入编译输出目录（{@link CrudSqlGenerator}）→ 生成实现类源码
- * （{@link ImplementationSource}）。约定违规一律在编译期报错，不生成半成品。</p>
+ * （{@link EntityIntrospector}，含一对多关联）→ 生成标准 CRUD / 分页 / 子表加载的 SQL
+ * （{@link CrudSqlGenerator}，返回 {@code Map<key, sql>}）→ 生成实现类源码
+ * （{@link ImplementationSource}，SQL 在编译期内联为生成类的 {@code private static final String} 常量，
+ * 运行期零资源 I/O）。约定违规一律在编译期报错，不生成半成品。</p>
  *
  * <p>覆盖范围：{@code CrudRepository} 全部方法、{@code PagingRepository#findAll(Pageable)}、
  * 批量读写与一对多装配。派生查询（{@code findByNameAndAge} 之类，见
@@ -82,10 +83,9 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 				continue;
 			}
 			String packageName = elements.getPackageOf(repositoryInterface).getQualifiedName().toString();
-			String resource = CrudSqlGenerator.resourcePath(repositoryInterface.getQualifiedName().toString());
 			try {
-				writeSqlResource(resource, metadata, CrudSqlGenerator.generate(metadata), processingEnv.getFiler());
-				writeImplementation(repositoryInterface, packageName, entity, id, metadata, resource,
+				Map<String, String> statements = CrudSqlGenerator.generate(metadata);
+				writeImplementation(repositoryInterface, packageName, entity, id, metadata, statements,
 						declaresPaging(repositoryInterface, elements, types), processingEnv.getFiler());
 				repositories.add(repositoryInterface.getQualifiedName().toString());
 			}
@@ -164,16 +164,9 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 		return "java.lang.Object";
 	}
 
-	private static void writeSqlResource(String resource, EntityMetadata metadata, Map<String, String> statements,
-			Filer filer) throws IOException {
-		FileObject file = filer.createResource(StandardLocation.CLASS_OUTPUT, "", resource);
-		try (Writer writer = file.openWriter()) {
-			writer.write(CrudSqlGenerator.toPropertiesText(metadata, statements));
-		}
-	}
-
 	private static void writeImplementation(TypeElement repositoryInterface, String packageName, String entity,
-			String id, EntityMetadata metadata, String sqlResource, boolean paging, Filer filer) throws IOException {
+			String id, EntityMetadata metadata, Map<String, String> statements, boolean paging, Filer filer)
+			throws IOException {
 		String simpleName = repositoryInterface.getSimpleName() + "Impl";
 		String qualifiedName = packageName.isEmpty() ? simpleName : packageName + "." + simpleName;
 		JavaFileObject file = filer.createSourceFile(qualifiedName, repositoryInterface);
@@ -182,7 +175,7 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 				writer.write("package " + packageName + ";\n\n");
 			}
 			writer.write(ImplementationSource.generate(repositoryInterface.getSimpleName().toString(), simpleName,
-					entity, id, metadata, sqlResource, paging));
+					entity, id, metadata, statements, paging));
 		}
 	}
 

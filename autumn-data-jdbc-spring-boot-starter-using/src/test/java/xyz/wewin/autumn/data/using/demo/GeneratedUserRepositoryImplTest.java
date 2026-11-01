@@ -17,17 +17,16 @@ import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 import xyz.wewin.autumn.data.jdbc.runtime.JdbcConnectionSource;
-import xyz.wewin.autumn.data.jdbc.sql.SqlStatements;
+import xyz.wewin.autumn.data.jdbc.sql.Sql;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * 编译期生成的 {@code UserRepositoryImpl} 直连 H2 验证（不起 Spring 容器）：
- * SQL 资源落盘为 properties → 实现类真实读写 → 批量写 / 分页 / 一对多装配与行数上限。
+ * SQL 在编译期内联为生成类的 {@code private static final String} 常量 → 实现类真实读写
+ * → 批量写 / 分页 / 一对多装配与行数上限。
  */
 class GeneratedUserRepositoryImplTest {
-
-	private static final String SQL_RESOURCE = "META-INF/autumn-data/sql/xyz/wewin/autumn/data/using/demo/UserRepository.properties";
 
 	private final DataSource dataSource = new DriverManagerDataSource("jdbc:h2:mem:autumn-generated-impl;DB_CLOSE_DELAY=-1",
 			"sa", "");
@@ -55,15 +54,26 @@ class GeneratedUserRepositoryImplTest {
 	}
 
 	@Test
-	void sqlStatementsLandOnClasspathAsProperties() {
-		SqlStatements sql = SqlStatements.load(SQL_RESOURCE);
-		assertThat(sql.get("insert")).isEqualTo("INSERT INTO basic_user (username, email) VALUES (?, ?)");
-		assertThat(sql.get("update")).isEqualTo("UPDATE basic_user SET username = ?, email = ? WHERE id = ?");
-		assertThat(sql.get("selectAll")).isEqualTo("SELECT id, username, email FROM basic_user");
-		assertThat(sql.get("pageAll")).isEqualTo("SELECT id, username, email FROM basic_user ORDER BY id");
-		assertThat(sql.get("deleteByIds")).isEqualTo("DELETE FROM basic_user WHERE id IN (:ids)");
-		assertThat(sql.inClause("ordersByParentIds", 3))
+	void inlinedSqlConstantsAndRuntimeInClause() throws Exception {
+		// SQL 已编译期内联为生成类的 private static final String 常量（不再有 properties 资源）
+		assertThat(constant("SQL_INSERT")).isEqualTo("INSERT INTO basic_user (username, email) VALUES (?, ?)");
+		assertThat(constant("SQL_UPDATE")).isEqualTo("UPDATE basic_user SET username = ?, email = ? WHERE id = ?");
+		assertThat(constant("SQL_SELECT_ALL")).isEqualTo("SELECT id, username, email FROM basic_user");
+		assertThat(constant("SQL_PAGE_ALL")).isEqualTo("SELECT id, username, email FROM basic_user ORDER BY id");
+		assertThat(constant("SQL_DELETE_BY_IDS")).isEqualTo("DELETE FROM basic_user WHERE id IN (:ids)");
+		assertThat(constant("SQL_ORDERS_BY_PARENT_IDS"))
+			.isEqualTo("SELECT id, user_id, order_no, amount FROM demo_order WHERE user_id IN (:ids) ORDER BY id");
+		// 运行期仅剩的拼接：把 IN 占位符按参数个数展开成 ?
+		assertThat(Sql.inClause(constant("SQL_DELETE_BY_IDS"), 3))
+			.isEqualTo("DELETE FROM basic_user WHERE id IN (?, ?, ?)");
+		assertThat(Sql.inClause(constant("SQL_ORDERS_BY_PARENT_IDS"), 3))
 			.isEqualTo("SELECT id, user_id, order_no, amount FROM demo_order WHERE user_id IN (?, ?, ?) ORDER BY id");
+	}
+
+	private static String constant(String name) throws Exception {
+		java.lang.reflect.Field field = UserRepositoryImpl.class.getDeclaredField(name);
+		field.setAccessible(true);
+		return (String) field.get(null);
 	}
 
 	@Test
