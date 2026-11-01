@@ -14,6 +14,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import xyz.wewin.autumn.data.jdbc.dialect.Dialect;
 import xyz.wewin.autumn.data.jdbc.dialect.H2Dialect;
 import xyz.wewin.autumn.data.jdbc.dialect.MySqlDialect;
+import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
+import xyz.wewin.autumn.data.jdbc.spring.AutumnJdbc;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -44,6 +46,28 @@ class AutumnDataJdbcAutoConfigurationTests {
 	}
 
 	@Test
+	void providesRuntimeFacadeWithDefaultFetchPolicy() {
+		this.contextRunner.run(context -> {
+			assertThat(context).hasSingleBean(FetchPolicy.class);
+			assertThat(context).hasSingleBean(AutumnJdbc.class);
+			FetchPolicy fetchPolicy = context.getBean(FetchPolicy.class);
+			assertThat(fetchPolicy.associationLimit()).isEqualTo(FetchPolicy.DEFAULT_ASSOCIATION_LIMIT);
+			assertThat(fetchPolicy.batchSize()).isEqualTo(FetchPolicy.DEFAULT_BATCH_SIZE);
+			assertThat(context.getBean(AutumnJdbc.class).count("SELECT 1")).isEqualTo(1L);
+		});
+	}
+
+	@Test
+	void fetchPolicyIsConfigurable() {
+		this.contextRunner.withPropertyValues("autumn.data.jdbc.association-limit=250", "autumn.data.jdbc.batch-size=20")
+			.run(context -> {
+				FetchPolicy fetchPolicy = context.getBean(FetchPolicy.class);
+				assertThat(fetchPolicy.associationLimit()).isEqualTo(250);
+				assertThat(fetchPolicy.batchSize()).isEqualTo(20);
+			});
+	}
+
+	@Test
 	void resolvesH2DialectFromDataSourceMetadata() {
 		this.contextRunner.run(context -> assertThat(context).hasSingleBean(Dialect.class));
 	}
@@ -57,7 +81,9 @@ class AutumnDataJdbcAutoConfigurationTests {
 	@Test
 	void backsOffWhenDisabled() {
 		this.contextRunner.withPropertyValues("autumn.data.jdbc.enabled=false")
-			.run(context -> assertThat(context).doesNotHaveBean(Dialect.class));
+			.run(context -> assertThat(context).doesNotHaveBean(Dialect.class)
+				.doesNotHaveBean(FetchPolicy.class)
+				.doesNotHaveBean(AutumnJdbc.class));
 	}
 
 	@Test

@@ -34,15 +34,15 @@
 		</dependency>
 
 		<!-- 处理器自测：用系统 JavaCompiler 起进程内编译 -->
-		<!-- 生成代码引用 JdbcClient / RowMapper / @Service，进程内编译产物时需要它们在测试类路径上（处理器本身不依赖 Spring） -->
+		<!-- 生成代码引用 AutumnJdbc / RowMapper / @Service，进程内编译产物时需要它们在测试类路径上（处理器本身不依赖 Spring） -->
 		<dependency>
-			<groupId>org.springframework</groupId>
-			<artifactId>spring-jdbc</artifactId>
+			<groupId>xyz.wewin.autumn</groupId>
+			<artifactId>autumn-data-jdbc-spring-boot-starter</artifactId>
 			<scope>test</scope>
 		</dependency>
 		<dependency>
-			<groupId>org.springframework</groupId>
-			<artifactId>spring-context</artifactId>
+			<groupId>com.h2database</groupId>
+			<artifactId>h2</artifactId>
 			<scope>test</scope>
 		</dependency>
 		<dependency>

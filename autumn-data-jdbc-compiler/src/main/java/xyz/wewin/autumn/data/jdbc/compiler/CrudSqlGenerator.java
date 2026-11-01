@@ -5,6 +5,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Association;
 import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Column;
 
 /**
@@ -15,8 +16,8 @@ import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Column;
  * 运行时由 {@code SqlStatements} 用 JDK 的 {@link java.util.Properties} 读取，
  * 不需要模板引擎等额外依赖，也便于直接查看 / 比对生成的语句。</p>
  *
- * <p>方言差异（引号、分页）M2 暂不介入：语句用裸标识符与 ANSI 形式，
- * MySQL / PostgreSQL / H2 均可执行。</p>
+ * <p>方言差异只在运行期介入（分页片段由 {@code Dialect#limitOffset} 追加），
+ * 语句本身用裸标识符与 ANSI 形式，MySQL / PostgreSQL / H2 均可执行。</p>
  */
 final class CrudSqlGenerator {
 
@@ -39,6 +40,8 @@ final class CrudSqlGenerator {
 	static final String SELECT_BY_IDS = "selectByIds";
 
 	static final String COUNT = "count";
+
+	static final String PAGE_ALL = "pageAll";
 
 	static final String DELETE_BY_ID = "deleteById";
 
@@ -72,10 +75,38 @@ final class CrudSqlGenerator {
 		statements.put(SELECT_BY_IDS,
 				"SELECT " + columns + " FROM " + table + " WHERE " + idColumn + " IN (" + IN_MARKER + ")");
 		statements.put(COUNT, "SELECT COUNT(*) FROM " + table);
+		// 分页必须有确定顺序，否则跨页会重复/漏行；未接派生查询前固定按主键排
+		statements.put(PAGE_ALL, "SELECT " + columns + " FROM " + table + " ORDER BY " + idColumn);
 		statements.put(DELETE_BY_ID, "DELETE FROM " + table + " WHERE " + idColumn + " = ?");
 		statements.put(DELETE_BY_IDS, "DELETE FROM " + table + " WHERE " + idColumn + " IN (" + IN_MARKER + ")");
 		statements.put(DELETE_ALL, "DELETE FROM " + table);
+		for (Association association : entity.associations()) {
+			if (association.eager()) {
+				statements.put(association.statementKey(), childStatement(association));
+			}
+		}
 		return statements;
+	}
+
+	/**
+	 * 一对多的第二条语句：一次把本页/本次查到的父主键对应的子行全部取回，
+	 * 按外键分组在生成的实现类里做，因此不需要 {@code JOIN} 也不会产生 N+1。
+	 */
+	/**
+	 * 一对多的第二条语句：一次把本页/本次查到的父主键对应的子行全部取回，
+	 * 按外键分组在生成的实现类里做，因此不需要 {@code JOIN} 也不会产生 N+1。
+	 */
+	private static String childStatement(Association association) {
+		EntityMetadata child = association.target();
+		String foreignKey = association.foreignKeyColumn();
+		String columns = columnList(child.columns());
+		// 子实体自己把外键映射成了列时不必再选一遍，避免重复列名
+		boolean mapsForeignKey = child.columns().stream().anyMatch(column -> column.column().equals(foreignKey));
+		if (!mapsForeignKey) {
+			columns = columns + ", " + foreignKey;
+		}
+		return "SELECT " + columns + " FROM " + child.table() + " WHERE " + foreignKey + " IN (" + IN_MARKER
+				+ ") ORDER BY " + association.targetIdColumn();
 	}
 
 	/** properties 文本：语句按方法清单顺序输出，保证同一次输入生成同一份文件。 */
@@ -85,6 +116,11 @@ final class CrudSqlGenerator {
 		sb.append("# entity=").append(entity.qualifiedName()).append(", table=").append(entity.table())
 			.append(", id=").append(entity.id().column())
 			.append(entity.id().generated() ? " (generated)" : "").append('\n');
+		for (Association association : entity.associations()) {
+			sb.append("# association ").append(association.field()).append(" -> ").append(association.elementType())
+				.append(" via ").append(association.foreignKeyColumn())
+				.append(association.eager() ? "" : " (fetch=LAZY, not loaded)").append('\n');
+		}
 		for (Map.Entry<String, String> statement : statements.entrySet()) {
 			sb.append(statement.getKey()).append('=').append(statement.getValue()).append('\n');
 		}

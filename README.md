@@ -8,7 +8,7 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 | --- | --- | --- |
 | `autumn-data-jdbc` | 零反射 JDBC 仓储 | 采用 **Spring Data 注解风格**（`Repository` / `CrudRepository` / `@Query` / `@Param`），并参考 **Micronaut Data** 在**编译期**通过注解处理器生成实现类，运行时零反射。核心**不依赖 Spring**，数据源连接池使用 **HikariCP**。 |
 | `autumn-data-jdbc-spring-boot-starter` | Spring Boot 集成层（唯一使用方入口） | 约定大于配置：只引这一个依赖 + `spring.datasource.*` 即可用。仿 MyBatis 分层（引擎零 Spring / 集成层依赖 Boot），自动配置 `Dialect` Bean，支持 `autumn.data.jdbc.dialect` 显式指定或按 `DataSource` 元数据自动识别。 |
-| `autumn-data-jdbc-compiler` | JSR-269 注解处理器 | 编译期为 `@AutumnRepository` 接口生成 `<名称>Impl`；仅 `annotationProcessorPaths` 使用，**运行时不依赖**。当前为管道版（约定校验 + 骨架生成），实体元数据/SQL/RowMapper 生成为下一步。 |
+| `autumn-data-jdbc-compiler` | JSR-269 注解处理器 | 编译期为 `@AutumnRepository` 接口生成 `<名称>Impl`；仅 `annotationProcessorPaths` 使用，**运行时不依赖**。已实现：实体元数据提取（`@Entity`/`@Table`/`@Id`/`@Column`/`@GeneratedValue`/`@OneToMany`）、CRUD + 分页 + 一对多 SQL 落盘为 `.properties`、`RowMapper` 与批量读写/装配代码生成。派生查询（`findByNameAndAge`）为下一步。 |
 | `autumn-data-jdbc-spring-boot-starter-using` | 使用方示例（不发布） | **使用驱动开发的主战场**：只引 starter + 挂 compiler 处理器，在这里写后续所有用法（单表、一对多、多对一、派生查询），以用法倒逼核心实现。 |
 | `autumn-data-meta` | 轻量动态 SQL 引擎 | 对标 **MyBatis** 但更轻量，支持**运行时动态加载**；用 **FreeMarker（.ftl）** 语法替代 MyBatis 的 XML SQL。数据源连接池同样使用 **HikariCP**。 |
 
@@ -24,11 +24,13 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 - [x] 依赖精简：`autumn-data-jdbc` 去掉 `spring-boot-starter-jdbc`，只留 `HikariCP` + `slf4j-api` + `jakarta.persistence-api`
 - [x] 新增 `autumn-data-jdbc-spring-boot-starter`（`Dialect` 自动配置 + `autumn.data.jdbc.*` 配置项 + 冒烟测试）
 - [x] 新增 `autumn-data-jdbc-spring-boot-starter-using`（使用方示例：只引 starter，H2 集成测试验证开箱体验；不发布）
-- [x] 新增 `autumn-data-jdbc-compiler`（JSR-269 管道版：`@AutumnRepository` 约定校验 + `CrudRepository` 实现骨架生成，端到端已验证）
-- [ ] compiler 下一版：实体元数据提取（`@Entity`/`@Id`/`@Column`）→ INSERT/SELECT/DELETE SQL + RowMapper 生成
+- [x] 新增 `autumn-data-jdbc-compiler`（JSR-269：`@AutumnRepository` 约定校验 + 实现类生成）
+- [x] compiler：实体元数据提取（`@Entity`/`@Table`/`@Id`/`@Column`/`@GeneratedValue`/`@OneToMany`）→ CRUD SQL + `RowMapper` 生成，SQL 以 `.properties` 落编译输出目录
+- [x] compiler：分页（`PagingRepository.findAll(Pageable)` + 方言 limit/offset + 总数回查）、批量读写（`saveAll` 分块 + 生成键回填）、一对多两条语句批量装配（父查询 + 子表 `IN` 查询）
+- [x] starter：`AutumnJdbc` 运行期门面 + `autumn.data.jdbc.association-limit`（默认 1000）/ `batch-size`（默认 100）配置项
+- [x] 事务验证：生成实现走 `DataSourceUtils` 取连接，`@Transactional` 下提交与异常回滚均已实测
 - [ ] 派生查询解析器（`findByNameAndAge`，按 docs/spring-data-derived-query.md 第 1~6 节）
 - [ ] `autumn-data-meta` 同步去 Spring 依赖（同样挪到各自 starter）
-- [ ] `autumn-data-jdbc`：编译期注解处理器（零反射实现生成）
 - [ ] `autumn-data-meta`：FreeMarker 动态 Mapper 执行引擎
 
 ## 依赖策略
@@ -62,11 +64,14 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 export H2_PASSWORD='<不写入仓库的本地库密码>'       # 凭据只走环境变量
 ./mvnw spring-boot:run -pl autumn-data-jdbc-spring-boot-starter-using \
     -Dspring-boot.run.profiles=demo               # demo profile → H2 TCP 服务库
-curl http://localhost:8080/training/user          # 当前返回 500 = 骨架占位（awaiting M2）
+curl http://localhost:8080/training/user          # 单表 + 一对多装配
+curl "http://localhost:8080/training/user/page?page=0&size=1"   # 分页（方言 limit/offset + 总行数）
+curl -X POST "http://localhost:8080/training/order/batch?count=3&userId=1"  # 批量插入 + 生成键回填
 ```
 
 配置约定（全项目只用 `.properties`，不用 yaml）：
-- `application.properties`：连 `jdbc:h2:tcp://localhost:9092/autumn_security;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE`，密码 `${H2_PASSWORD:}`，脚本 `main-schema.sql`（`INSERT IGNORE` + 固定主键，重启不重复插数据）。
+- `application.properties`：连 `jdbc:h2:tcp://localhost:9092/autumn_security;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE`。该库是安全项目在用的真实库，`basic_user` 是它的既有表（17 列），演示只读它、不往里插数据；脚本 `main-schema.sql` 只创建自有表 `demo_order` 并用 `INSERT IGNORE` + 固定主键补种子，重启不重复插数据。
+- 注意：demo 实体表名 `basic_user` 与该库的真实表同名，列名恰好重合才读得通；一旦要写用户数据，请改用自有库或改表名，否则会落到安全项目的表里。
 - `src/test/resources/application.properties`：自动化测试用内存库 `jdbc:h2:mem:autumn-using-test`，与 TCP 服务库完全隔离。
 - 改动资源或处理器产物后请用 `./mvnw -B clean test`（旧 `target/classes` 残留会让改动看起来无效）。
 

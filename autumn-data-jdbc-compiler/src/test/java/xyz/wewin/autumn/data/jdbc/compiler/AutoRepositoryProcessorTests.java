@@ -67,6 +67,74 @@ class AutoRepositoryProcessorTests {
 			public interface UserRepository extends xyz.wewin.autumn.data.jdbc.repository.CrudRepository<User, java.lang.Long> {}
 			""";
 
+	private static final String PAGING_REPO = """
+			package demo;
+			@xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository
+			public interface PagedUserRepository extends xyz.wewin.autumn.data.jdbc.repository.CrudRepository<User, java.lang.Long>,
+					xyz.wewin.autumn.data.jdbc.repository.PagingRepository<User, java.lang.Long> {}
+			""";
+
+	private static final String ORDER_ENTITY = """
+			package demo;
+			@jakarta.persistence.Entity
+			@jakarta.persistence.Table(name = "demo_order")
+			public class Order {
+				@jakarta.persistence.Id
+				@jakarta.persistence.GeneratedValue
+				private java.lang.Long id;
+				@jakarta.persistence.Column(name = "user_id")
+				private java.lang.Long userId;
+				private java.lang.String memo;
+				@jakarta.persistence.ManyToOne
+				@jakarta.persistence.JoinColumn(name = "owner_id")
+				private Customer owner;
+				public java.lang.Long getId() { return this.id; }
+				public void setId(java.lang.Long id) { this.id = id; }
+				public java.lang.Long getUserId() { return this.userId; }
+				public void setUserId(java.lang.Long userId) { this.userId = userId; }
+				public java.lang.String getMemo() { return this.memo; }
+				public void setMemo(java.lang.String memo) { this.memo = memo; }
+				public Customer getOwner() { return this.owner; }
+				public void setOwner(Customer owner) { this.owner = owner; }
+			}
+			""";
+
+	private static final String ASSOCIATION_ENTITY = """
+			package demo;
+			@jakarta.persistence.Entity
+			@jakarta.persistence.Table(name = "demo_user")
+			public class Customer {
+				@jakarta.persistence.Id
+				@jakarta.persistence.GeneratedValue
+				private java.lang.Long id;
+				private java.lang.String name;
+				@jakarta.persistence.OneToMany
+				@jakarta.persistence.JoinColumn(name = "user_id")
+				private java.util.List<Order> orders = new java.util.ArrayList<>();
+				@jakarta.persistence.OneToMany(fetch = jakarta.persistence.FetchType.LAZY)
+				@jakarta.persistence.JoinColumn(name = "audit_id")
+				private java.util.List<Order> lazyOrders = new java.util.ArrayList<>();
+				@jakarta.persistence.OneToMany(mappedBy = "owner")
+				private java.util.Set<Order> byOwner = new java.util.LinkedHashSet<>();
+				public java.lang.Long getId() { return this.id; }
+				public void setId(java.lang.Long id) { this.id = id; }
+				public java.lang.String getName() { return this.name; }
+				public void setName(java.lang.String name) { this.name = name; }
+				public java.util.List<Order> getOrders() { return this.orders; }
+				public void setOrders(java.util.List<Order> orders) { this.orders = orders; }
+				public java.util.List<Order> getLazyOrders() { return this.lazyOrders; }
+				public void setLazyOrders(java.util.List<Order> lazyOrders) { this.lazyOrders = lazyOrders; }
+				public java.util.Set<Order> getByOwner() { return this.byOwner; }
+				public void setByOwner(java.util.Set<Order> byOwner) { this.byOwner = byOwner; }
+			}
+			""";
+
+	private static final String ASSOCIATION_REPO = """
+			package demo;
+			@xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository
+			public interface CustomerRepository extends xyz.wewin.autumn.data.jdbc.repository.CrudRepository<Customer, java.lang.Long> {}
+			""";
+
 	private static final String ASSIGNED_ID_REPO = """
 			package demo;
 			@xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository
@@ -110,16 +178,63 @@ class AutoRepositoryProcessorTests {
 		String source = Files.readString(generated);
 		assertThat(source).contains("class UserRepositoryImpl implements UserRepository");
 		assertThat(source).contains("@org.springframework.stereotype.Service");
-		assertThat(source).contains("public UserRepositoryImpl(org.springframework.jdbc.core.simple.JdbcClient jdbcClient)");
+		assertThat(source).contains(
+				"public UserRepositoryImpl(xyz.wewin.autumn.data.jdbc.spring.AutumnJdbc autumn)");
 		assertThat(source).contains("row.setAge(rs.getInt(\"age\"))");
 		assertThat(source).contains("row.setCreatedAt(rs.getObject(\"created_at\", java.time.LocalDateTime.class))");
+		// 批量写：新行一条带生成键的批量 INSERT，已有行一条批量 UPDATE
+		assertThat(source).contains("this.autumn.batchInsertReturningKeys(SQL.get(\"insert\"), \"id\", rows)");
+		assertThat(source).contains("this.autumn.batchUpdate(SQL.get(\"update\"), rows)");
+		// 批量删：一条 IN，不再逐行 DELETE
+		assertThat(source).contains("this.autumn.update(SQL.inClause(\"deleteByIds\", ids.size()), ids.toArray())");
 
 		Path properties = dir.resolve("classes/META-INF/autumn-data/sql/demo/UserRepository.properties");
 		assertThat(properties).exists();
 		assertThat(Files.readString(properties)).contains("insert=INSERT INTO demo_user (name, age, created_at) VALUES (?, ?, ?)")
 			.contains("selectAll=SELECT id, name, age, created_at FROM demo_user")
+			.contains("pageAll=SELECT id, name, age, created_at FROM demo_user ORDER BY id")
 			.contains("update=UPDATE demo_user SET name = ?, age = ?, created_at = ? WHERE id = ?")
 			.contains("selectByIds=SELECT id, name, age, created_at FROM demo_user WHERE id IN (:ids)");
+	}
+
+	@Test
+	void generatesPagingImplementation(@TempDir Path dir) throws Exception {
+		Compilation result = compile(dir, List.of(new Source("demo/User.java", USER_ENTITY),
+				new Source("demo/PagedUserRepository.java", PAGING_REPO)));
+		assertThat(result.errorMessages()).isEmpty();
+		String source = Files.readString(dir.resolve("gen/demo/PagedUserRepositoryImpl.java"));
+		assertThat(source).contains(
+				"public xyz.wewin.autumn.data.jdbc.page.Page<demo.User> findAll(xyz.wewin.autumn.data.jdbc.page.Pageable pageable)");
+		// 分页片段不在编译期写死，交给运行期方言拼
+		assertThat(source).contains("this.autumn.page(SQL.get(\"pageAll\"), SQL.get(\"count\"), ROW_MAPPER, pageable)");
+	}
+
+	@Test
+	void generatesTwoStatementAssociationLoadingWithCap(@TempDir Path dir) throws Exception {
+		Compilation result = compile(dir, List.of(new Source("demo/Order.java", ORDER_ENTITY),
+				new Source("demo/Customer.java", ASSOCIATION_ENTITY),
+				new Source("demo/CustomerRepository.java", ASSOCIATION_REPO)));
+		assertThat(result.errorMessages()).isEmpty();
+
+		String properties = Files
+			.readString(dir.resolve("classes/META-INF/autumn-data/sql/demo/CustomerRepository.properties"));
+		// 子表自己把外键映射成列时不重复选；mappedBy 从子侧 @JoinColumn 解析出 owner_id
+		assertThat(properties).contains(
+				"ordersByParentIds=SELECT id, user_id, memo FROM demo_order WHERE user_id IN (:ids) ORDER BY id");
+		assertThat(properties).contains(
+				"byOwnerByParentIds=SELECT id, user_id, memo, owner_id FROM demo_order WHERE owner_id IN (:ids) ORDER BY id");
+		// fetch = LAZY 不生成装配语句
+		assertThat(properties).doesNotContain("lazyOrdersByParentIds");
+
+		String source = Files.readString(dir.resolve("gen/demo/CustomerRepositoryImpl.java"));
+		// 第二条语句按父主键 IN 批量取子行，且走 queryLimited（受 associationLimit 截断）
+		assertThat(source).contains("private void attachOrders(java.util.List<demo.Customer> parents)");
+		assertThat(source).contains("this.autumn.queryLimited(SQL.inClause(\"ordersByParentIds\", parentIds.size())");
+		assertThat(source).contains("grouped.computeIfAbsent(entry.getKey(), key -> new java.util.ArrayList<>())");
+		assertThat(source).contains("attachOrders(rows);");
+		// Set 形态的关联从分组结果转成 LinkedHashSet
+		assertThat(source).contains("new java.util.LinkedHashSet<demo.Order>(loaded)");
+		assertThat(source).doesNotContain("attachLazyOrders");
 	}
 
 	@Test
@@ -132,6 +247,10 @@ class AutoRepositoryProcessorTests {
 		// 无 @Table/@Column：表名取类名、列名取驼峰转下划线；无 @GeneratedValue：主键参与 INSERT
 		assertThat(properties).contains("selectAll=SELECT account_id, balance FROM account")
 			.contains("insert=INSERT INTO account (account_id, balance) VALUES (?, ?)");
+		// 主键非自增：拿不到生成键，批量写退化为逐条 upsert
+		String source = Files.readString(dir.resolve("gen/demo/AccountRepositoryImpl.java"));
+		assertThat(source).doesNotContain("batchInsertReturningKeys");
+		assertThat(source).contains("saved.add(save(entity))");
 	}
 
 	@Test

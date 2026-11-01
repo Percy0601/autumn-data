@@ -14,6 +14,7 @@ import javax.annotation.processing.SupportedSourceVersion;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
+import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeKind;
@@ -29,18 +30,21 @@ import javax.tools.StandardLocation;
  * JSR-269 注解处理器：为 {@code @AutumnRepository} 接口生成 {@code <名称>Impl} 实现。
  *
  * <p>流程：校验约定（必须是接口、必须继承 {@code Repository<T, ID>}）→ 提取实体元数据
- * （{@link EntityIntrospector}）→ 生成标准 CRUD 的 SQL 并以 {@code .properties} 资源写入
- * 编译输出目录（{@link CrudSqlGenerator}）→ 生成实现类源码（{@link ImplementationSource}）。
- * 约定违规一律在编译期报错，不生成半成品。</p>
+ * （{@link EntityIntrospector}，含一对多关联）→ 生成标准 CRUD / 分页 / 子表加载的 SQL 并以
+ * {@code .properties} 资源写入编译输出目录（{@link CrudSqlGenerator}）→ 生成实现类源码
+ * （{@link ImplementationSource}）。约定违规一律在编译期报错，不生成半成品。</p>
  *
- * <p>派生查询（{@code findByNameAndAge} 之类，见 docs/spring-data-derived-query.md 第 8 节）
- * 是下一步；当前覆盖 {@code CrudRepository} 的标准方法清单。</p>
+ * <p>覆盖范围：{@code CrudRepository} 全部方法、{@code PagingRepository#findAll(Pageable)}、
+ * 批量读写与一对多装配。派生查询（{@code findByNameAndAge} 之类，见
+ * docs/spring-data-derived-query.md 第 8 节）是下一步。</p>
  */
 @SupportedAnnotationTypes("xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository")
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class AutoRepositoryProcessor extends AbstractProcessor {
 
 	static final String REPOSITORY_FQN = "xyz.wewin.autumn.data.jdbc.repository.Repository";
+
+	private static final String PAGEABLE_FQN = "xyz.wewin.autumn.data.jdbc.page.Pageable";
 
 	@Override
 	public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
@@ -80,11 +84,28 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 			try {
 				writeSqlResource(resource, metadata, CrudSqlGenerator.generate(metadata), processingEnv.getFiler());
 				writeImplementation(repositoryInterface, packageName, entity, id, metadata, resource,
-						processingEnv.getFiler());
+						declaresPaging(repositoryInterface, elements, types), processingEnv.getFiler());
 			}
 			catch (IOException ex) {
 				error("Failed to generate implementation for " + repositoryInterface.getQualifiedName() + ": " + ex,
 						repositoryInterface);
+			}
+		}
+		return false;
+	}
+
+	/** 接口（含继承的 {@code PagingRepository}）里是否声明了 {@code findAll(Pageable)}。 */
+	private static boolean declaresPaging(TypeElement repositoryInterface, Elements elements, Types types) {
+		for (Element member : elements.getAllMembers(repositoryInterface)) {
+			if (member.getKind() != ElementKind.METHOD || !(member instanceof ExecutableElement method)) {
+				continue;
+			}
+			if (!method.getSimpleName().contentEquals("findAll") || method.getParameters().size() != 1) {
+				continue;
+			}
+			TypeMirror parameter = method.getParameters().get(0).asType();
+			if (types.erasure(parameter).toString().contentEquals(PAGEABLE_FQN)) {
+				return true;
 			}
 		}
 		return false;
@@ -141,7 +162,7 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 	}
 
 	private static void writeImplementation(TypeElement repositoryInterface, String packageName, String entity,
-			String id, EntityMetadata metadata, String sqlResource, Filer filer) throws IOException {
+			String id, EntityMetadata metadata, String sqlResource, boolean paging, Filer filer) throws IOException {
 		String simpleName = repositoryInterface.getSimpleName() + "Impl";
 		String qualifiedName = packageName.isEmpty() ? simpleName : packageName + "." + simpleName;
 		JavaFileObject file = filer.createSourceFile(qualifiedName, repositoryInterface);
@@ -150,7 +171,7 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 				writer.write("package " + packageName + ";\n\n");
 			}
 			writer.write(ImplementationSource.generate(repositoryInterface.getSimpleName().toString(), simpleName,
-					entity, id, metadata, sqlResource));
+					entity, id, metadata, sqlResource, paging));
 		}
 	}
 

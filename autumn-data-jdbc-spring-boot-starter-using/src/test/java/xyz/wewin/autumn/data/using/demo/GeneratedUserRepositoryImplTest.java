@@ -1,22 +1,29 @@
 package xyz.wewin.autumn.data.using.demo;
 
+import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.List;
 
 import javax.sql.DataSource;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.stereotype.Service;
 
+import xyz.wewin.autumn.data.jdbc.dialect.H2Dialect;
+import xyz.wewin.autumn.data.jdbc.page.Page;
+import xyz.wewin.autumn.data.jdbc.page.Pageable;
+import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
+import xyz.wewin.autumn.data.jdbc.spring.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.sql.SqlStatements;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * 编译期生成的 {@code UserRepositoryImpl} 直连 H2 验证（不起 Spring 容器）：
- * SQL 资源已落盘为 properties → 实现类真实读写 → 自增主键回填。
+ * SQL 资源落盘为 properties → 实现类真实读写 → 批量写 / 分页 / 一对多装配与行数上限。
  */
 class GeneratedUserRepositoryImplTest {
 
@@ -25,74 +32,139 @@ class GeneratedUserRepositoryImplTest {
 	private final DataSource dataSource = new DriverManagerDataSource("jdbc:h2:mem:autumn-generated-impl;DB_CLOSE_DELAY=-1",
 			"sa", "");
 
+	private JdbcTemplate jdbcTemplate;
+
 	private UserRepository repository;
+
+	private OrderRepository orderRepository;
 
 	@BeforeEach
 	void setUp() {
-		JdbcClient jdbcClient = JdbcClient.create(this.dataSource);
-		jdbcClient.sql("DROP TABLE IF EXISTS demo_user").update();
-		jdbcClient.sql("""
-				CREATE TABLE demo_user (
-					id BIGINT AUTO_INCREMENT PRIMARY KEY,
-					name VARCHAR(64) NOT NULL,
-					age INT NOT NULL,
-					email VARCHAR(128),
-					created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)
-				""").update();
-		this.repository = new UserRepositoryImpl(jdbcClient);
+		this.jdbcTemplate = new JdbcTemplate(this.dataSource);
+		this.jdbcTemplate.execute("DROP TABLE IF EXISTS demo_order");
+		this.jdbcTemplate.execute("DROP TABLE IF EXISTS basic_user");
+		this.jdbcTemplate.execute("CREATE TABLE basic_user ("
+				+ "id BIGINT AUTO_INCREMENT PRIMARY KEY, username VARCHAR(64) NOT NULL, email VARCHAR(128))");
+		this.jdbcTemplate.execute("CREATE TABLE demo_order ("
+				+ "id BIGINT AUTO_INCREMENT PRIMARY KEY, user_id BIGINT, order_no VARCHAR(64) NOT NULL,"
+				+ " amount DECIMAL(12, 2))");
+		AutumnJdbc autumn = new AutumnJdbc(this.jdbcTemplate, new H2Dialect(), FetchPolicy.defaults());
+		this.repository = new UserRepositoryImpl(autumn);
+		this.orderRepository = new OrderRepositoryImpl(autumn);
 	}
 
 	@Test
 	void sqlStatementsLandOnClasspathAsProperties() {
 		SqlStatements sql = SqlStatements.load(SQL_RESOURCE);
-		assertThat(sql.get("insert"))
-			.isEqualTo("INSERT INTO demo_user (name, age, email, created_at) VALUES (?, ?, ?, ?)");
-		assertThat(sql.get("update"))
-			.isEqualTo("UPDATE demo_user SET name = ?, age = ?, email = ?, created_at = ? WHERE id = ?");
-		assertThat(sql.get("selectAll")).isEqualTo("SELECT id, name, age, email, created_at FROM demo_user");
-		assertThat(sql.get("deleteByIds")).isEqualTo("DELETE FROM demo_user WHERE id IN (:ids)");
-		assertThat(sql.inClause("selectByIds", 3)).endsWith("WHERE id IN (?, ?, ?)");
+		assertThat(sql.get("insert")).isEqualTo("INSERT INTO basic_user (username, email) VALUES (?, ?)");
+		assertThat(sql.get("update")).isEqualTo("UPDATE basic_user SET username = ?, email = ? WHERE id = ?");
+		assertThat(sql.get("selectAll")).isEqualTo("SELECT id, username, email FROM basic_user");
+		assertThat(sql.get("pageAll")).isEqualTo("SELECT id, username, email FROM basic_user ORDER BY id");
+		assertThat(sql.get("deleteByIds")).isEqualTo("DELETE FROM basic_user WHERE id IN (:ids)");
+		assertThat(sql.inClause("ordersByParentIds", 3))
+			.isEqualTo("SELECT id, user_id, order_no, amount FROM demo_order WHERE user_id IN (?, ?, ?) ORDER BY id");
 	}
 
 	@Test
-	void implementationIsServiceWithInjectedJdbcClient() throws Exception {
+	void implementationIsServiceWithRuntimeFacade() throws Exception {
 		assertThat(UserRepositoryImpl.class.getAnnotation(Service.class)).isNotNull();
-		assertThat(UserRepositoryImpl.class.getConstructor(JdbcClient.class)).isNotNull();
+		assertThat(UserRepositoryImpl.class.getConstructor(AutumnJdbc.class)).isNotNull();
 		assertThat(UserRepositoryImpl.class.getDeclaredConstructors()).hasSize(1);
 	}
 
 	@Test
 	void saveInsertsAndBackfillsGeneratedId() {
-		User saved = this.repository.save(newUser("alice", 30));
+		User saved = this.repository.save(newUser("alice"));
 		assertThat(saved.getId()).isNotNull();
-		assertThat(this.repository.findById(saved.getId())).get().hasFieldOrPropertyWithValue("name", "alice");
+		assertThat(this.repository.findById(saved.getId())).get().hasFieldOrPropertyWithValue("username", "alice");
 	}
 
 	@Test
-	void saveWithExistingIdUpdatesInPlace() {
-		User saved = this.repository.save(newUser("bob", 25));
-		saved.setName("bobby");
-		saved.setAge(26);
-		this.repository.save(saved);
-		assertThat(this.repository.count()).isEqualTo(1L);
-		assertThat(this.repository.findById(saved.getId())).get().hasFieldOrPropertyWithValue("name", "bobby");
+	void saveAllBatchesInsertsAndBackfillsEveryId() {
+		List<User> users = List.of(newUser("u1"), newUser("u2"), newUser("u3"), newUser("u4"), newUser("u5"));
+		this.repository.saveAll(users);
+		assertThat(users).extracting(User::getId).doesNotContainNull().doesNotHaveDuplicates();
+		assertThat(this.repository.count()).isEqualTo(5L);
 	}
 
 	@Test
-	void batchReadsAndDeletesUseExpandedInClause() {
-		this.repository.saveAll(List.of(newUser("carol", 35), newUser("dave", 28)));
-		List<Long> ids = this.repository.findAll().stream().map(User::getId).toList();
-		assertThat(this.repository.findAllById(ids)).hasSize(2);
-		this.repository.deleteById(ids.get(0));
-		assertThat(this.repository.existsById(ids.get(0))).isFalse();
+	void saveAllBatchesExistingRowsWithUpdate() {
+		List<User> users = new ArrayList<>(List.of(newUser("u1"), newUser("u2")));
+		this.repository.saveAll(users);
+		users.forEach(user -> user.setUsername(user.getUsername() + "-renamed"));
+		this.repository.saveAll(users);
+		assertThat(this.repository.count()).isEqualTo(2L);
+		assertThat(this.repository.findAll()).extracting(User::getUsername)
+			.containsExactlyInAnyOrder("u1-renamed", "u2-renamed");
+	}
+
+	@Test
+	void findAllPagesWithDialectLimitAndTotalCount() {
+		this.repository
+			.saveAll(List.of(newUser("u1"), newUser("u2"), newUser("u3"), newUser("u4"), newUser("u5")));
+
+		Page<User> first = this.repository.findAll(Pageable.of(0, 2));
+		assertThat(first.content()).extracting(User::getUsername).containsExactly("u1", "u2");
+		assertThat(first.total()).isEqualTo(5L);
+		assertThat(first.totalPages()).isEqualTo(3);
+		assertThat(first.hasNext()).isTrue();
+
+		Page<User> last = this.repository.findAll(Pageable.of(2, 2));
+		assertThat(last.content()).extracting(User::getUsername).containsExactly("u5");
+		assertThat(last.hasNext()).isFalse();
+	}
+
+	@Test
+	void readsLoadChildrenWithOneExtraStatementGroupedPerParent() {
+		User alice = this.repository.save(newUser("alice"));
+		User bob = this.repository.save(newUser("bob"));
+		this.repository.save(newUser("carol"));
+		this.orderRepository.saveAll(List.of(newOrder(alice.getId(), "SO-1"), newOrder(alice.getId(), "SO-2"),
+				newOrder(bob.getId(), "SO-3")));
+
+		assertThat(this.repository.findById(alice.getId()).orElseThrow().getOrders()).extracting(Order::getOrderNo)
+			.containsExactly("SO-1", "SO-2");
+		assertThat(this.repository.findAll()).extracting(user -> user.getOrders().size())
+			.containsExactly(2, 1, 0);
+		// 无单的用户拿到空集合而不是 null
+		assertThat(this.repository.findAll()).filteredOn(user -> user.getUsername().equals("carol")).singleElement()
+			.satisfies(user -> assertThat(user.getOrders()).isEmpty());
+	}
+
+	@Test
+	void associationLimitCapsHowManyChildrenComeBack() {
+		User alice = this.repository.save(newUser("alice"));
+		List<Order> orders = new ArrayList<>();
+		for (int i = 0; i < 6; i++) {
+			orders.add(newOrder(alice.getId(), "SO-" + i));
+		}
+		this.orderRepository.saveAll(orders);
+
+		AutumnJdbc capped = new AutumnJdbc(this.jdbcTemplate, new H2Dialect(), new FetchPolicy(2, 100));
+		User limited = new UserRepositoryImpl(capped).findById(alice.getId()).orElseThrow();
+		assertThat(limited.getOrders()).hasSize(2);
+	}
+
+	@Test
+	void deleteAllUsesOneInStatement() {
+		this.repository.saveAll(List.of(newUser("u1"), newUser("u2"), newUser("u3")));
 		this.repository.deleteAll(this.repository.findAll());
 		assertThat(this.repository.count()).isZero();
 	}
 
-	private static User newUser(String name, int age) {
+	private static User newUser(String username) {
 		User user = new User();
-		user.setName(name);
-		user.setAge(age);
+		user.setUsername(username);
+		user.setEmail(username + "@example.com");
 		return user;
 	}
+
+	private static Order newOrder(Long userId, String orderNo) {
+		Order order = new Order();
+		order.setUserId(userId);
+		order.setOrderNo(orderNo);
+		order.setAmount(new BigDecimal("9.90"));
+		return order;
+	}
+
 }

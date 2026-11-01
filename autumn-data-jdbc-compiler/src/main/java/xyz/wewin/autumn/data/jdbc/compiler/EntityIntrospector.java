@@ -13,6 +13,7 @@ import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeKind;
 import javax.lang.model.type.TypeMirror;
@@ -20,6 +21,7 @@ import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 import javax.tools.Diagnostic;
 
+import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Association;
 import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Column;
 
 /**
@@ -32,7 +34,8 @@ import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Column;
  *   <li>列名取 {@code @Column(name)}，否则字段名转下划线；{@code static} / {@code transient} /
  *       {@code @Transient} 字段忽略；</li>
  *   <li>每个列字段需要 JavaBean 读写方法，以及无参构造器（record 暂不支持）；</li>
- *   <li>M2 只覆盖单表标量列，关联字段（非 {@code java.lang/time/math/sql/util} 类型）报错提示。</li>
+ *   <li>单表标量列之外的关联字段按注解识别：{@code @OneToMany} 集合按「两条语句 + 按外键分组」装配
+ *       （深度一层，{@code fetch = LAZY} 表示不自动装配）；其余关联注解只给 WARNING，不当列处理。</li>
  * </ul>
  */
 final class EntityIntrospector {
@@ -51,12 +54,31 @@ final class EntityIntrospector {
 
 	private static final String TRANSIENT = JPA + "Transient";
 
+	private static final String ONE_TO_MANY = JPA + "OneToMany";
+
+	private static final String JOIN_COLUMN = JPA + "JoinColumn";
+
+	private static final Set<String> ASSOCIATION_ANNOTATIONS = Set.of(ONE_TO_MANY, JPA + "ManyToOne",
+			JPA + "ManyToMany", JPA + "OneToOne");
+
+	private static final Set<String> SUPPORTED_COLLECTIONS = Set.of("java.util.List", "java.util.Set",
+			"java.util.Collection");
+
 	private EntityIntrospector() {
 	}
 
 	/** 提取失败时输出 ERROR 诊断并返回 {@code null}，由调用方跳过生成。 */
 	static EntityMetadata introspect(TypeMirror entityType, Elements elements, Types types, Messager messager,
 			Element reportOn) {
+		return introspect(entityType, elements, types, messager, reportOn, 0);
+	}
+
+	/**
+	 * @param depth 关联深度：根实体（0）收集 {@code @OneToMany}，关联实体（1）只取表名与列清单，
+	 *            因此不会出现父子互访引起的无限递归
+	 */
+	private static EntityMetadata introspect(TypeMirror entityType, Elements elements, Types types, Messager messager,
+			Element reportOn, int depth) {
 		if (entityType.getKind() != TypeKind.DECLARED) {
 			messager.printMessage(Diagnostic.Kind.ERROR,
 					"Entity type must be a class, but is " + entityType, reportOn);
@@ -82,6 +104,7 @@ final class EntityIntrospector {
 		String table = namedValue(entityElement, TABLE, snakeCase(entitySimpleName(entityElement)));
 		Set<String> methods = memberNames(elements.getAllMembers(entityElement));
 		List<Column> columns = new ArrayList<>();
+		List<Association> associations = new ArrayList<>();
 		Column id = null;
 		for (TypeElement current = entityElement; current != null; current = superclass(current, types)) {
 			for (Element field : current.getEnclosedElements()) {
@@ -90,10 +113,18 @@ final class EntityIntrospector {
 				}
 				String fieldName = field.getSimpleName().toString();
 				String javaType = typeSignature(field.asType(), types);
+				if (hasAnyAssociationAnnotation(field)) {
+					Association association = (depth == 0) ? oneToMany(field, entityElement, elements, types,
+							messager, reportOn, methods) : null;
+					if (association != null) {
+						associations.add(association);
+					}
+					continue;
+				}
 				if (!isScalarType(javaType)) {
 					messager.printMessage(Diagnostic.Kind.ERROR, "Field " + current.getQualifiedName() + "."
 							+ fieldName + " of type " + javaType + " is not a supported column type"
-							+ " (M2 maps single-table scalar columns only)", reportOn);
+							+ " (add a JPA association annotation, or map it as a scalar column)", reportOn);
 					return null;
 				}
 				String getter = firstPresent(methods, "get" + capitalize(fieldName), "is" + capitalize(fieldName));
@@ -123,7 +154,107 @@ final class EntityIntrospector {
 					+ " has no @Id field", reportOn);
 			return null;
 		}
-		return new EntityMetadata(entityElement.getQualifiedName().toString(), table, id, List.copyOf(columns));
+		return new EntityMetadata(entityElement.getQualifiedName().toString(), table, id, List.copyOf(columns),
+				List.copyOf(associations));
+	}
+
+	/**
+	 * 父实体上的 {@code @OneToMany} 集合字段 → 关联元数据；不满足约定时给 WARNING 并返回 {@code null}
+	 * （即该字段既不当事务列，也不生成装配代码）。
+	 */
+	private static Association oneToMany(Element field, TypeElement parent, Elements elements, Types types,
+			Messager messager, Element reportOn, Set<String> methods) {
+		String fieldName = field.getSimpleName().toString();
+		if (!hasAnnotation(field, ONE_TO_MANY)) {
+			warn(messager, "Association field " + parent.getQualifiedName() + "." + fieldName
+					+ " is not @OneToMany; autumn loads only one-to-many collections this round", reportOn);
+			return null;
+		}
+		TypeMirror collectionType = field.asType();
+		if (collectionType.getKind() != TypeKind.DECLARED || ((DeclaredType) collectionType).getTypeArguments()
+			.size() != 1) {
+			warn(messager, "@OneToMany field " + parent.getQualifiedName() + "." + fieldName
+					+ " must be a parameterised java.util.List/Set/Collection of the child entity", reportOn);
+			return null;
+		}
+		String collection = typeSignature(collectionType, types);
+		if (!SUPPORTED_COLLECTIONS.contains(collection)) {
+			warn(messager, "@OneToMany field " + parent.getQualifiedName() + "." + fieldName + " has unsupported"
+					+ " collection type " + collection + " (use List, Set or Collection)", reportOn);
+			return null;
+		}
+		TypeMirror elementType = ((DeclaredType) collectionType).getTypeArguments().get(0);
+		if (elementType.getKind() != TypeKind.DECLARED) {
+			warn(messager, "@OneToMany field " + parent.getQualifiedName() + "." + fieldName
+					+ " must have an entity type argument", reportOn);
+			return null;
+		}
+		String getter = firstPresent(methods, "get" + capitalize(fieldName), "is" + capitalize(fieldName));
+		String setter = "set" + capitalize(fieldName);
+		if (getter == null || !methods.contains(setter)) {
+			messager.printMessage(Diagnostic.Kind.ERROR, "Entity " + parent.getQualifiedName() + " needs JavaBean"
+					+ " accessor " + getter + "/" + setter + " for @OneToMany field '" + fieldName + "'", reportOn);
+			return null;
+		}
+		EntityMetadata target = introspect(elementType, elements, types, messager, reportOn, 1);
+		if (target == null) {
+			return null;
+		}
+		String element = ((TypeElement) ((DeclaredType) types.erasure(elementType)).asElement()).getQualifiedName()
+			.toString();
+		return new Association(fieldName, getter, setter, collection, element,
+				foreignKeyColumn(field, parent, elementType, types, elements), target,
+				!"LAZY".equals(enumValue(field, ONE_TO_MANY, "fetch")));
+	}
+
+	/**
+	 * 外键列（子表上指回父表主键的列）：{@code @JoinColumn(name)} 优先；
+	 * 写了 {@code mappedBy} 时读子实体那一侧的 {@code @JoinColumn}；都没有则按父实体类名转下划线加 {@code _id}。
+	 */
+	private static String foreignKeyColumn(Element field, TypeElement parent, TypeMirror elementType, Types types,
+			Elements elements) {
+		String declared = annotationString(field, JOIN_COLUMN, "name");
+		if (isPresent(declared)) {
+			return declared;
+		}
+		String mappedBy = annotationString(field, ONE_TO_MANY, "mappedBy");
+		if (isPresent(mappedBy)) {
+			TypeElement child = (TypeElement) ((DeclaredType) types.erasure(elementType)).asElement();
+			Element back = findField(elements.getAllMembers(child), mappedBy);
+			if (back != null) {
+				String onChild = annotationString(back, JOIN_COLUMN, "name");
+				if (isPresent(onChild)) {
+					return onChild;
+				}
+			}
+		}
+		return snakeCase(entitySimpleName(parent)) + "_id";
+	}
+
+	private static Element findField(Iterable<? extends Element> members, String name) {
+		for (Element member : members) {
+			if (member.getKind() == ElementKind.FIELD && member.getSimpleName().contentEquals(name)) {
+				return member;
+			}
+		}
+		return null;
+	}
+
+	private static boolean isPresent(String value) {
+		return value != null && !value.isBlank();
+	}
+
+	private static boolean hasAnyAssociationAnnotation(Element field) {
+		for (AnnotationMirror mirror : field.getAnnotationMirrors()) {
+			if (ASSOCIATION_ANNOTATIONS.contains(annotationName(mirror))) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static void warn(Messager messager, String message, Element reportOn) {
+		messager.printMessage(Diagnostic.Kind.WARNING, message, reportOn);
 	}
 
 	private static boolean isSkipped(Element field) {
@@ -176,6 +307,27 @@ final class EntityIntrospector {
 				if (entry.getKey().getSimpleName().contentEquals(attribute)) {
 					AnnotationValue value = entry.getValue();
 					return (value == null) ? null : String.valueOf(value.getValue());
+				}
+			}
+			return null;
+		}
+		return null;
+	}
+
+	/** 注解里的枚举属性（如 {@code fetch = FetchType.LAZY}）取常量名；未写或读不到返回 {@code null}。 */
+	private static String enumValue(Element element, String annotationFqn, String attribute) {
+		for (AnnotationMirror mirror : element.getAnnotationMirrors()) {
+			if (!annotationName(mirror).contentEquals(annotationFqn)) {
+				continue;
+			}
+			for (var entry : mirror.getElementValues().entrySet()) {
+				if (entry.getKey().getSimpleName().contentEquals(attribute)) {
+					Object raw = entry.getValue().getValue();
+					if (raw instanceof VariableElement constant) {
+						return constant.getSimpleName().toString();
+					}
+					String text = String.valueOf(raw);
+					return text.substring(text.lastIndexOf('.') + 1);
 				}
 			}
 			return null;
