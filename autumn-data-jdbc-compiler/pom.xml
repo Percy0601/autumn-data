@@ -34,6 +34,17 @@
 		</dependency>
 
 		<!-- 处理器自测：用系统 JavaCompiler 起进程内编译 -->
+		<!-- 生成代码引用 JdbcClient / RowMapper / @Service，进程内编译产物时需要它们在测试类路径上（处理器本身不依赖 Spring） -->
+		<dependency>
+			<groupId>org.springframework</groupId>
+			<artifactId>spring-jdbc</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework</groupId>
+			<artifactId>spring-context</artifactId>
+			<scope>test</scope>
+		</dependency>
 		<dependency>
 			<groupId>org.junit.jupiter</groupId>
 			<artifactId>junit-jupiter</artifactId>

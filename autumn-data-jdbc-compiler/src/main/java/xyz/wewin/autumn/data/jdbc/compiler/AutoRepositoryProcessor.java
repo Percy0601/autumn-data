@@ -3,6 +3,7 @@ package xyz.wewin.autumn.data.jdbc.compiler;
 import java.io.IOException;
 import java.io.Writer;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import javax.annotation.processing.AbstractProcessor;
@@ -20,14 +21,20 @@ import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 import javax.tools.Diagnostic;
+import javax.tools.FileObject;
 import javax.tools.JavaFileObject;
+import javax.tools.StandardLocation;
 
 /**
- * JSR-269 注解处理器：为 {@code @AutumnRepository} 接口生成 {@code <名称>Impl} 实现骨架。
+ * JSR-269 注解处理器：为 {@code @AutumnRepository} 接口生成 {@code <名称>Impl} 实现。
  *
- * <p>当前为管道版（M2 第一步）：完成约定校验（必须是接口、必须继承 Repository&lt;T, ID&gt;）
- * 并生成可编译的方法骨架（暂抛 {@link UnsupportedOperationException}）。
- * 实体元数据提取、SQL 生成、RowMapper 生成是下一步（对应 docs/spring-data-derived-query.md 第 8 节）。</p>
+ * <p>流程：校验约定（必须是接口、必须继承 {@code Repository<T, ID>}）→ 提取实体元数据
+ * （{@link EntityIntrospector}）→ 生成标准 CRUD 的 SQL 并以 {@code .properties} 资源写入
+ * 编译输出目录（{@link CrudSqlGenerator}）→ 生成实现类源码（{@link ImplementationSource}）。
+ * 约定违规一律在编译期报错，不生成半成品。</p>
+ *
+ * <p>派生查询（{@code findByNameAndAge} 之类，见 docs/spring-data-derived-query.md 第 8 节）
+ * 是下一步；当前覆盖 {@code CrudRepository} 的标准方法清单。</p>
  */
 @SupportedAnnotationTypes("xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository")
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
@@ -63,13 +70,21 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 			}
 			String entity = sourceName(binding.getTypeArguments().get(0), types);
 			String id = sourceName(binding.getTypeArguments().get(1), types);
+			EntityMetadata metadata = EntityIntrospector.introspect(binding.getTypeArguments().get(0), elements,
+					types, processingEnv.getMessager(), repositoryInterface);
+			if (metadata == null) {
+				continue;
+			}
 			String packageName = elements.getPackageOf(repositoryInterface).getQualifiedName().toString();
+			String resource = CrudSqlGenerator.resourcePath(repositoryInterface.getQualifiedName().toString());
 			try {
-				writeImplementation(repositoryInterface, packageName, entity, id, processingEnv.getFiler());
+				writeSqlResource(resource, metadata, CrudSqlGenerator.generate(metadata), processingEnv.getFiler());
+				writeImplementation(repositoryInterface, packageName, entity, id, metadata, resource,
+						processingEnv.getFiler());
 			}
 			catch (IOException ex) {
-				error("Failed to generate implementation for " + repositoryInterface.getQualifiedName()
-						+ ": " + ex, repositoryInterface);
+				error("Failed to generate implementation for " + repositoryInterface.getQualifiedName() + ": " + ex,
+						repositoryInterface);
 			}
 		}
 		return false;
@@ -117,8 +132,16 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 		return "java.lang.Object";
 	}
 
+	private static void writeSqlResource(String resource, EntityMetadata metadata, Map<String, String> statements,
+			Filer filer) throws IOException {
+		FileObject file = filer.createResource(StandardLocation.CLASS_OUTPUT, "", resource);
+		try (Writer writer = file.openWriter()) {
+			writer.write(CrudSqlGenerator.toPropertiesText(metadata, statements));
+		}
+	}
+
 	private static void writeImplementation(TypeElement repositoryInterface, String packageName, String entity,
-			String id, Filer filer) throws IOException {
+			String id, EntityMetadata metadata, String sqlResource, Filer filer) throws IOException {
 		String simpleName = repositoryInterface.getSimpleName() + "Impl";
 		String qualifiedName = packageName.isEmpty() ? simpleName : packageName + "." + simpleName;
 		JavaFileObject file = filer.createSourceFile(qualifiedName, repositoryInterface);
@@ -127,7 +150,7 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 				writer.write("package " + packageName + ";\n\n");
 			}
 			writer.write(ImplementationSource.generate(repositoryInterface.getSimpleName().toString(), simpleName,
-					entity, id));
+					entity, id, metadata, sqlResource));
 		}
 	}
 
