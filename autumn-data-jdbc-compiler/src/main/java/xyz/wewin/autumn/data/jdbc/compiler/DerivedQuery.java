@@ -9,14 +9,20 @@ import java.util.List;
  * {@code private static final String} 常量，运行期不做任何方法名解析。</p>
  *
  * @param methodName 接口上的方法名，同时决定生成类里的 SQL 常量名
- * @param kind 结果形态，决定调用 {@code query / queryOptional / count}
+ * @param kind 结果形态，决定调用 {@code query / queryOptional / count / update}
  * @param returnTypeSource 返回类型的源码形态，用于生成方法签名
  * @param parameters 形参表，用于生成方法签名
  * @param bindings 占位符的取值来源，顺序与 SQL 里的 {@code ?} 严格一致
- * @param sql 解析出的完整语句，集合条件保留 {@code :ids} 标记由运行期展开
+ * @param sql 解析出的主语句：{@code SELECT}/{@code COUNT(*)} 或 {@code deleteBy} 的 {@code DELETE}
+ * @param selectSql 仅 {@code deleteBy} 返回实体列表时用：先按条件 {@code SELECT} 把要删的行取回再删，
+ *            其余形态为空串
+ * @param distinct 主语是否带 {@code Distinct}
+ * @param limit {@code First/Top} 施加的行数上限（{@code 0} 表示不限制，由方言在运行期拼 {@code LIMIT}）
+ * @param custom 是否来自 {@code @Query}：是则跳过一对多装配（自定义 SQL 未必选了外键列）
  */
 record DerivedQuery(String methodName, DerivedQuery.Kind kind, String returnTypeSource, List<Parameter> parameters,
-		List<DerivedQuery.Binding> bindings, String sql) {
+		List<DerivedQuery.Binding> bindings, String sql, String selectSql, boolean distinct, long limit,
+		boolean custom) {
 
 	/** 生成方法的结果形态。 */
 	enum Kind {
@@ -30,8 +36,33 @@ record DerivedQuery(String methodName, DerivedQuery.Kind kind, String returnType
 		/** 计数。 */
 		COUNT,
 
-		/** 存在性判断。 */
-		EXISTS
+	/** 存在性判断。 */
+	EXISTS,
+
+	/** 删除并返因删除条数（{@code long}）。 */
+	DELETE,
+
+	/** 删除并返回被删实体（{@code List<T>}）。 */
+	DELETE_LIST
+	}
+
+	/**
+	 * 取数时对实参做的 LIKE 模式包裹：{@code Containing/StartsWith/EndsWith} 一类在运行期把实参包成
+	 * {@code %v%} / {@code v%} / {@code %v}，其余原样传参。
+	 */
+	enum Transform {
+
+		/** 原样传参。 */
+		NONE,
+
+		/** 包裹为 {@code %value%}（Containing/Contains）。 */
+		CONTAINS,
+
+		/** 包裹为 {@code value%}（StartingWith/StartsWith）。 */
+		STARTS_WITH,
+
+		/** 包裹为 {@code %value}（EndingWith/EndsWith）。 */
+		ENDS_WITH
 	}
 
 	/**
@@ -39,8 +70,9 @@ record DerivedQuery(String methodName, DerivedQuery.Kind kind, String returnType
 	 *
 	 * @param expression 取值表达式，即接口方法里的形参名
 	 * @param collectionValues 该参数的值是集合，运行期展开成 IN 列表
+	 * @param transform 取值后是否做 LIKE 模式包裹
 	 */
-	record Binding(String expression, boolean collectionValues) {
+	record Binding(String expression, boolean collectionValues, Transform transform) {
 	}
 
 	/**

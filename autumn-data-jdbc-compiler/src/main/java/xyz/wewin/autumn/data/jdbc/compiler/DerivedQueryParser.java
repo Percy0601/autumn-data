@@ -3,12 +3,14 @@ package xyz.wewin.autumn.data.jdbc.compiler;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.List;
 import java.util.Locale;
 import java.util.stream.Collectors;
 
 import xyz.wewin.autumn.data.jdbc.compiler.DerivedQuery.Binding;
 import xyz.wewin.autumn.data.jdbc.compiler.DerivedQuery.Kind;
 import xyz.wewin.autumn.data.jdbc.compiler.DerivedQuery.Parameter;
+import xyz.wewin.autumn.data.jdbc.compiler.DerivedQuery.Transform;
 import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Association;
 import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Column;
 
@@ -20,16 +22,18 @@ import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Column;
  * <p>纯函数：输入方法名、返回类型、形参表和实体元数据，产出结果或抛 {@link DerivedQueryException}，
  * 不碰编译器 API，因此可以脱离 APT 直接单测。</p>
  *
- * <p><b>首期覆盖</b>：主语 {@code find/read/get/query/search/stream}、{@code count}、{@code exists}；
- * 关键词见 {@link #KEYWORDS}；{@code And}/{@code Or} 组合与 {@code OrderBy}；属性既可以是实体自己的字段，
- * 也可以是一层关联路径（{@code findByOrdersOrderNo} 这类一对多条件，见 {@link #resolveProperty}）。
- * 表外的构造（{@code Distinct}、{@code First/Top} 行数限制、{@code deleteBy}、两层以上关联、
- * {@code StartingWith} 这类要方言拼字符串的关键词、裸实体返回值）一律显式报错，
- * 由 {@link AutoRepositoryProcessor} 定位到方法声明 —— 编译期说清楚，不静默生成半成品。</p>
+ * <p><b>覆盖</b>：主语 {@code find/read/get/query/search/stream}、{@code count}、{@code exists}、
+ * {@code delete/remove}；关键词见 {@link #KEYWORDS}（含 {@code Like} 家族与 {@code IgnoreCase} 修饰符、
+ * {@code IsNot/Not}、{@code IsTrue/IsFalse} 等，与 Spring Data 对齐）；
+ * {@code And}/{@code Or} 组合与 {@code OrderBy}；属性既可以是实体自己的字段，也可以是一层关联路径
+ * （{@code findByOrdersOrderNo} 这类一对多条件，见 {@link #resolveProperty}）。
+ * 形态修饰：{@code Distinct}（{@code SELECT DISTINCT}）、{@code First/Top N}（方言 {@code LIMIT} 行数上限，
+ * 由运行期拼接到语句后）、{@code deleteBy}（返回 {@code long} 计数 或 {@code List<T>} 已删实体，后者先
+ * {@code SELECT} 取回再 {@code DELETE}）。</p>
  */
 final class DerivedQueryParser {
 
-	/** 主语动词（规范第 2 节）；{@code delete/remove} 首期不生成，命中后单独给原因。 */
+	/** 主语动词（规范第 2 节）；{@code delete/remove} 由 {@link #kindOf} 按返回类型决定删计数还是删实体。 */
 	private static final List<String> VERBS = List.of("find", "read", "get", "query", "search", "stream", "count",
 			"exists", "delete", "remove");
 
@@ -39,23 +43,53 @@ final class DerivedQueryParser {
 	private static final String IN_MARKER = CrudSqlGenerator.IN_MARKER;
 
 	/**
-	 * 关键词表：方法名后缀 →（消耗参数个数，SQL 片段模板）。按后缀长度倒序匹配，
-	 * 保证 {@code GreaterThanEqual} 不被 {@code GreaterThan} 抢走、{@code IsNotNull} 不被 {@code NotNull} 截断。
-	 * {@code fragment} 为 null 表示认得这个词但首期不生成，报错时给出原因。
+	 * 关键词表：方法名后缀 →（消耗参数个数，SQL 片段模板，取数时的 LIKE 包裹形态）。按后缀长度倒序匹配，
+	 * 保证 {@code GreaterThanEqual} 不被 {@code GreaterThan} 抢走、{@code IsNotNull} 不被 {@code NotNull} 截断、
+	 * {@code NotContains} 不被 {@code Contains} 截断、{@code IsNot} 不被 {@code Not} 截断。
+	 * {@code StartingWith/EndingWith/Containing} 这类本来要方言拼接字符串的，这里统一用内联
+	 * {@code %?%} / {@code ?%} / {@code %?} 模式在运行期包裹实参（见 {@link #bind} 与
+	 * {@link xyz.wewin.autumn.data.jdbc.compiler.ImplementationSource}），不再报错；
+	 * {@code fragment} 为 null 仅作保留位，当前没有任何关键词命中它。
 	 */
 	private static final List<Keyword> KEYWORDS = List
-		.of(new Keyword("GreaterThanEqual", 1, "%s >= ?"), new Keyword("LessThanEqual", 1, "%s <= ?"),
-			new Keyword("NotBetween", 2, "%s NOT BETWEEN ? AND ?"), new Keyword("StartingWith", 1, null),
-			new Keyword("EndingWith", 1, null), new Keyword("IsNotNull", 0, "%s IS NOT NULL"),
-			new Keyword("NotGreaterThan", 1, "%s <= ?"), new Keyword("NotLessThan", 1, "%s >= ?"),
-			new Keyword("GreaterThan", 1, "%s > ?"), new Keyword("LessThan", 1, "%s < ?"),
-			new Keyword("NotLike", 1, "%s NOT LIKE ?"), new Keyword("NotEqual", 1, "%s <> ?"),
-			new Keyword("Between", 2, "%s BETWEEN ? AND ?"), new Keyword("NotNull", 0, "%s IS NOT NULL"),
-			new Keyword("NotIn", 1, "%s NOT IN (" + IN_MARKER + ")"), new Keyword("Equals", 1, "%s = ?"),
-			new Keyword("IsNull", 0, "%s IS NULL"), new Keyword("After", 1, "%s > ?"),
-			new Keyword("Before", 1, "%s < ?"), new Keyword("Equal", 1, "%s = ?"), new Keyword("Like", 1, "%s LIKE ?"),
-			new Keyword("True", 0, "%s = TRUE"), new Keyword("False", 0, "%s = FALSE"),
-			new Keyword("Null", 0, "%s IS NULL"), new Keyword("In", 1, "%s IN (" + IN_MARKER + ")"))
+		.of(new Keyword("GreaterThanEqual", 1, "%s >= ?", Transform.NONE),
+			new Keyword("LessThanEqual", 1, "%s <= ?", Transform.NONE),
+			new Keyword("NotBetween", 2, "%s NOT BETWEEN ? AND ?", Transform.NONE),
+			new Keyword("NotContaining", 1, "%s NOT LIKE ?", Transform.CONTAINS),
+			new Keyword("NotContains", 1, "%s NOT LIKE ?", Transform.CONTAINS),
+			new Keyword("StartingWith", 1, "%s LIKE ?", Transform.STARTS_WITH),
+			new Keyword("EndingWith", 1, "%s LIKE ?", Transform.ENDS_WITH),
+			new Keyword("Contains", 1, "%s LIKE ?", Transform.CONTAINS),
+			new Keyword("Containing", 1, "%s LIKE ?", Transform.CONTAINS),
+			new Keyword("StartsWith", 1, "%s LIKE ?", Transform.STARTS_WITH),
+			new Keyword("EndsWith", 1, "%s LIKE ?", Transform.ENDS_WITH),
+			new Keyword("IsNotNull", 0, "%s IS NOT NULL", Transform.NONE),
+			new Keyword("NotNull", 0, "%s IS NOT NULL", Transform.NONE),
+			new Keyword("NotGreaterThan", 1, "%s <= ?", Transform.NONE),
+			new Keyword("NotLessThan", 1, "%s >= ?", Transform.NONE),
+			new Keyword("GreaterThan", 1, "%s > ?", Transform.NONE),
+			new Keyword("LessThan", 1, "%s < ?", Transform.NONE),
+			new Keyword("NotLike", 1, "%s NOT LIKE ?", Transform.NONE),
+			new Keyword("Between", 2, "%s BETWEEN ? AND ?", Transform.NONE),
+			new Keyword("IsNotEmpty", 0, "%s <> ''", Transform.NONE),
+			new Keyword("NotEqual", 1, "%s <> ?", Transform.NONE),
+			new Keyword("NotIn", 1, "%s NOT IN (" + IN_MARKER + ")", Transform.NONE),
+			new Keyword("Equals", 1, "%s = ?", Transform.NONE),
+			new Keyword("IsNull", 0, "%s IS NULL", Transform.NONE),
+			new Keyword("IsNot", 1, "%s <> ?", Transform.NONE),
+			new Keyword("Not", 1, "%s <> ?", Transform.NONE),
+			new Keyword("After", 1, "%s > ?", Transform.NONE),
+			new Keyword("Before", 1, "%s < ?", Transform.NONE),
+			new Keyword("Equal", 1, "%s = ?", Transform.NONE),
+			new Keyword("Like", 1, "%s LIKE ?", Transform.NONE),
+			new Keyword("IsTrue", 0, "%s = TRUE", Transform.NONE),
+			new Keyword("IsFalse", 0, "%s = FALSE", Transform.NONE),
+			new Keyword("True", 0, "%s = TRUE", Transform.NONE),
+			new Keyword("False", 0, "%s = FALSE", Transform.NONE),
+			new Keyword("Null", 0, "%s IS NULL", Transform.NONE),
+			new Keyword("Empty", 0, "%s = ''", Transform.NONE),
+			new Keyword("IsEmpty", 0, "%s = ''", Transform.NONE),
+			new Keyword("In", 1, "%s IN (" + IN_MARKER + ")", Transform.NONE))
 		.stream()
 		.sorted(Comparator.comparingInt((Keyword keyword) -> keyword.suffix().length()).reversed())
 		.toList();
@@ -80,12 +114,77 @@ final class DerivedQueryParser {
 		List<Atom> atoms = branches.stream().flatMap(List::stream).toList();
 		Kind kind = kindOf(subject, returnTypeSource, meta, methodName);
 		List<Binding> bindings = bind(atoms, parameters, methodName);
-		// 计数/存在性判断没有行序概念，带上 ORDER BY 在 PostgreSQL 里还会因非聚合列报错
-		String orderSql = (kind == Kind.COUNT || kind == Kind.EXISTS || ordering.sql().isEmpty()) ? ""
+		boolean isCountOrExists = kind == Kind.COUNT || kind == Kind.EXISTS;
+		boolean isDelete = kind == Kind.DELETE || kind == Kind.DELETE_LIST;
+		// 计数/存在性判断与删除没有行序概念（前者在 PostgreSQL 还会因非聚合列报错），带上 ORDER BY 无意义
+		String orderSql = (isCountOrExists || isDelete || ordering.sql().isEmpty()) ? ""
 				: " ORDER BY " + ordering.sql();
-		String sql = "SELECT " + (kind == Kind.COUNT || kind == Kind.EXISTS ? "COUNT(*)" : columns(meta)) + " FROM "
-				+ meta.table() + whereClause(branches) + orderSql;
-		return new DerivedQuery(methodName, kind, returnTypeSource, parameters, bindings, sql);
+		String where = whereClause(branches);
+		String distinctPrefix = subject.distinct() ? "DISTINCT " : "";
+		String selectSql;
+		String mainSql;
+		if (isDelete) {
+			// deleteBy 返回实体列表时，先 SELECT 把要删的行取回再 DELETE，两条语句共用同一 WHERE
+			selectSql = "SELECT " + distinctPrefix + columns(meta) + " FROM " + meta.table() + where + orderSql;
+			mainSql = "DELETE FROM " + meta.table() + where;
+		}
+		else {
+			String projection = isCountOrExists ? "COUNT(*)" : distinctPrefix + columns(meta);
+			mainSql = "SELECT " + projection + " FROM " + meta.table() + where + orderSql;
+			selectSql = "";
+		}
+		return new DerivedQuery(methodName, kind, returnTypeSource, parameters, bindings, mainSql, selectSql,
+				subject.distinct(), subject.limit(), false);
+	}
+
+	/**
+	 * 从 {@code @Query} 给出的 SQL 直接构造派生查询结果：不解析方法名，参数按声明顺序绑定到 {@code ?} 占位符。
+	 *
+	 * @param methodName 接口方法名（决定生成类里的 SQL 常量名）
+	 * @param sql 注解里写死的 SQL
+	 * @param returnTypeSource 返回类型源码形态
+	 * @param parameters 形参表（顺序即绑定顺序）
+	 * @throws DerivedQueryException 返回类型不在支持集合内
+	 */
+	static DerivedQuery custom(String methodName, String sql, String returnTypeSource, List<Parameter> parameters) {
+		Kind kind;
+		boolean select = isSelect(sql);
+		if (returnTypeSource.startsWith("java.util.List<")) {
+			kind = Kind.LIST;
+		}
+		else if (returnTypeSource.startsWith("java.util.Optional<")) {
+			kind = Kind.OPTIONAL;
+		}
+		else if (returnTypeSource.equals("void")) {
+			if (select) {
+				throw new DerivedQueryException("derived query '" + methodName
+						+ "' with @Query returns void but the SQL is a SELECT - return a List/Optional or change the SQL");
+			}
+			kind = Kind.DELETE;
+		}
+		else if (returnTypeSource.equals("long") || returnTypeSource.equals("java.lang.Long")
+				|| returnTypeSource.equals("int") || returnTypeSource.equals("java.lang.Integer")) {
+			kind = select ? Kind.COUNT : Kind.DELETE;
+		}
+		else {
+			throw new DerivedQueryException("derived query '" + methodName + "' with @Query must return"
+					+ " java.util.List<Entity>, java.util.Optional<Entity>, void, or a numeric count/update result,"
+					+ " but declares " + returnTypeSource);
+		}
+		List<Binding> bindings = new ArrayList<>();
+		for (Parameter parameter : parameters) {
+			bindings.add(new Binding(parameter.name(), parameter.collection(), Transform.NONE));
+		}
+		return new DerivedQuery(methodName, kind, returnTypeSource, parameters, bindings, sql, "", false, 0L, true);
+	}
+
+	/** SQL 是否以 {@code SELECT} 开头（忽略前导空白、忽略大小写）。 */
+	private static boolean isSelect(String sql) {
+		int i = 0;
+		while (i < sql.length() && Character.isWhitespace(sql.charAt(i))) {
+			i++;
+		}
+		return i + 6 <= sql.length() && sql.regionMatches(true, i, "select", 0, 6);
 	}
 
 	private static String columns(EntityMetadata meta) {
@@ -106,18 +205,27 @@ final class DerivedQueryParser {
 		}
 		if (verb == null) {
 			throw fail(methodName,
-					"unrecognised subject; derived queries start with find/read/get/query/search/stream/count/exists");
-		}
-		if (verb.equals("delete") || verb.equals("remove")) {
-			throw fail(methodName, "'" + verb + "By' is not generated yet - use deleteById/deleteAllById for now");
+					"unrecognised subject; derived queries start with find/read/get/query/search/stream/count/exists/delete");
 		}
 		String rest = methodName.substring(verb.length());
+		boolean distinct = false;
 		if (rest.startsWith("Distinct")) {
-			throw fail(methodName, "Distinct is not supported yet");
+			distinct = true;
+			rest = rest.substring("Distinct".length());
 		}
+		// First/Top 行数上限：{@code findFirstBy} / {@code findTopBy} 默认 1，{@code findTop3By} 取 3；
+		// 数字由编译期解析成常量，运行期经方言拼 {@code LIMIT}
+		long limit = 0L;
 		if (rest.startsWith("First") || rest.startsWith("Top")) {
-			throw fail(methodName,
-					"findFirst/findTop impose a row limit through the dialect, which is not generated yet");
+			int prefix = rest.startsWith("First") ? "First".length() : "Top".length();
+			String after = rest.substring(prefix);
+			int end = 0;
+			while (end < after.length() && Character.isDigit(after.charAt(end))) {
+				end++;
+			}
+			String digits = after.substring(0, end);
+			limit = digits.isEmpty() ? 1L : Long.parseLong(digits);
+			rest = after.substring(end);
 		}
 		if (rest.startsWith("All")) {
 			rest = rest.substring("All".length());
@@ -142,7 +250,7 @@ final class DerivedQueryParser {
 			case "exists" -> Kind.EXISTS;
 			default -> Kind.LIST;
 		};
-		return new Subject(verb, kind, predicateText);
+		return new Subject(verb, kind, predicateText, distinct, limit);
 	}
 
 	private static String beforeBy(String rest) {
@@ -233,18 +341,28 @@ final class DerivedQueryParser {
 		return -1;
 	}
 
-	/** 一个原子谓词：先拿整个片段当属性名试（等值），再按最长关键词后缀切。 */
+	/** 一个原子谓词：先剥离 {@code IgnoreCase} 修饰符，再拿整个片段当属性名试（等值），最后按最长关键词后缀切。 */
 	private static Atom atomOf(String atom, EntityMetadata meta, String methodName) {
-		Resolved exact = resolveProperty(atom, meta);
+		boolean ignoreCase = false;
+		String base = atom;
+		if (base.endsWith("IgnoreCase")) {
+			ignoreCase = true;
+			base = base.substring(0, base.length() - "IgnoreCase".length());
+		}
+		else if (base.endsWith("IgnoringCase")) {
+			ignoreCase = true;
+			base = base.substring(0, base.length() - "IgnoringCase".length());
+		}
+		Resolved exact = resolveProperty(base, meta);
 		if (exact != null) {
-			return new Atom(exact.wrap("%s = ?", meta), 1, false);
+			return new Atom(exact.wrap("%s = ?", meta, ignoreCase), 1, false, Transform.NONE);
 		}
 		String unresolvableProperty = null;
 		for (Keyword keyword : KEYWORDS) {
-			if (atom.length() <= keyword.suffix().length() || !atom.endsWith(keyword.suffix())) {
+			if (base.length() <= keyword.suffix().length() || !base.endsWith(keyword.suffix())) {
 				continue;
 			}
-			String property = atom.substring(0, atom.length() - keyword.suffix().length());
+			String property = base.substring(0, base.length() - keyword.suffix().length());
 			Resolved resolved = resolveProperty(property, meta);
 			if (resolved == null) {
 				if (unresolvableProperty == null) {
@@ -256,10 +374,10 @@ final class DerivedQueryParser {
 				throw fail(methodName, "'" + keyword.suffix() + "' is not implemented yet - it needs dialect-aware"
 						+ " string concatenation; use Like and pass the pattern");
 			}
-			return new Atom(resolved.wrap(keyword.fragment(), meta), keyword.arity(),
-					keyword.suffix().endsWith("In"));
+			return new Atom(resolved.wrap(keyword.fragment(), meta, ignoreCase), keyword.arity(),
+					keyword.suffix().endsWith("In"), keyword.transform());
 		}
-		throw unknownProperty(unresolvableProperty != null ? unresolvableProperty : atom, meta, methodName);
+		throw unknownProperty(unresolvableProperty != null ? unresolvableProperty : base, meta, methodName);
 	}
 
 	private static String fieldNames(EntityMetadata meta) {
@@ -267,22 +385,37 @@ final class DerivedQueryParser {
 	}
 
 	/**
-	 * 属性名 → SQL 列落点：先按本实体字段匹配，再尝试一层关联路径（{@code OrdersOrderNo} 即
-	 * 关联 {@code orders} 的子实体字段 {@code orderNo}）。解析不出返回 null，由调用方决定报错文案。
+	 * 属性名 → SQL 列落点：先按本实体字段匹配，再沿关联路径走（{@code OrdersOrderNo} 即关联
+	 * {@code orders} 的子实体字段 {@code orderNo}；{@code OrdersItemsSku} 再下一层到 {@code Item.sku}）。
+	 * 解析不出返回 null，由调用方决定报错文案。
 	 *
 	 * <p>关联条件写成相关子查询而不是 JOIN：{@code EXISTS} 天然按存在性过滤，父行不会因一对多重复，
-	 * 所以父表的列清单、{@code ROW_MAPPER} 和已有的关联装配都不用改，也不依赖方言。</p>
+	 * 所以父表的列清单、{@code ROW_MAPPER} 和已有的关联装配都不用改，也不依赖方言。多对一与一对多在
+	 * 子查询里的连接方向不同（前者 {@code child.id = parent.fk}，后者 {@code child.fk = parent.id}），
+	 * 由 {@link Resolved#wrap} 按每层关联的形态拼出。</p>
 	 */
 	private static Resolved resolveProperty(String property, EntityMetadata meta) {
+		return resolvePath(property, meta, List.of());
+	}
+
+	/** 沿 <b>已走过的关联</b> 递归解析：当前实体的直接列优先，否则试每一层关联再下钻到子实体。 */
+	private static Resolved resolvePath(String property, EntityMetadata meta, List<Association> prefix) {
 		Column direct = columnFor(property, meta);
 		if (direct != null) {
-			return new Resolved(direct.column(), null);
+			// 根实体上的直接列不带表前缀（避免 SELECT 列名重复）；子实体上的列带表前缀以免歧义
+			String token = prefix.isEmpty() ? direct.column() : meta.table() + "." + direct.column();
+			return new Resolved(token, prefix);
 		}
 		for (Association association : meta.associations()) {
 			String childProperty = childPropertyOf(property, association);
-			Column child = childProperty == null ? null : columnFor(childProperty, association.target());
+			if (childProperty == null) {
+				continue;
+			}
+			List<Association> next = new ArrayList<>(prefix);
+			next.add(association);
+			Resolved child = resolvePath(childProperty, association.target(), next);
 			if (child != null) {
-				return new Resolved(association.target().table() + "." + child.column(), association);
+				return child;
 			}
 		}
 		return null;
@@ -363,7 +496,7 @@ final class DerivedQueryParser {
 					throw fail(methodName, "IN condition needs a Collection argument, but '" + parameter.name()
 							+ "' is " + parameter.typeSource());
 				}
-				bindings.add(new Binding(parameter.name(), atom.inList()));
+				bindings.add(new Binding(parameter.name(), atom.inList(), atom.transform()));
 			}
 		}
 		if (cursor != parameters.size()) {
@@ -375,6 +508,18 @@ final class DerivedQueryParser {
 
 	/** 返回类型决定结果形态；裸实体首期不生成（0 行时无法表达，规范第 2 节也推荐 {@code Optional}）。 */
 	private static Kind kindOf(Subject subject, String returnTypeSource, EntityMetadata meta, String methodName) {
+		if (subject.verb().equals("delete") || subject.verb().equals("remove")) {
+			String entity = meta.qualifiedName();
+			if (returnTypeSource.equals("java.util.List<" + entity + ">")) {
+				return Kind.DELETE_LIST;
+			}
+			if (returnTypeSource.equals("long") || returnTypeSource.equals("java.lang.Long")) {
+				return Kind.DELETE;
+			}
+			throw fail(methodName, "'" + subject.verb() + "By' must return java.util.List<" + entity
+					+ "> (the deleted rows) or long (the number of deleted rows), but the method declares "
+					+ returnTypeSource);
+		}
 		if (subject.kind() == Kind.COUNT || subject.kind() == Kind.EXISTS) {
 			String expected = subject.kind() == Kind.COUNT ? "long" : "boolean";
 			if (returnTypeSource.equals(expected) || returnTypeSource.equals(boxed(expected))) {
@@ -407,37 +552,60 @@ final class DerivedQueryParser {
 	}
 
 	/** 关键词表的一项。 */
-	private record Keyword(String suffix, int arity, String fragment) {
+	private record Keyword(String suffix, int arity, String fragment, Transform transform) {
 	}
 
-	/** 切出来的主语。 */
-	private record Subject(String verb, Kind kind, String predicateText) {
+	/** 切出来的主语：动词 + 结果形态 + 谓词 + Distinct/First-Top 修饰。 */
+	private record Subject(String verb, Kind kind, String predicateText, boolean distinct, long limit) {
 	}
 
 	/** 拆开的谓词：纯条件片段 + 已渲染的排序片段（无排序时为空串）。 */
 	private record Ordering(String predicateText, String sql) {
 	}
 
-	/** 一个原子谓词：SQL 片段 + 消耗几个参数 + 值是否需要展开成 IN 列表。 */
-	private record Atom(String sql, int arity, boolean inList) {
+	/** 一个原子谓词：SQL 片段 + 消耗几个参数 + 值是否需要展开成 IN 列表 + 取数时是否做 LIKE 包裹。 */
+	private record Atom(String sql, int arity, boolean inList, Transform transform) {
 	}
 
 	/**
-	 * 属性落点：本表列，或经一层一对多关联落在子表列上。
+	 * 属性落点：本表列，或经若干层关联（一对多 / 多对一）落在子表列上。
 	 *
-	 * @param columnToken 片段里 {@code %s} 要替换的列引用（关联时已带子表名前缀）
-	 * @param via 经由的关联；直接落在本表列时为 null
+	 * @param columnToken 片段里 {@code %s} 要替换的列引用（子表列已带表名前缀）
+	 * @param path 途经的关联（从根到叶）；空列表表示直接落在本表列
 	 */
-	private record Resolved(String columnToken, Association via) {
+	private record Resolved(String columnToken, List<Association> path) {
 
-		String wrap(String fragment, EntityMetadata parent) {
-			String condition = String.format(fragment, this.columnToken);
-			if (this.via == null) {
+		/**
+		 * 生成最终的 SQL 条件：最里层是列比较，外层按途经的每一层关联包一层 {@code EXISTS} 相关子查询。
+		 * 每层的连接方向由关联形态决定：一对多是 {@code child.fk = parent.id}，多对一是 {@code child.id = parent.fk}。
+		 *
+		 * @param fragment 形如 {@code "%s = ?"} 的 SQL 模板
+		 * @param root 根实体元数据（最外层关联的父表）
+		 * @param ignoreCase 是否用 {@code LOWER} 包裹列与参数
+		 */
+		String wrap(String fragment, EntityMetadata root, boolean ignoreCase) {
+			String column = ignoreCase ? "LOWER(" + this.columnToken + ")" : this.columnToken;
+			String condition = String.format(fragment, column);
+			if (ignoreCase) {
+				condition = condition.replace("?", "LOWER(?)");
+			}
+			if (this.path.isEmpty()) {
 				return condition;
 			}
-			String childTable = this.via.target().table();
-			return "EXISTS (SELECT 1 FROM " + childTable + " WHERE " + childTable + "." + this.via.foreignKeyColumn()
-					+ " = " + parent.table() + "." + parent.id().column() + " AND " + condition + ")";
+			String inner = condition;
+			for (int i = this.path.size() - 1; i >= 0; i--) {
+				Association hop = this.path.get(i);
+				EntityMetadata parent = (i == 0) ? root : this.path.get(i - 1).target();
+				String parentTable = parent.table();
+				String childTable = hop.target().table();
+				String join = hop.toOne()
+						? childTable + "." + hop.target().id().column() + " = " + parentTable + "."
+								+ hop.foreignKeyColumn()
+						: childTable + "." + hop.foreignKeyColumn() + " = " + parentTable + "."
+								+ ((i == 0) ? root.id().column() : this.path.get(i - 1).target().id().column());
+				inner = "EXISTS (SELECT 1 FROM " + childTable + " WHERE " + join + " AND " + inner + ")";
+			}
+			return inner;
 		}
 	}
 }

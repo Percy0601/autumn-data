@@ -9,6 +9,8 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import xyz.wewin.autumn.data.jdbc.compiler.DerivedQuery.Binding;
+import xyz.wewin.autumn.data.jdbc.compiler.DerivedQuery.Kind;
+import xyz.wewin.autumn.data.jdbc.compiler.DerivedQuery.Transform;
 import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Association;
 import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Column;
 
@@ -94,12 +96,18 @@ final class ImplementationSource {
 				.append(escapeJava(statement.getValue())).append("\";\n\n");
 		}
 		for (int i = 0; i < this.queries.size(); i++) {
+			DerivedQuery query = this.queries.get(i);
 			sb.append("\tprivate static final String ").append(queryConstNames.get(i)).append(" = \"")
-				.append(escapeJava(this.queries.get(i).sql())).append("\";\n\n");
+				.append(escapeJava(query.sql())).append("\";\n\n");
+			// deleteBy 返回实体列表时，另存一条 SELECT 常量：运行期先取回要删的行再删
+			if (query.kind() == Kind.DELETE_LIST) {
+				sb.append("\tprivate static final String ").append(queryConstNames.get(i)).append("_SELECT = \"")
+					.append(escapeJava(query.selectSql())).append("\";\n\n");
+			}
 		}
 		sb.append(rowMapperField(this.meta, "ROW_MAPPER", this.entity));
 			for (Association association : eagerAssociations()) {
-				sb.append(childRowMapperField(association));
+				sb.append(association.toOne() ? childRowMapperFieldToOne(association) : childRowMapperField(association));
 			}
 			sb.append("\tprivate final " + AUTUMN_JDBC + " autumn;\n\n");
 			sb.append(constructor());
@@ -131,13 +139,15 @@ final class ImplementationSource {
 			sb.append(method("void deleteAll()",
 					"this.autumn.update(" + sqlConst(CrudSqlGenerator.DELETE_ALL) + ");"));
 			for (int i = 0; i < this.queries.size(); i++) {
-				sb.append(method(derivedSignature(this.queries.get(i)),
-						derivedBody(this.queries.get(i), queryConstNames.get(i))));
+				DerivedQuery query = this.queries.get(i);
+				String constName = queryConstNames.get(i);
+				String selectConstName = query.kind() == Kind.DELETE_LIST ? constName + "_SELECT" : "";
+				sb.append(method(derivedSignature(query), derivedBody(query, constName, selectConstName)));
 			}
 			sb.append(privateMethod("insert", "void", this.entity + " entity", insertBody()));
 			for (Association association : eagerAssociations()) {
 				sb.append(childRowMethod(association));
-				sb.append(attachMethod(association));
+				sb.append(association.toOne() ? attachToOneMethod(association) : attachMethod(association));
 			}
 			sb.append("}\n");
 			return sb.toString();
@@ -206,44 +216,82 @@ final class ImplementationSource {
 		}
 
 		/**
-		 * 派生查询的方法体：结果形态决定调 {@code query / queryOptional / count}。
+		 * 派生查询的方法体：结果形态决定调 {@code query / queryOptional / count / update}。
 		 *
 		 * <p>带集合条件时，SQL 走 {@code Sql.inClause} 按集合大小展开占位符，实参先收进一个列表再整体传入
 		 * —— 标量与集合混在一起时 varargs 拼不出来。结果实体若配了一对多关联，复用 {@link #loaded} 的装配路径，
 		 * 所以派生查询和 {@code findAll} 一样不会出 N+1。</p>
+		 *
+		 * <p>{@code Distinct} 已在编译期写进 SELECT 投影；{@code First/Top N} 把行数上限作为字面量传给
+		 * {@code AutumnJdbc} 的带 {@code limit} 重载，由方言在运行期拼 {@code LIMIT}；{@code deleteBy} 返回
+		 * {@code long} 走 {@code update} 拿受影响行数，返回 {@code List<T>} 先 {@code SELECT} 取回再 {@code DELETE}。</p>
 		 */
-		private String derivedBody(DerivedQuery query, String constName) {
+		private String derivedBody(DerivedQuery query, String constName, String selectConstName) {
 			List<Binding> bindings = query.bindings();
 			Binding collection = bindings.stream().filter(Binding::collectionValues).findFirst().orElse(null);
 			StringBuilder prelude = new StringBuilder();
 			String sqlArgument = constName;
 			String valueArguments;
-			if (collection == null) {
-				valueArguments = bindings.stream().map(Binding::expression).collect(Collectors.joining(", "));
+		if (collection == null) {
+			valueArguments = bindings.stream().map(this::valueExpressionFor).collect(Collectors.joining(", "));
+		}
+		else {
+			sqlArgument = SQL_HELPER + ".inClause(" + constName + ", " + collection.expression() + ".size())";
+			prelude.append("java.util.List<Object> values = new java.util.ArrayList<>();\n");
+			for (Binding binding : bindings) {
+				prelude.append(binding.collectionValues() ? "values.addAll(" : "values.add(")
+					.append(valueExpressionFor(binding))
+					.append(");\n");
 			}
-			else {
-				sqlArgument = SQL_HELPER + ".inClause(" + constName + ", " + collection.expression() + ".size())";
-				prelude.append("java.util.List<Object> values = new java.util.ArrayList<>();\n");
-				for (Binding binding : bindings) {
-					prelude.append(binding.collectionValues() ? "values.addAll(" : "values.add(")
-						.append(binding.expression())
-						.append(");\n");
-				}
-				valueArguments = "values.toArray()";
-			}
-			// AutumnJdbc 的形参顺序是 (sql, mapper, args...)，计数语句没有 mapper
-			String queryArguments = sqlArgument + ", ROW_MAPPER"
+			valueArguments = "values.toArray()";
+		}
+			// deleteBy 返回实体列表：SELECT 与 DELETE 共用同一 WHERE，因此走同一个 inClause 展开与取值实参
+			String selectArgument = query.kind() == Kind.DELETE_LIST
+					? (collection == null ? selectConstName
+							: SQL_HELPER + ".inClause(" + selectConstName + ", " + collection.expression() + ".size())")
+					: sqlArgument;
+			// AutumnJdbc 的形参顺序是 (sql, mapper, args...)，计数/删除语句没有 mapper
+			String queryArguments = selectArgument + ", ROW_MAPPER"
 					+ (bindings.isEmpty() ? "" : ", " + valueArguments);
 			String countArguments = sqlArgument + (bindings.isEmpty() ? "" : ", " + valueArguments);
+			long limit = query.limit();
+			if (limit > 0 && (query.kind() == Kind.LIST || query.kind() == Kind.OPTIONAL)) {
+				// First/Top：行数上限作为字面量传给带 limit 的重载，由方言拼 LIMIT（不污染编译期 SQL 常量）
+				String limitedArguments = limit + "L, " + selectArgument + ", ROW_MAPPER"
+						+ (bindings.isEmpty() ? "" : ", " + valueArguments);
+				return query.kind() == Kind.LIST
+						? prelude + loaded("this.autumn.query(" + limitedArguments + ")")
+						: prelude + derivedOptional(limitedArguments);
+			}
 			return switch (query.kind()) {
-				case LIST -> prelude + loaded("this.autumn.query(" + queryArguments + ")");
-				case OPTIONAL -> prelude + derivedOptional(queryArguments);
+				case LIST -> query.custom()
+						? prelude + "return this.autumn.query(" + queryArguments + ");"
+						: prelude + loaded("this.autumn.query(" + queryArguments + ")");
+				case OPTIONAL -> query.custom()
+						? prelude + "return this.autumn.queryOptional(" + queryArguments + ");"
+						: prelude + derivedOptional(queryArguments);
 				case COUNT -> prelude + "return this.autumn.count(" + countArguments + ");";
 				case EXISTS -> prelude + "return this.autumn.count(" + countArguments + ") > 0;";
+				case DELETE -> prelude + (query.returnTypeSource().equals("void") ? "" : "return ")
+						+ "this.autumn.update(" + countArguments + ");";
+				case DELETE_LIST -> prelude
+						+ "java.util.List<" + this.entity + "> rows = this.autumn.query(" + queryArguments + ");\n"
+						+ "if (!rows.isEmpty()) {\n\tthis.autumn.update(" + countArguments + ");\n}\n"
+						+ "return rows;";
 			};
 		}
 
-		/** 单行结果：查到就按父主键装配一对多，查不到返回空 {@code Optional}。 */
+		/** 取数实参：{@code Containing/StartingWith/EndingWith} 这类按关键词把实参包成模式串；其余原样。 */
+	private String valueExpressionFor(Binding binding) {
+		return switch (binding.transform()) {
+			case CONTAINS -> "\"" + "%" + "\" + " + binding.expression() + " + \"%" + "\"";
+			case STARTS_WITH -> binding.expression() + " + \"%" + "\"";
+			case ENDS_WITH -> "\"" + "%" + "\" + " + binding.expression();
+			case NONE -> binding.expression();
+		};
+	}
+
+	/** 单行结果：查到就按父主键装配一对多，查不到返回空 {@code Optional}。 */
 		private String derivedOptional(String arguments) {
 			String select = "this.autumn.queryOptional(" + arguments + ")";
 			if (eagerAssociations().isEmpty()) {
@@ -367,6 +415,42 @@ final class ImplementationSource {
 						+ " java.util.LinkedHashSet<" + elementType + ">(" + loaded + ")";
 			}
 			return "(" + loaded + " == null) ? new java.util.ArrayList<" + elementType + ">() : " + loaded;
+		}
+
+		/**
+		 * 多对一（单值）的行映射器：直接映射子实体，不需要像一对多那样把外键成对带回。
+		 */
+		private String childRowMapperFieldToOne(Association association) {
+			return "\tprivate static final " + ROW_MAPPER + '<' + association.elementType() + "> " + association.mapperField()
+					+ " = (rs, rowNum) -> " + association.rowMethod() + "(rs);\n\n";
+		}
+
+		/**
+		 * 多对一装配：用父表上的外键值 {@code IN} 子表主键一次取回子实体，按子表主键建索引后挂回父表外键对应字段。
+		 * 同样是两条语句、没有 {@code JOIN}，父表每一行最多挂一个子实体。
+		 */
+		private String attachToOneMethod(Association association) {
+			String elementType = association.elementType();
+			String foreignKeyGetter = association.foreignKeyGetter();
+			String childIdGetter = association.target().id().getter();
+			List<String> body = List.of("if (parents.isEmpty()) {",
+					"\treturn;",
+					"}",
+					"java.util.List<Object> keys = new java.util.ArrayList<>(parents.size());",
+					"for (" + this.entity + " parent : parents) {",
+					"\tkeys.add(parent." + foreignKeyGetter + "());",
+					"}",
+					"java.util.Map<Object, " + elementType + "> byKey = new java.util.HashMap<>();",
+					"for (" + elementType + " child : this.autumn.query(" + SQL_HELPER + ".inClause("
+							+ sqlConst(association.statementKey()) + ", keys.size()), " + association.mapperField()
+							+ ", keys.toArray())) {",
+					"\tbyKey.put(child." + childIdGetter + "(), child);",
+					"}",
+					"for (" + this.entity + " parent : parents) {",
+					"\tparent." + association.setter() + "(byKey.get(parent." + foreignKeyGetter + "()));",
+					"}");
+			return privateMethod(association.attachMethod(), "void", "java.util.List<" + this.entity + "> parents",
+					String.join("\n", body));
 		}
 
 		private String constructor() {

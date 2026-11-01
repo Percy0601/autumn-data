@@ -177,8 +177,20 @@ class AutoRepositoryProcessorTests {
 				boolean existsByAgeGreaterThan(int age);
 				java.util.List<User> findByAgeIn(java.util.List<java.lang.Long> ages);
 				java.util.List<User> findByNameAndAgeLessThanOrderByNameAsc(java.lang.String name, java.lang.Integer age);
-			}
-			""";
+			java.util.List<User> findByNameContaining(java.lang.String name);
+			java.util.List<User> findByAgeIsNot(int age);
+			java.util.List<User> findByNameIgnoreCase(java.lang.String name);
+			java.util.List<User> findDistinctByName(java.lang.String name);
+			java.util.List<User> findTop3ByName(java.lang.String name);
+			java.util.List<User> findFirstByName(java.lang.String name);
+			long deleteByName(java.lang.String name);
+			java.util.List<User> deleteByNameAndAge(java.lang.String name, int age);
+			@xyz.wewin.autumn.data.jdbc.annotation.Query("SELECT id, name, age, created_at FROM demo_user WHERE age > ?")
+			java.util.List<User> findAdults(int age);
+			@xyz.wewin.autumn.data.jdbc.annotation.Query("DELETE FROM demo_user WHERE name = ?")
+			void purgeByName(java.lang.String name);
+		}
+		""";
 
 	private static final String ASSOCIATION_QUERY_REPO = """
 			package demo;
@@ -323,6 +335,53 @@ class AutoRepositoryProcessorTests {
 				+ "\t\tjava.util.List<Object> values = new java.util.ArrayList<>();\n" + "\t\tvalues.addAll(ages);\n"
 				+ "\t\treturn this.autumn.query(xyz.wewin.autumn.data.jdbc.sql.Sql.inClause(SQL_FIND_BY_AGE_IN,"
 				+ " ages.size()), ROW_MAPPER, values.toArray());");
+		// Like 家族：SQL 仍是占位符，取数时由生成代码把实参包成 %v% / v% / %v
+		assertThat(source).contains("private static final String SQL_FIND_BY_NAME_CONTAINING"
+				+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE name LIKE ?\"");
+		assertThat(source).contains("public java.util.List<demo.User> findByNameContaining(java.lang.String name) {\n"
+				+ "\t\treturn this.autumn.query(SQL_FIND_BY_NAME_CONTAINING, ROW_MAPPER, \"%\" + name + \"%\");");
+		// 否定关键词与 IgnoreCase
+		assertThat(source).contains("private static final String SQL_FIND_BY_AGE_IS_NOT"
+				+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE age <> ?\"");
+		assertThat(source).contains("private static final String SQL_FIND_BY_NAME_IGNORE_CASE"
+				+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE LOWER(name) = LOWER(?)\"");
+		assertThat(source).contains("public java.util.List<demo.User> findByNameIgnoreCase(java.lang.String name) {\n"
+				+ "\t\treturn this.autumn.query(SQL_FIND_BY_NAME_IGNORE_CASE, ROW_MAPPER, name);");
+		// Distinct：DISTINCT 内联进 SELECT 投影，SQL 常量本身不含 LIMIT/OFFSET
+		assertThat(source).contains("private static final String SQL_FIND_DISTINCT_BY_NAME"
+				+ " = \"SELECT DISTINCT id, name, age, created_at FROM demo_user WHERE name = ?\"");
+		assertThat(source).contains("public java.util.List<demo.User> findDistinctByName(java.lang.String name) {\n"
+				+ "\t\treturn this.autumn.query(SQL_FIND_DISTINCT_BY_NAME, ROW_MAPPER, name);");
+		// First/Top：行数上限作为字面量传给带 limit 的 query 重载（放在首位，避免与无 limit 重载歧义），方言在运行期拼 LIMIT
+		assertThat(source).contains("private static final String SQL_FIND_TOP3_BY_NAME"
+				+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE name = ?\"");
+		assertThat(source).contains("public java.util.List<demo.User> findTop3ByName(java.lang.String name) {\n"
+				+ "\t\treturn this.autumn.query(3L, SQL_FIND_TOP3_BY_NAME, ROW_MAPPER, name);");
+		assertThat(source).contains("public java.util.List<demo.User> findFirstByName(java.lang.String name) {\n"
+				+ "\t\treturn this.autumn.query(1L, SQL_FIND_FIRST_BY_NAME, ROW_MAPPER, name);");
+		// deleteBy 返回 long：DELETE 走 update 拿受影响行数
+		assertThat(source).contains("private static final String SQL_DELETE_BY_NAME"
+				+ " = \"DELETE FROM demo_user WHERE name = ?\"");
+		assertThat(source).contains("public long deleteByName(java.lang.String name) {\n"
+				+ "\t\treturn this.autumn.update(SQL_DELETE_BY_NAME, name);");
+		// deleteBy 返回 List<Entity>：先 SELECT 取回再 DELETE，两条语句各成一常量
+		assertThat(source).contains("private static final String SQL_DELETE_BY_NAME_AND_AGE"
+				+ " = \"DELETE FROM demo_user WHERE name = ? AND age = ?\"");
+		assertThat(source).contains("private static final String SQL_DELETE_BY_NAME_AND_AGE_SELECT"
+				+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE name = ? AND age = ?\"");
+		assertThat(source).contains("public java.util.List<demo.User> deleteByNameAndAge(java.lang.String name, int age) {\n"
+				+ "\t\tjava.util.List<demo.User> rows = this.autumn.query(SQL_DELETE_BY_NAME_AND_AGE_SELECT, ROW_MAPPER,"
+				+ " name, age);\n\t\tif (!rows.isEmpty()) {\n\t\t\tthis.autumn.update(SQL_DELETE_BY_NAME_AND_AGE, name, age);\n\t\t}\n"
+				+ "\t\treturn rows;");
+		// @Query：SQL 直接采用注解文本，不再解析方法名；自定义 SQL 不触发一对多装配
+		assertThat(source).contains("private static final String SQL_FIND_ADULTS"
+				+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE age > ?\"");
+		assertThat(source).contains("public java.util.List<demo.User> findAdults(int age) {\n"
+				+ "\t\treturn this.autumn.query(SQL_FIND_ADULTS, ROW_MAPPER, age);");
+		// @Query 返回 void 的写操作走 update，无 return
+		assertThat(source).contains("private static final String SQL_PURGE_BY_NAME = \"DELETE FROM demo_user WHERE name = ?\"");
+		assertThat(source).contains("public void purgeByName(java.lang.String name) {\n"
+				+ "\t\tthis.autumn.update(SQL_PURGE_BY_NAME, name);");
 	}
 
 	@Test

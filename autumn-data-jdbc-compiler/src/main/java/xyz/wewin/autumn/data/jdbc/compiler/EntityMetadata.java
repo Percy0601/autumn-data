@@ -66,27 +66,38 @@ record EntityMetadata(String qualifiedName, String table, EntityMetadata.Column 
 	}
 
 	/**
-	 * 一对多关联：父实体上的集合字段，子表用外键指回父表。
+	 * 关联：父实体上的集合字段（一对多）或单值字段（多对一）。
 	 *
 	 * <p>加载形态固定为「两条语句 + 按外键分组装配」，不是 {@code JOIN} 笛卡尔展开，
-	 * 行数受 {@code FetchPolicy.associationLimit()} 约束；嵌套一层后不再深入。</p>
+	 * 行数受 {@code FetchPolicy.associationLimit()} 约束。一对多按父主键分组写回集合，
+	 * 多对一按父表上的外键列把子实体挂到单值字段上。</p>
 	 *
-	 * @param field 集合字段名
+	 * @param field 关联字段名
 	 * @param getter 读取方法名
 	 * @param setter 写入方法名
 	 * @param collectionType 集合类型全限定名（{@code java.util.List} / {@code java.util.Set} /
-	 *            {@code java.util.Collection}）
+	 *            {@code java.util.Collection}）；多对一时为 {@code null}
 	 * @param elementType 元素（子实体）类型全限定名
-	 * @param foreignKeyColumn 子表中指回父表的主键列
+	 * @param foreignKeyColumn 关联所依据的外键列名：一对多时为子表指回父表主键的列；
+	 *            多对一时为父表上指向子表主键的列
 	 * @param target 子实体元数据（表名与列清单）
 	 * @param eager 是否在查询后立即装配（{@code fetch = LAZY} 时为 false）
+	 * @param toOne 是否为多对一（单值）关联；false 表示一对多（集合）
+	 * @param foreignKeyGetter 多对一时，父实体上读取外键值的 getter 名（父表上的外键列对应字段）；
+	 *            一对多时为 {@code null}（直接读父主键）
 	 */
 	record Association(String field, String getter, String setter, String collectionType, String elementType,
-			String foreignKeyColumn, EntityMetadata target, boolean eager) {
+			String foreignKeyColumn, EntityMetadata target, boolean eager, boolean toOne, String foreignKeyGetter) {
 
-		/** properties 里的语句键，例如 {@code ordersByParentIds}。 */
+		/** 缺省构造：一对多关联（历史调用兼容）。 */
+		Association(String field, String getter, String setter, String collectionType, String elementType,
+				String foreignKeyColumn, EntityMetadata target, boolean eager) {
+			this(field, getter, setter, collectionType, elementType, foreignKeyColumn, target, eager, false, null);
+		}
+
+		/** properties 里的语句键：一对多为 {@code ordersByParentIds}，多对一为 {@code addressByIds}。 */
 		String statementKey() {
-			return this.field + "ByParentIds";
+			return this.field + (this.toOne ? "ByIds" : "ByParentIds");
 		}
 
 		/** 生成的子行映射器字段名，例如 {@code orderItems} → {@code ORDER_ITEMS_ROW_MAPPER}。 */

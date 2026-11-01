@@ -72,9 +72,11 @@ final class CrudSqlGenerator {
 		statements.put(DELETE_BY_IDS, "DELETE FROM " + table + " WHERE " + idColumn + " IN (" + IN_MARKER + ")");
 		statements.put(DELETE_ALL, "DELETE FROM " + table);
 		for (Association association : entity.associations()) {
-			if (association.eager()) {
-				statements.put(association.statementKey(), childStatement(association));
+			if (!association.eager()) {
+				continue;
 			}
+			statements.put(association.statementKey(),
+					association.toOne() ? childByIdStatement(association) : childStatement(association));
 		}
 		return statements;
 	}
@@ -93,6 +95,17 @@ final class CrudSqlGenerator {
 			columns = columns + ", " + foreignKey;
 		}
 		return "SELECT " + columns + " FROM " + child.table() + " WHERE " + foreignKey + " IN (" + IN_MARKER
+				+ ") ORDER BY " + association.targetIdColumn();
+	}
+
+	/**
+	 * 多对一（单值）的第二条语句：用父表上的外键值去 {@code IN} 子表主键，一次取回全部相关子实体；
+	 * 分组（按子表主键挂回父表外键）在生成的实现类里做。
+	 */
+	private static String childByIdStatement(Association association) {
+		EntityMetadata child = association.target();
+		String columns = columnList(child.columns());
+		return "SELECT " + columns + " FROM " + child.table() + " WHERE " + child.id().column() + " IN (" + IN_MARKER
 				+ ") ORDER BY " + association.targetIdColumn();
 	}
 

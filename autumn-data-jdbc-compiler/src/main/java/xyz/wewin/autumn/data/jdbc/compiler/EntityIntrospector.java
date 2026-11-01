@@ -56,9 +56,14 @@ final class EntityIntrospector {
 
 	private static final String ONE_TO_MANY = JPA + "OneToMany";
 
+	private static final String MANY_TO_ONE = JPA + "ManyToOne";
+
 	private static final String JOIN_COLUMN = JPA + "JoinColumn";
 
-	private static final Set<String> ASSOCIATION_ANNOTATIONS = Set.of(ONE_TO_MANY, JPA + "ManyToOne",
+	/** 关联最多向下收集的层级：根(0) 收集关联、子(1) 收集关联、孙(2) 只取表名与列清单。避免无限递归。 */
+	private static final int MAX_ASSOCIATION_DEPTH = 2;
+
+	private static final Set<String> ASSOCIATION_ANNOTATIONS = Set.of(ONE_TO_MANY, MANY_TO_ONE,
 			JPA + "ManyToMany", JPA + "OneToOne");
 
 	private static final Set<String> SUPPORTED_COLLECTIONS = Set.of("java.util.List", "java.util.Set",
@@ -70,15 +75,16 @@ final class EntityIntrospector {
 	/** 提取失败时输出 ERROR 诊断并返回 {@code null}，由调用方跳过生成。 */
 	static EntityMetadata introspect(TypeMirror entityType, Elements elements, Types types, Messager messager,
 			Element reportOn) {
-		return introspect(entityType, elements, types, messager, reportOn, 0);
+		return introspect(entityType, elements, types, messager, reportOn, 0, new HashSet<>());
 	}
 
 	/**
-	 * @param depth 关联深度：根实体（0）收集 {@code @OneToMany}，关联实体（1）只取表名与列清单，
-	 *            因此不会出现父子互访引起的无限递归
+	 * @param depth 关联深度：根实体（0）收集 {@code @OneToMany}/{@code @ManyToOne}，子实体（1）同样收集关联
+	 *            （支持两层以上关联路径），孙实体（≥{@link #MAX_ASSOCIATION_DEPTH}）只取表名与列清单，
+	 *            {@code visiting} 记录已展开的实体，避免父子互访引起的无限递归
 	 */
 	private static EntityMetadata introspect(TypeMirror entityType, Elements elements, Types types, Messager messager,
-			Element reportOn, int depth) {
+			Element reportOn, int depth, Set<String> visiting) {
 		if (entityType.getKind() != TypeKind.DECLARED) {
 			messager.printMessage(Diagnostic.Kind.ERROR,
 					"Entity type must be a class, but is " + entityType, reportOn);
@@ -105,6 +111,8 @@ final class EntityIntrospector {
 		Set<String> methods = memberNames(elements.getAllMembers(entityElement));
 		List<Column> columns = new ArrayList<>();
 		List<Association> associations = new ArrayList<>();
+		// 多对一需要读父表上的外键列，但该列由同一循环里的标量字段收集，故先记下、循环结束后再解析 getter
+		List<String> pendingManyToOne = new ArrayList<>();
 		Column id = null;
 		for (TypeElement current = entityElement; current != null; current = superclass(current, types)) {
 			for (Element field : current.getEnclosedElements()) {
@@ -114,10 +122,25 @@ final class EntityIntrospector {
 				String fieldName = field.getSimpleName().toString();
 				String javaType = typeSignature(field.asType(), types);
 				if (hasAnyAssociationAnnotation(field)) {
-					Association association = (depth == 0) ? oneToMany(field, entityElement, elements, types,
-							messager, reportOn, methods) : null;
-					if (association != null) {
-						associations.add(association);
+					if (depth >= MAX_ASSOCIATION_DEPTH) {
+						// 关联实体只取表名与列清单，不再展开其关联，避免无限递归
+						continue;
+					}
+					if (hasAnnotation(field, ONE_TO_MANY)) {
+						Association association = oneToMany(field, entityElement, elements, types, messager, reportOn,
+								methods, depth, visiting);
+						if (association != null) {
+							associations.add(association);
+						}
+					}
+					else if (hasAnnotation(field, MANY_TO_ONE)) {
+						// 外键列名先记下，标量字段收集完毕后才能定位对应 getter
+						pendingManyToOne.add(fieldName);
+					}
+					else {
+						warn(messager, "Association field " + entityElement.getQualifiedName() + "." + fieldName
+								+ " uses an association annotation that autumn does not generate yet"
+								+ " (only @OneToMany and @ManyToOne are supported this round)", reportOn);
 					}
 					continue;
 				}
@@ -154,6 +177,14 @@ final class EntityIntrospector {
 					+ " has no @Id field", reportOn);
 			return null;
 		}
+		// 多对一：父表上必须有指向子表主键的外键列字段，否则无法用两条语句取回子实体
+		for (String fieldName : pendingManyToOne) {
+			Association association = manyToOne(fieldName, entityElement, elements, types, messager, reportOn, methods,
+					columns, depth, visiting);
+			if (association != null) {
+				associations.add(association);
+			}
+		}
 		return new EntityMetadata(entityElement.getQualifiedName().toString(), table, id, List.copyOf(columns),
 				List.copyOf(associations));
 	}
@@ -163,13 +194,8 @@ final class EntityIntrospector {
 	 * （即该字段既不当事务列，也不生成装配代码）。
 	 */
 	private static Association oneToMany(Element field, TypeElement parent, Elements elements, Types types,
-			Messager messager, Element reportOn, Set<String> methods) {
+			Messager messager, Element reportOn, Set<String> methods, int depth, Set<String> visiting) {
 		String fieldName = field.getSimpleName().toString();
-		if (!hasAnnotation(field, ONE_TO_MANY)) {
-			warn(messager, "Association field " + parent.getQualifiedName() + "." + fieldName
-					+ " is not @OneToMany; autumn loads only one-to-many collections this round", reportOn);
-			return null;
-		}
 		TypeMirror collectionType = field.asType();
 		if (collectionType.getKind() != TypeKind.DECLARED || ((DeclaredType) collectionType).getTypeArguments()
 			.size() != 1) {
@@ -196,7 +222,8 @@ final class EntityIntrospector {
 					+ " accessor " + getter + "/" + setter + " for @OneToMany field '" + fieldName + "'", reportOn);
 			return null;
 		}
-		EntityMetadata target = introspect(elementType, elements, types, messager, reportOn, 1);
+		EntityMetadata target = introspectChild(elementType, elements, types, messager, reportOn, depth, visiting,
+				parent.getQualifiedName().toString());
 		if (target == null) {
 			return null;
 		}
@@ -204,7 +231,82 @@ final class EntityIntrospector {
 			.toString();
 		return new Association(fieldName, getter, setter, collection, element,
 				foreignKeyColumn(field, parent, elementType, types, elements), target,
-				!"LAZY".equals(enumValue(field, ONE_TO_MANY, "fetch")));
+				!"LAZY".equals(enumValue(field, ONE_TO_MANY, "fetch")), false, null);
+	}
+
+	/**
+	 * 父实体上的 {@code @ManyToOne} 单值字段 → 关联元数据：两条语句里用父表外键 {@code IN} 子表主键取回子实体。
+	 * 外键列必须由父实体的一个标量字段提供（与一对多里「子表暴露外键列」对称），否则编译期报错。
+	 */
+	private static Association manyToOne(String fieldName, TypeElement parent, Elements elements, Types types,
+			Messager messager, Element reportOn, Set<String> methods, List<Column> columns, int depth,
+			Set<String> visiting) {
+		Element field = findField(elements.getAllMembers(parent), fieldName);
+		if (field == null) {
+			warn(messager, "@ManyToOne field " + parent.getQualifiedName() + "." + fieldName
+					+ " could not be resolved on the entity", reportOn);
+			return null;
+		}
+		TypeMirror elementType = field.asType();
+		if (elementType.getKind() != TypeKind.DECLARED) {
+			warn(messager, "@ManyToOne field " + parent.getQualifiedName() + "." + fieldName
+					+ " must reference an entity type", reportOn);
+			return null;
+		}
+		String getter = firstPresent(methods, "get" + capitalize(fieldName), "is" + capitalize(fieldName));
+		String setter = "set" + capitalize(fieldName);
+		if (getter == null || !methods.contains(setter)) {
+			messager.printMessage(Diagnostic.Kind.ERROR, "Entity " + parent.getQualifiedName() + " needs JavaBean"
+					+ " accessor " + getter + "/" + setter + " for @ManyToOne field '" + fieldName + "'", reportOn);
+			return null;
+		}
+		// 父表上的外键列：@JoinColumn(name) 优先，否则按字段名转下划线加 _id
+		String foreignKeyColumn = annotationString(field, JOIN_COLUMN, "name");
+		if (!isPresent(foreignKeyColumn)) {
+			foreignKeyColumn = snakeCase(fieldName) + "_id";
+		}
+		// 外键 getter 只在根实体（depth 0）上需要：只有根实体的多对一才会生成第二条装配语句；
+		// 子实体的多对一只用于派生查询的关联路径（相关子查询），不生成装配，故不强求外键标量字段
+		String foreignKeyGetter = null;
+		if (depth == 0) {
+			Column fkColumn = null;
+			for (Column column : columns) {
+				if (column.column().equals(foreignKeyColumn)) {
+					fkColumn = column;
+					break;
+				}
+			}
+			if (fkColumn == null) {
+				messager.printMessage(Diagnostic.Kind.ERROR, "Entity " + parent.getQualifiedName() + " needs a scalar"
+						+ " @Column field for the @ManyToOne foreign key '" + foreignKeyColumn + "' (e.g. a '" + fieldName
+						+ "Id' field) so the second statement can read the key", reportOn);
+				return null;
+			}
+			foreignKeyGetter = fkColumn.getter();
+		}
+		EntityMetadata target = introspectChild(elementType, elements, types, messager, reportOn, depth, visiting,
+				parent.getQualifiedName().toString());
+		if (target == null) {
+			return null;
+		}
+		String element = ((TypeElement) ((DeclaredType) types.erasure(elementType)).asElement()).getQualifiedName()
+			.toString();
+		return new Association(fieldName, getter, setter, null, element, foreignKeyColumn, target,
+				!"LAZY".equals(enumValue(field, MANY_TO_ONE, "fetch")), true, foreignKeyGetter);
+	}
+
+	/** 递归提取关联目标实体；防止父子互访无限递归：已展开过的实体只取表名与列清单。 */
+	private static EntityMetadata introspectChild(TypeMirror elementType, Elements elements, Types types,
+			Messager messager, Element reportOn, int depth, Set<String> visiting, String parentQualifiedName) {
+		String element = ((TypeElement) ((DeclaredType) types.erasure(elementType)).asElement()).getQualifiedName()
+			.toString();
+		Set<String> childVisiting = new HashSet<>(visiting);
+		childVisiting.add(parentQualifiedName);
+		if (childVisiting.contains(element)) {
+			// 形成环（A→B→A）：只取表名与列清单，不再收集其关联
+			return introspect(elementType, elements, types, messager, reportOn, MAX_ASSOCIATION_DEPTH, childVisiting);
+		}
+		return introspect(elementType, elements, types, messager, reportOn, depth + 1, childVisiting);
 	}
 
 	/**

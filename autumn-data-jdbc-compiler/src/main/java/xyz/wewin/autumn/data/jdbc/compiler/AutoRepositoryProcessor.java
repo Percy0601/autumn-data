@@ -15,6 +15,8 @@ import javax.annotation.processing.RoundEnvironment;
 import javax.annotation.processing.SupportedAnnotationTypes;
 import javax.annotation.processing.SupportedSourceVersion;
 import javax.lang.model.SourceVersion;
+import javax.lang.model.element.AnnotationMirror;
+import javax.lang.model.element.AnnotationValue;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
@@ -51,6 +53,9 @@ import javax.tools.StandardLocation;
 public class AutoRepositoryProcessor extends AbstractProcessor {
 
 	static final String REPOSITORY_FQN = "xyz.wewin.autumn.data.jdbc.repository.Repository";
+
+	/** {@code @Query} 注解，方法上写了它就用其 SQL 而非方法名派生（对标 Spring Data）。 */
+	private static final String QUERY_FQN = "xyz.wewin.autumn.data.jdbc.annotation.Query";
 
 	/** 仓储清单资源的路径，与 starter 的 {@code RepositoryRegistrar} 读的是同一个。 */
 	private static final String REGISTRY_PATH = "META-INF/autumn-data/repositories";
@@ -172,6 +177,19 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 				parameters.add(new DerivedQuery.Parameter(sourceName(parameterType, types),
 						parameter.getSimpleName().toString(), collection));
 			}
+			String querySql = queryAnnotationValue(method);
+			if (querySql != null) {
+				// 方法上写了 @Query：直接采用其 SQL，不再解析方法名
+				try {
+					queries.add(DerivedQueryParser.custom(member.getSimpleName().toString(), querySql, returnType,
+							parameters));
+				}
+				catch (DerivedQueryException ex) {
+					error(ex.getMessage(), method);
+					failed = true;
+				}
+				continue;
+			}
 			try {
 				queries.add(DerivedQueryParser.parse(member.getSimpleName().toString(), returnType, parameters,
 						metadata));
@@ -188,6 +206,21 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 	private static boolean declaredOnObject(ExecutableElement method) {
 		return method.getEnclosingElement() instanceof TypeElement owner
 				&& owner.getQualifiedName().contentEquals("java.lang.Object");
+	}
+
+	/** 读取方法上的 {@code @Query#value()}；没有该注解返回 {@code null}。 */
+	private static String queryAnnotationValue(ExecutableElement method) {
+		for (AnnotationMirror mirror : method.getAnnotationMirrors()) {
+			if (!((TypeElement) mirror.getAnnotationType().asElement()).getQualifiedName().contentEquals(QUERY_FQN)) {
+				continue;
+			}
+			for (var entry : mirror.getElementValues().entrySet()) {
+				if (entry.getKey().getSimpleName().contentEquals("value")) {
+					return String.valueOf(entry.getValue().getValue());
+				}
+			}
+		}
+		return null;
 	}
 
 	/** 方法名是否属于生成器按约定直接实现的标准方法。 */
@@ -269,6 +302,7 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 			return sourceName(((ArrayType) type).getComponentType(), types) + "[]";
 		}
 		return switch (type.getKind()) {
+			case VOID -> "void";
 			case BOOLEAN -> "boolean";
 			case BYTE -> "byte";
 			case SHORT -> "short";

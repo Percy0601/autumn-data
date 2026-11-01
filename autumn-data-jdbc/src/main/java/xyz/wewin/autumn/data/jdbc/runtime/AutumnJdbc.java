@@ -61,6 +61,23 @@ public class AutumnJdbc {
 		return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
 	}
 
+	/**
+	 * 带行数上限的查询：把上限交给方言拼成 {@code LIMIT}，等价于 {@link #queryLimited} 但上限由调用方指定
+	 * （派生查询的 {@code First/Top N} 在编译期就把数字内联到首个参数）。
+	 * 上限放在首位，避免与 {@link #query(String, RowMapper, Object...)} 在数值实参上产生重载歧义。
+	 */
+	public <T> List<T> query(long limit, String sql, RowMapper<T> mapper, Object... args) {
+		return query(sql + this.dialect.limitOffset(limit, 0), mapper, args);
+	}
+
+	/**
+	 * 带行数上限的单行查询：取满足条件的前若干行里的第一行（{@code findFirst/Top} 返回 Optional 时用到）。
+	 */
+	public <T> Optional<T> queryOptional(long limit, String sql, RowMapper<T> mapper, Object... args) {
+		List<T> rows = query(sql + this.dialect.limitOffset(limit, 0), mapper, args);
+		return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+	}
+
 	public <T> List<T> queryLimited(String sql, RowMapper<T> mapper, Object... args) {
 		String limited = sql + this.dialect.limitOffset(this.fetchPolicy.associationLimit(), 0);
 		return query(limited, mapper, args);
