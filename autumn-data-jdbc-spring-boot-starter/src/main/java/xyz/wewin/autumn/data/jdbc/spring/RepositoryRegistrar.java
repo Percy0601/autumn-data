@@ -10,6 +10,8 @@ import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.Set;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
@@ -29,18 +31,31 @@ import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
  * 自动配置提供的 {@code AutumnJdbc} 注入进去 —— 生成的代码于是自动加入 {@code @Transactional}。</p>
  *
  * <p>注册表资源可能出现在多个模块（每个用了编译期处理器的模块各写一份），所以用
- * {@link ClassLoader#getResources(String)} 读取全部，避免漏注册别的 jar 里的仓储。</p>
+ * {@link ClassLoader#getResources(String)} 读取全部，避免漏注册别的 jar 里的仓储。
+ * 清单里指向不存在实现类的残留行（仓储改名/删除后增量编译留下的）会被跳过并告警。</p>
  */
 public class RepositoryRegistrar implements BeanDefinitionRegistryPostProcessor {
 
 	private static final String REGISTRY = "META-INF/autumn-data/repositories";
 
+	private static final Logger LOGGER = LoggerFactory.getLogger(RepositoryRegistrar.class);
+
 	@Override
 	public void postProcessBeanDefinitionRegistry(BeanDefinitionRegistry registry) throws BeansException {
-		for (String repositoryFqn : readRegistry()) {
+		ClassLoader classLoader = classLoader();
+		for (String repositoryFqn : readRegistry(classLoader)) {
 			String implName = repositoryFqn + "Impl";
 			String beanName = implName;
 			if (registry.containsBeanDefinition(beanName)) {
+				continue;
+			}
+			if (!classPresent(classLoader, implName)) {
+				/*
+				 * 清单是编译期产物：仓储改名或被删掉后，增量编译留下的旧清单里可能还留着这一行。
+				 * 实现类不在就跳过并告警，否则一个残留行会把整个应用按住起不来。
+				 */
+				LOGGER.warn("Skipping entry {} in {}: implementation class {} is not on the classpath",
+						repositoryFqn, REGISTRY, implName);
 				continue;
 			}
 			RootBeanDefinition definition = new RootBeanDefinition(implName);
@@ -56,12 +71,23 @@ public class RepositoryRegistrar implements BeanDefinitionRegistryPostProcessor 
 		// 注册定义阶段已处理完，无需再动 BeanFactory
 	}
 
-	private Set<String> readRegistry() {
-		Set<String> repositories = new HashSet<>();
+	private static ClassLoader classLoader() {
 		ClassLoader classLoader = Thread.currentThread().getContextClassLoader();
-		if (classLoader == null) {
-			classLoader = RepositoryRegistrar.class.getClassLoader();
+		return (classLoader != null) ? classLoader : RepositoryRegistrar.class.getClassLoader();
+	}
+
+	private static boolean classPresent(ClassLoader classLoader, String className) {
+		try {
+			Class.forName(className, false, classLoader);
+			return true;
 		}
+		catch (ClassNotFoundException ex) {
+			return false;
+		}
+	}
+
+	private Set<String> readRegistry(ClassLoader classLoader) {
+		Set<String> repositories = new HashSet<>();
 		try {
 			Enumeration<URL> resources = classLoader.getResources(REGISTRY);
 			while (resources.hasMoreElements()) {

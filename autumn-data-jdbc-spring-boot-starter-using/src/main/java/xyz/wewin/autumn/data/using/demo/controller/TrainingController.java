@@ -74,4 +74,11 @@ public class TrainingController {
         return saved;
     }
 
+    @GetMapping("/findByOrdersAmountGreaterThanAndUsernameIsNotNull")
+    public List<User> findByOrdersAmountGreaterThanAndUsernameIsNotNull(BigDecimal amount){
+        List<User> users = userRepository.findByOrdersAmountGreaterThanAndUsernameIsNotNull(amount);
+        log.info("users:{}", users);
+        return users;
+    }
+
 }

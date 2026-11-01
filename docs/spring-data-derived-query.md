@@ -116,9 +116,31 @@ boolean existsById(ID id);
 1. 显式注解（`@Query` / FreeMarker 模板，见 `autumn-data-meta`）优先于方法名派生。
 2. 方法名完全匹配第 7 节标准 CRUD 签名 → 走内置实现。
 3. 剩余方法按第 1~6 节解析；解析失败（未知关键词、属性不存在、参数个数不符、返回类型不符）必须在 APT 阶段输出定位到方法声明的错误，不允许静默生成。
-4. 关联查询：嵌套 `PropertyPath` 触发 `JOIN`，join 类型由实体关联注解（`@ManyToOne`/`@OneToMany` 等）推导，默认 `INNER JOIN`，`Optional`/集合关联用 `LEFT JOIN`；需在生成的 SQL 侧避免 `Or` 跨 join 重复行（首期可先 `DISTINCT`）。
+4. 关联查询：嵌套 `PropertyPath` 的落地形态按关联基数分两种。
+   - **一对多**（`@OneToMany`，含 `mappedBy`）编译期展开成相关子查询
+     `EXISTS (SELECT 1 FROM 子表 WHERE 子表.外键 = 父表.主键 AND 子表.列 …)`，即半连接。
+     父行天然不重复，父侧列清单与 `RowMapper` 原样复用，因此不需要 `DISTINCT`，也不影响已有的一对多装配；
+     代价是关联表只用于过滤，不能从它取列进 `SELECT`。
+   - **多对一**（`@ManyToOne`）只有当子表列需要出现在 `SELECT` 里时才必须 `JOIN`；首期未实现，方法名命中即报错。
 
-## 9. 与 Micronaut Data 的差异备忘
+## 9. 当前实现状态（`DerivedQueryParser`）
+
+已生成：
+
+| 构造 | 示例 | 生成结果 |
+|---|---|---|
+| 6 个查询动词 + `All` | `getByName` / `findAllByName` | `SELECT <父列> FROM <表> WHERE …` |
+| `count` / `exists` | `countByName` / `existsByAgeGreaterThan` | `SELECT COUNT(*) …`，且剥掉 `ORDER BY`（PostgreSQL 会因非聚合列拒绝） |
+| 关键词 | `Between`、`GreaterThan(Equal)`、`LessThan(Equal)`、`Like`、`In`、`NotIn`、`IsNull`/`IsNotNull`、`True`/`False`、`After`/`Before`、`NotEqual`/`NotLike`/`NotGreaterThan`/`NotLessThan` | 各自 SQL 片段，参数个数在编译期与方法名锁定 |
+| `And` / `Or` | `findByNameAndAgeOrCreatedAtIsNull` | `(name = ? AND age = ?) OR created_at IS NULL` |
+| `OrderBy…Asc/Desc` | `findByNameOrderByNameAscAgeDesc` | 映射列 + 声明顺序 |
+| 一层关联路径 | `findByOrdersOrderNo`、`findByByOwnerMemoLike`、`countByOrdersOrderNoIsNotNull` | `EXISTS` 相关子查询，外键列取自 `@JoinColumn` 或 `mappedBy` 指向的子侧字段 |
+| 返回形态 | `List<T>` / `Optional<T>` | 命中一对多时结果仍走装配（两条语句，无 N+1） |
+
+编译期显式报错（不静默生成半成品）：`Distinct`、`First`/`Top`、`deleteBy`、`StartingWith`/`EndingWith`、
+裸实体返回值、两层以上关联路径、多于一处的 `IN`、参数个数或类型与谓词不符。
+
+## 10. 与 Micronaut Data 的差异备忘
 
 | 维度 | Spring Data（本文） | Micronaut Data |
 |---|---|---|

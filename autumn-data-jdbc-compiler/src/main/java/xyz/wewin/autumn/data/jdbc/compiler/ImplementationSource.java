@@ -1,11 +1,14 @@
 package xyz.wewin.autumn.data.jdbc.compiler;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 import java.util.stream.Collectors;
 
+import xyz.wewin.autumn.data.jdbc.compiler.DerivedQuery.Binding;
 import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Association;
 import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Column;
 
@@ -36,8 +39,9 @@ final class ImplementationSource {
 	}
 
 	static String generate(String interfaceSimpleName, String implSimpleName, String entity, String id,
-			EntityMetadata meta, Map<String, String> statements, boolean paging) {
-		return new Generation(interfaceSimpleName, implSimpleName, entity, id, meta, statements, paging).render();
+			EntityMetadata meta, Map<String, String> statements, List<DerivedQuery> queries, boolean paging) {
+		return new Generation(interfaceSimpleName, implSimpleName, entity, id, meta, statements, queries, paging)
+			.render();
 	}
 
 	/** 一次生成的上下文，方法各自返回一段源码文本。 */
@@ -55,16 +59,19 @@ final class ImplementationSource {
 
 		private final Map<String, String> statements;
 
+		private final List<DerivedQuery> queries;
+
 		private final boolean paging;
 
 		private Generation(String interfaceSimpleName, String implSimpleName, String entity, String id,
-				EntityMetadata meta, Map<String, String> statements, boolean paging) {
+				EntityMetadata meta, Map<String, String> statements, List<DerivedQuery> queries, boolean paging) {
 			this.interfaceSimpleName = interfaceSimpleName;
 			this.implSimpleName = implSimpleName;
 			this.entity = entity;
 			this.id = id;
 			this.meta = meta;
 			this.statements = statements;
+			this.queries = queries;
 			this.paging = paging;
 		}
 
@@ -74,6 +81,7 @@ final class ImplementationSource {
 
 		private String render() {
 			StringBuilder sb = new StringBuilder();
+			List<String> queryConstNames = derivedConstNames();
 			sb.append("/** 由 autumn-data-jdbc-compiler 生成，请勿手工修改。 */\n");
 		sb.append("@javax.annotation.processing.Generated(\"")
 			.append(AutoRepositoryProcessor.class.getName())
@@ -84,6 +92,10 @@ final class ImplementationSource {
 		for (Entry<String, String> statement : this.statements.entrySet()) {
 			sb.append("\tprivate static final String ").append(sqlConst(statement.getKey())).append(" = \"")
 				.append(escapeJava(statement.getValue())).append("\";\n\n");
+		}
+		for (int i = 0; i < this.queries.size(); i++) {
+			sb.append("\tprivate static final String ").append(queryConstNames.get(i)).append(" = \"")
+				.append(escapeJava(this.queries.get(i).sql())).append("\";\n\n");
 		}
 		sb.append(rowMapperField(this.meta, "ROW_MAPPER", this.entity));
 			for (Association association : eagerAssociations()) {
@@ -118,6 +130,10 @@ final class ImplementationSource {
 					deleteAllBody()));
 			sb.append(method("void deleteAll()",
 					"this.autumn.update(" + sqlConst(CrudSqlGenerator.DELETE_ALL) + ");"));
+			for (int i = 0; i < this.queries.size(); i++) {
+				sb.append(method(derivedSignature(this.queries.get(i)),
+						derivedBody(this.queries.get(i), queryConstNames.get(i))));
+			}
 			sb.append(privateMethod("insert", "void", this.entity + " entity", insertBody()));
 			for (Association association : eagerAssociations()) {
 				sb.append(childRowMethod(association));
@@ -157,6 +173,87 @@ final class ImplementationSource {
 				sb.append(Character.toUpperCase(c));
 			}
 			return sb.toString();
+		}
+
+		/**
+		 * 派生查询的 SQL 常量名：按方法名走同一套命名，并避开 CRUD 已占用的名字；
+		 * 同名重载（{@code findByName(String)} 与 {@code findByName(Long)}）追加序号，保证常量名唯一。
+		 */
+		private List<String> derivedConstNames() {
+			Set<String> taken = new HashSet<>();
+			for (String key : this.statements.keySet()) {
+				taken.add(sqlConst(key));
+			}
+			List<String> names = new ArrayList<>();
+			for (DerivedQuery query : this.queries) {
+				String base = sqlConst(query.methodName());
+				String name = base;
+				for (int ordinal = 2; taken.contains(name); ordinal++) {
+					name = base + "_" + ordinal;
+				}
+				taken.add(name);
+				names.add(name);
+			}
+			return names;
+		}
+
+		/** 派生查询的方法签名，直接沿用接口上的返回类型与形参表。 */
+		private static String derivedSignature(DerivedQuery query) {
+			String parameters = query.parameters().stream()
+				.map(parameter -> parameter.typeSource() + " " + parameter.name())
+				.collect(Collectors.joining(", "));
+			return query.returnTypeSource() + " " + query.methodName() + "(" + parameters + ")";
+		}
+
+		/**
+		 * 派生查询的方法体：结果形态决定调 {@code query / queryOptional / count}。
+		 *
+		 * <p>带集合条件时，SQL 走 {@code Sql.inClause} 按集合大小展开占位符，实参先收进一个列表再整体传入
+		 * —— 标量与集合混在一起时 varargs 拼不出来。结果实体若配了一对多关联，复用 {@link #loaded} 的装配路径，
+		 * 所以派生查询和 {@code findAll} 一样不会出 N+1。</p>
+		 */
+		private String derivedBody(DerivedQuery query, String constName) {
+			List<Binding> bindings = query.bindings();
+			Binding collection = bindings.stream().filter(Binding::collectionValues).findFirst().orElse(null);
+			StringBuilder prelude = new StringBuilder();
+			String sqlArgument = constName;
+			String valueArguments;
+			if (collection == null) {
+				valueArguments = bindings.stream().map(Binding::expression).collect(Collectors.joining(", "));
+			}
+			else {
+				sqlArgument = SQL_HELPER + ".inClause(" + constName + ", " + collection.expression() + ".size())";
+				prelude.append("java.util.List<Object> values = new java.util.ArrayList<>();\n");
+				for (Binding binding : bindings) {
+					prelude.append(binding.collectionValues() ? "values.addAll(" : "values.add(")
+						.append(binding.expression())
+						.append(");\n");
+				}
+				valueArguments = "values.toArray()";
+			}
+			// AutumnJdbc 的形参顺序是 (sql, mapper, args...)，计数语句没有 mapper
+			String queryArguments = sqlArgument + ", ROW_MAPPER"
+					+ (bindings.isEmpty() ? "" : ", " + valueArguments);
+			String countArguments = sqlArgument + (bindings.isEmpty() ? "" : ", " + valueArguments);
+			return switch (query.kind()) {
+				case LIST -> prelude + loaded("this.autumn.query(" + queryArguments + ")");
+				case OPTIONAL -> prelude + derivedOptional(queryArguments);
+				case COUNT -> prelude + "return this.autumn.count(" + countArguments + ");";
+				case EXISTS -> prelude + "return this.autumn.count(" + countArguments + ") > 0;";
+			};
+		}
+
+		/** 单行结果：查到就按父主键装配一对多，查不到返回空 {@code Optional}。 */
+		private String derivedOptional(String arguments) {
+			String select = "this.autumn.queryOptional(" + arguments + ")";
+			if (eagerAssociations().isEmpty()) {
+				return "return " + select + ";";
+			}
+			List<String> attach = eagerAssociations().stream()
+				.map(association -> "\t" + association.attachMethod() + "(java.util.List.of(row));")
+				.toList();
+			return "java.util.Optional<" + this.entity + "> found = " + select + ";\n" + "found.ifPresent(row -> {\n"
+					+ String.join("\n", attach) + "\n});\nreturn found;";
 		}
 
 		/** 把 SQL 文本转义成 Java 字符串字面量片段（仅处理会破坏字符串的字符）。 */

@@ -166,6 +166,38 @@ class AutoRepositoryProcessorTests {
 			public interface NotRepo {}
 			""";
 
+	private static final String DERIVED_REPO = """
+			package demo;
+			@xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository
+			public interface DerivedUserRepository extends xyz.wewin.autumn.data.jdbc.repository.CrudRepository<User, java.lang.Long> {
+				java.util.List<User> findByName(java.lang.String name);
+				java.util.List<User> findByName(java.lang.Integer name);
+				java.util.Optional<User> getByName(java.lang.String name);
+				long countByName(java.lang.String name);
+				boolean existsByAgeGreaterThan(int age);
+				java.util.List<User> findByAgeIn(java.util.List<java.lang.Long> ages);
+				java.util.List<User> findByNameAndAgeLessThanOrderByNameAsc(java.lang.String name, java.lang.Integer age);
+			}
+			""";
+
+	private static final String ASSOCIATION_QUERY_REPO = """
+			package demo;
+			@xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository
+			public interface AssociationQueryRepository extends xyz.wewin.autumn.data.jdbc.repository.CrudRepository<Customer, java.lang.Long> {
+				java.util.List<Customer> findByOrdersMemo(java.lang.String memo);
+				java.util.List<Customer> findByByOwnerMemoLike(java.lang.String pattern);
+			}
+			""";
+
+	private static final String UNSUPPORTED_QUERY_REPO = """
+			package demo;
+			@xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository
+			public interface BadQueryRepository extends xyz.wewin.autumn.data.jdbc.repository.CrudRepository<User, java.lang.Long> {
+
+				java.util.List<User> findByCity(java.lang.String city);
+			}
+			""";
+
 	private final JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
 
 	@Test
@@ -258,6 +290,96 @@ class AutoRepositoryProcessorTests {
 		// 主键非自增：拿不到生成键，批量写退化为逐条 upsert
 		assertThat(source).doesNotContain("batchInsertReturningKeys");
 		assertThat(source).contains("saved.add(save(entity))");
+	}
+
+	@Test
+	void generatesDerivedQueryMethods(@TempDir Path dir) throws Exception {
+		Compilation result = compile(dir, List.of(new Source("demo/User.java", USER_ENTITY),
+				new Source("demo/DerivedUserRepository.java", DERIVED_REPO)));
+		assertThat(result.errorMessages()).isEmpty();
+
+		String source = Files.readString(dir.resolve("gen/demo/DerivedUserRepositoryImpl.java"));
+		// SQL 与 CRUD 语句一样在编译期内联；同名重载另起一个常量名
+		assertThat(source).contains("private static final String SQL_FIND_BY_NAME = \"SELECT id, name, age,"
+				+ " created_at FROM demo_user WHERE name = ?\"");
+		assertThat(source).contains("private static final String SQL_FIND_BY_NAME_2");
+		assertThat(source).contains(
+				"private static final String SQL_FIND_BY_NAME_AND_AGE_LESS_THAN_ORDER_BY_NAME_ASC"
+						+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE name = ? AND age < ?"
+						+ " ORDER BY name ASC\"");
+		// 结果形态决定调用：List 走 query、Optional 走 queryOptional、count/exists 走 count（没有 mapper）
+		assertThat(source).contains(
+				"public java.util.List<demo.User> findByName(java.lang.Integer name) {\n\t\treturn this.autumn.query(");
+		assertThat(source).contains("public java.util.Optional<demo.User> getByName(java.lang.String name) {\n"
+				+ "\t\treturn this.autumn.queryOptional(SQL_GET_BY_NAME, ROW_MAPPER, name);");
+		assertThat(source).contains("public long countByName(java.lang.String name) {\n"
+				+ "\t\treturn this.autumn.count(SQL_COUNT_BY_NAME, name);");
+		assertThat(source).contains("public boolean existsByAgeGreaterThan(int age) {\n"
+				+ "\t\treturn this.autumn.count(SQL_EXISTS_BY_AGE_GREATER_THAN, age) > 0;");
+		// 集合条件：运行期按集合大小展开占位符，所以标量和集合混排时实参先收进一个数组
+		assertThat(source).contains("private static final String SQL_FIND_BY_AGE_IN"
+				+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE age IN (:ids)\"");
+		assertThat(source).contains("public java.util.List<demo.User> findByAgeIn(java.util.List<java.lang.Long> ages) {\n"
+				+ "\t\tjava.util.List<Object> values = new java.util.ArrayList<>();\n" + "\t\tvalues.addAll(ages);\n"
+				+ "\t\treturn this.autumn.query(xyz.wewin.autumn.data.jdbc.sql.Sql.inClause(SQL_FIND_BY_AGE_IN,"
+				+ " ages.size()), ROW_MAPPER, values.toArray());");
+	}
+
+	@Test
+	void generatesAssociationConditionAsExistsSubquery(@TempDir Path dir) throws Exception {
+		Compilation result = compile(dir, List.of(new Source("demo/Order.java", ORDER_ENTITY),
+				new Source("demo/Customer.java", ASSOCIATION_ENTITY),
+				new Source("demo/AssociationQueryRepository.java", ASSOCIATION_QUERY_REPO)));
+		assertThat(result.errorMessages()).isEmpty();
+
+		String source = Files.readString(dir.resolve("gen/demo/AssociationQueryRepositoryImpl.java"));
+		// 一对多条件写成相关子查询：不 JOIN，父行不重复，父列清单与 ROW_MAPPER 原样复用
+		assertThat(source).contains("private static final String SQL_FIND_BY_ORDERS_MEMO"
+				+ " = \"SELECT id, name FROM demo_user WHERE EXISTS (SELECT 1 FROM demo_order"
+				+ " WHERE demo_order.user_id = demo_user.id AND demo_order.memo = ?)\"");
+		// mappedBy = "owner" 的关联用子侧的外键列
+		assertThat(source).contains("private static final String SQL_FIND_BY_BY_OWNER_MEMO_LIKE"
+				+ " = \"SELECT id, name FROM demo_user WHERE EXISTS (SELECT 1 FROM demo_order"
+				+ " WHERE demo_order.owner_id = demo_user.id AND demo_order.memo LIKE ?)\"");
+		// 派生查询照样走关联装配（两条语句取子行），不会退回 N+1
+		assertThat(source).contains("public java.util.List<demo.Customer> findByOrdersMemo(java.lang.String memo) {\n"
+				+ "\t\tjava.util.List<demo.Customer> rows = this.autumn.query(SQL_FIND_BY_ORDERS_MEMO,"
+				+ " ROW_MAPPER, memo);\n" + "\t\tattachOrders(rows);\n" + "\t\tattachByOwner(rows);");
+	}
+
+	@Test
+	void reportsUnsupportedDerivedQueryOnTheMethodDeclaration(@TempDir Path dir) throws Exception {
+		Compilation result = compile(dir, List.of(new Source("demo/User.java", USER_ENTITY),
+				new Source("demo/BadQueryRepository.java", UNSUPPORTED_QUERY_REPO)));
+		// 过去这里静默跳过，错误由 javac 在生成类里报「不是抽象的，并且未覆盖…」，把框架的边界伪装成用户的错
+		Diagnostic<? extends JavaFileObject> failure = result.diagnostics().stream()
+			.filter(diagnostic -> diagnostic.getKind() == Diagnostic.Kind.ERROR)
+			.filter(diagnostic -> diagnostic.getMessage(null).contains("derived query"))
+			.findFirst()
+			.orElseThrow();
+		assertThat(failure.getMessage(null)).contains("unknown property 'City' on demo.User")
+			.contains("fields: id, name, age, createdAt");
+		// 报错位置是接口上的方法声明，不是生成类
+		assertThat(failure.getSource().getName()).endsWith("BadQueryRepository.java");
+		assertThat(failure.getLineNumber()).isEqualTo(5);
+		assertThat(dir.resolve("gen/demo/BadQueryRepositoryImpl.java")).doesNotExist();
+	}
+
+	@Test
+	void incrementalCompileKeepsRepositoriesFromEarlierRounds(@TempDir Path dir) throws Exception {
+		Path registry = dir.resolve("classes/META-INF/autumn-data/repositories");
+		compile(dir, List.of(new Source("demo/User.java", USER_ENTITY),
+				new Source("demo/UserRepository.java", VALID_REPO), new Source("demo/Account.java", PLAIN_ENTITY),
+				new Source("demo/AccountRepository.java", ASSIGNED_ID_REPO)));
+		assertThat(registry).exists();
+		assertThat(Files.readString(registry).trim().split("\n"))
+			.containsExactlyInAnyOrder("demo.UserRepository", "demo.AccountRepository");
+
+		// 只重编改动的文件（IDE/增量构建的常态）：清单必须合并，不能把上一轮的仓储抹掉，
+		// 否则 OrderRepositoryImpl 明明在 classpath 上，启动却报 required a bean that could not be found
+		compile(dir, List.of(new Source("demo/Account.java", PLAIN_ENTITY),
+				new Source("demo/AccountRepository.java", ASSIGNED_ID_REPO)));
+		assertThat(Files.readString(registry)).contains("demo.UserRepository").contains("demo.AccountRepository");
 	}
 
 	@Test

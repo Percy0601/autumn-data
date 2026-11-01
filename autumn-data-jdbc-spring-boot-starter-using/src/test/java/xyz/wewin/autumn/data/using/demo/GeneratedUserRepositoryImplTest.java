@@ -164,6 +164,47 @@ class GeneratedUserRepositoryImplTest {
 		assertThat(this.repository.count()).isZero();
 	}
 
+	@Test
+	void derivedQueryFiltersOnMappedColumnAndStillAssemblesChildren() {
+		User alice = this.repository.save(newUser("alice"));
+		this.repository.save(newUser("bob"));
+		this.orderRepository.saveAll(List.of(newOrder(alice.getId(), "SO-1"), newOrder(alice.getId(), "SO-2")));
+
+		// 方法名派生的条件走列名，结果仍复用一对多装配（不会退化成 N+1）
+		assertThat(this.repository.findByUsername("alice")).singleElement()
+			.satisfies(user -> assertThat(user.getOrders()).extracting(Order::getOrderNo)
+				.containsExactly("SO-1", "SO-2"));
+		assertThat(this.repository.findByUsername("nobody")).isEmpty();
+	}
+
+	@Test
+	void associationConditionFiltersParentsThroughCorrelatedExists() throws Exception {
+		User alice = this.repository.save(newUser("alice"));
+		User bob = this.repository.save(newUser("bob"));
+		this.repository.save(newUser("carol"));
+		this.orderRepository.saveAll(List.of(newOrder(alice.getId(), "SO-1", "9.90"),
+				newOrder(alice.getId(), "SO-2", "250.00"), newOrder(bob.getId(), "SO-3", "1200.00")));
+
+		// 一层关联路径在编译期展开成 EXISTS 相关子查询：条件写在子表，返回的仍是父实体
+		assertThat(constant("SQL_FIND_BY_ORDERS_ORDER_NO")).isEqualTo(
+				"SELECT id, username, email FROM basic_user WHERE EXISTS (SELECT 1 FROM demo_order"
+						+ " WHERE demo_order.user_id = basic_user.id AND demo_order.order_no = ?)");
+		assertThat(this.repository.findByOrdersOrderNo("SO-3")).extracting(User::getUsername).containsExactly("bob");
+		// 无单用户不在结果里；命中多单的用户只回一行（EXISTS 是半连接，不产生重复）
+		assertThat(this.repository.findByOrdersOrderNo("SO-999")).isEmpty();
+
+		// 关联条件 + 本表条件 + 0 参数关键词组合
+		assertThat(this.repository.findByOrdersAmountGreaterThanAndUsernameIsNotNull(new BigDecimal("200")))
+			.extracting(User::getUsername)
+			.containsExactlyInAnyOrder("alice", "bob");
+		assertThat(this.repository.countByOrdersOrderNoIsNotNull()).isEqualTo(2L);
+
+		// 派生的关联条件不影响装配：命中的父实体仍带着全部子行
+		assertThat(this.repository.findByOrdersOrderNo("SO-1")).singleElement()
+			.satisfies(user -> assertThat(user.getOrders()).extracting(Order::getOrderNo)
+				.containsExactly("SO-1", "SO-2"));
+	}
+
 	private static User newUser(String username) {
 		User user = new User();
 		user.setUsername(username);
@@ -172,10 +213,14 @@ class GeneratedUserRepositoryImplTest {
 	}
 
 	private static Order newOrder(Long userId, String orderNo) {
+		return newOrder(userId, orderNo, "9.90");
+	}
+
+	private static Order newOrder(Long userId, String orderNo, String amount) {
 		Order order = new Order();
 		order.setUserId(userId);
 		order.setOrderNo(orderNo);
-		order.setAmount(new BigDecimal("9.90"));
+		order.setAmount(new BigDecimal(amount));
 		return order;
 	}
 

@@ -19,7 +19,7 @@
 - 方言：MySQL/PostgreSQL/H2/Default，`DialectResolver` 按 DataSource 元数据识别。
 
 ## 关键缺口（截至 2026-11-01）
-- 派生查询（`findByNameAndAge` 等方法名→SQL）未实现，规范见 docs/spring-data-derived-query.md。
+- 派生查询已实现（`DerivedQueryParser`，编译期解析 + 内联 SQL），覆盖 6 个查询动词、`count`/`exists`、关键词表、`And`/`Or`/`OrderBy`、一层关联条件（`findByOrdersOrderNo` → `EXISTS` 相关子查询）；解析失败在接口方法声明处报错。仍未做：`Distinct`、`First`/`Top`、`deleteBy`、`@ManyToOne` 取子表列进 SELECT（需 JOIN）、两层以上关联路径。
 - 生成 SQL 未用 `Dialect.quoteIdentifier()`，保留字标识符有隐患。
 - record 实体、多对多装配、@Query 自定义 SQL 待做。
 

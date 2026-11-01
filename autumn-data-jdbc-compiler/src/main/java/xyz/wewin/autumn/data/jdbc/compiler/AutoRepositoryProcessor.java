@@ -1,8 +1,10 @@
 package xyz.wewin.autumn.data.jdbc.compiler;
 
 import java.io.IOException;
+import java.io.Reader;
 import java.io.Writer;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -16,7 +18,10 @@ import javax.lang.model.SourceVersion;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
+import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.element.VariableElement;
+import javax.lang.model.type.ArrayType;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeKind;
 import javax.lang.model.type.TypeMirror;
@@ -37,8 +42,9 @@ import javax.tools.StandardLocation;
  * 运行期零资源 I/O）。约定违规一律在编译期报错，不生成半成品。</p>
  *
  * <p>覆盖范围：{@code CrudRepository} 全部方法、{@code PagingRepository#findAll(Pageable)}、
- * 批量读写与一对多装配。派生查询（{@code findByNameAndAge} 之类，见
- * docs/spring-data-derived-query.md 第 8 节）是下一步。</p>
+ * 批量读写、一对多装配，以及第 8.3 节约定的派生查询（{@code findByNameAndAge} 之类，
+ * 由 {@link DerivedQueryParser} 在编译期解析）。接口上任何生成器不实现的抽象方法都必须解析成功，
+ * 否则在方法声明位置报错 —— 不静默跳过，避免把「少实现一个方法」的锅甩给生成类的编译错误。</p>
  */
 @SupportedAnnotationTypes("xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository")
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
@@ -46,7 +52,20 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 
 	static final String REPOSITORY_FQN = "xyz.wewin.autumn.data.jdbc.repository.Repository";
 
+	/** 仓储清单资源的路径，与 starter 的 {@code RepositoryRegistrar} 读的是同一个。 */
+	private static final String REGISTRY_PATH = "META-INF/autumn-data/repositories";
+
 	private static final String PAGEABLE_FQN = "xyz.wewin.autumn.data.jdbc.page.Pageable";
+
+	private static final String COLLECTION_FQN = "java.util.Collection";
+
+	/**
+	 * 生成器按约定直接实现的标准方法（{@code 方法名/参数个数}）。这里面出现的名字一律不当派生查询解析；
+	 * {@code findAll/1} 额外要求实参是 {@code Pageable}，否则视为用户自己的声明、必须能解析成查询。
+	 */
+	private static final Set<String> CONVENTION_SIGNATURES = Set.of("save/1", "saveAll/1", "findById/1",
+			"existsById/1", "findAll/0", "findAllById/1", "count/0", "deleteById/1", "delete/1", "deleteAllById/1",
+			"deleteAll/1", "deleteAll/0");
 
 	@Override
 	public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
@@ -83,9 +102,14 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 				continue;
 			}
 			String packageName = elements.getPackageOf(repositoryInterface).getQualifiedName().toString();
+			List<DerivedQuery> queries = collectDerivedQueries(repositoryInterface, metadata, elements, types);
+			if (queries == null) {
+				// 已经有方法解析失败并在声明处报错，不生成半成品实现
+				continue;
+			}
 			try {
 				Map<String, String> statements = CrudSqlGenerator.generate(metadata);
-				writeImplementation(repositoryInterface, packageName, entity, id, metadata, statements,
+				writeImplementation(repositoryInterface, packageName, entity, id, metadata, statements, queries,
 						declaresPaging(repositoryInterface, elements, types), processingEnv.getFiler());
 				repositories.add(repositoryInterface.getQualifiedName().toString());
 			}
@@ -103,6 +127,85 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * 收集接口上需要派生查询解析的抽象方法。
+	 *
+	 * <p>判定顺序：先跳过 {@code default}/{@code static}（本来就不需要实现），再跳过
+	 * {@link #CONVENTION_SIGNATURES} 里的标准方法（生成器已经实现），剩下的每个方法都必须解析成功。
+	 * 任一解析失败就在该方法声明位置报错并返回 {@code null}，让调用方放弃生成 —— 这正是
+	 * docs 第 8.3 条「不允许静默生成」的落点：过去这里对未知方法什么都不做，
+	 * 结果由 javac 在生成类里报「不是抽象的，并且未覆盖 …」，把框架的能力边界伪装成用户的代码错误。</p>
+	 *
+	 * @return 解析成功的查询列表；返回 {@code null} 表示已有方法报错、不应继续生成
+	 */
+	private List<DerivedQuery> collectDerivedQueries(TypeElement repositoryInterface, EntityMetadata metadata,
+			Elements elements, Types types) {
+		TypeElement collectionType = elements.getTypeElement(COLLECTION_FQN);
+		List<DerivedQuery> queries = new ArrayList<>();
+		Set<String> visited = new LinkedHashSet<>();
+		boolean failed = false;
+		for (Element member : elements.getAllMembers(repositoryInterface)) {
+			if (member.getKind() != ElementKind.METHOD || !(member instanceof ExecutableElement method)) {
+				continue;
+			}
+			if (declaredOnObject(method)) {
+				// getAllMembers 会把 java.lang.Object 的 equals/hashCode/toString… 一起列进来，它们不是接口契约
+				continue;
+			}
+			if (method.isDefault() || method.getModifiers().contains(Modifier.STATIC)) {
+				continue;
+			}
+			if (isImplementedByConvention(method, types)) {
+				continue;
+			}
+			if (!visited.add(signatureOf(method, types))) {
+				continue;
+			}
+			String returnType = sourceName(method.getReturnType(), types);
+			List<DerivedQuery.Parameter> parameters = new ArrayList<>();
+			for (VariableElement parameter : method.getParameters()) {
+				TypeMirror parameterType = parameter.asType();
+				boolean collection = collectionType != null && types.isAssignable(types.erasure(parameterType),
+						collectionType.asType());
+				parameters.add(new DerivedQuery.Parameter(sourceName(parameterType, types),
+						parameter.getSimpleName().toString(), collection));
+			}
+			try {
+				queries.add(DerivedQueryParser.parse(member.getSimpleName().toString(), returnType, parameters,
+						metadata));
+			}
+			catch (DerivedQueryException ex) {
+				error(ex.getMessage(), method);
+				failed = true;
+			}
+		}
+		return failed ? null : queries;
+	}
+
+	/** 方法是否来自 {@code java.lang.Object}（接口的成员清单会把它们一起列出来）。 */
+	private static boolean declaredOnObject(ExecutableElement method) {
+		return method.getEnclosingElement() instanceof TypeElement owner
+				&& owner.getQualifiedName().contentEquals("java.lang.Object");
+	}
+
+	/** 方法名是否属于生成器按约定直接实现的标准方法。 */
+	private static boolean isImplementedByConvention(ExecutableElement method, Types types) {
+		String key = method.getSimpleName() + "/" + method.getParameters().size();
+		if (!"findAll/1".equals(key)) {
+			return CONVENTION_SIGNATURES.contains(key);
+		}
+		return types.erasure(method.getParameters().get(0).asType()).toString().contentEquals(PAGEABLE_FQN);
+	}
+
+	/** 用于跨继承链去重：同一个签名被多个父接口声明时只生成一次。 */
+	private static String signatureOf(ExecutableElement method, Types types) {
+		StringBuilder sb = new StringBuilder(method.getSimpleName()).append('/');
+		for (VariableElement parameter : method.getParameters()) {
+			sb.append(types.erasure(parameter.asType())).append(',');
+		}
+		return sb.toString();
 	}
 
 	/** 接口（含继承的 {@code PagingRepository}）里是否声明了 {@code findAll(Pageable)}。 */
@@ -143,7 +246,8 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 		return null;
 	}
 
-	/** 把类型实参解析成可写入源码的名字；无法表达的类型回退为 Object（骨架阶段够用）。 */
+	/** 把类型解析成可写入源码的名字；基本类型给出字面名（{@code long countByStatus} 的返回类型要靠它判定），
+	 * 无法表达的其余类型回退为 Object。 */
 	private static String sourceName(TypeMirror type, Types types) {
 		if (type.getKind() == TypeKind.DECLARED) {
 			DeclaredType declared = (DeclaredType) type;
@@ -161,12 +265,25 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 			}
 			return sb.append('>').toString();
 		}
-		return "java.lang.Object";
+		if (type.getKind() == TypeKind.ARRAY) {
+			return sourceName(((ArrayType) type).getComponentType(), types) + "[]";
+		}
+		return switch (type.getKind()) {
+			case BOOLEAN -> "boolean";
+			case BYTE -> "byte";
+			case SHORT -> "short";
+			case INT -> "int";
+			case LONG -> "long";
+			case CHAR -> "char";
+			case FLOAT -> "float";
+			case DOUBLE -> "double";
+			default -> "java.lang.Object";
+		};
 	}
 
 	private static void writeImplementation(TypeElement repositoryInterface, String packageName, String entity,
-			String id, EntityMetadata metadata, Map<String, String> statements, boolean paging, Filer filer)
-			throws IOException {
+			String id, EntityMetadata metadata, Map<String, String> statements, List<DerivedQuery> queries,
+			boolean paging, Filer filer) throws IOException {
 		String simpleName = repositoryInterface.getSimpleName() + "Impl";
 		String qualifiedName = packageName.isEmpty() ? simpleName : packageName + "." + simpleName;
 		JavaFileObject file = filer.createSourceFile(qualifiedName, repositoryInterface);
@@ -175,22 +292,52 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 				writer.write("package " + packageName + ";\n\n");
 			}
 			writer.write(ImplementationSource.generate(repositoryInterface.getSimpleName().toString(), simpleName,
-					entity, id, metadata, statements, paging));
+					entity, id, metadata, statements, queries, paging));
 		}
 	}
 
-	/** 把本模块处理到的所有仓储接口 FQN 落盘为 {@code META-INF/autumn-data/repositories}，
-	 * 供 starter 的 {@code RepositoryRegistrar} 读取并注册成 Spring Bean（无需 @Service）。 */
+	/**
+	 * 把本模块处理到的所有仓储接口 FQN 落盘为 {@code META-INF/autumn-data/repositories}，
+	 * 供 starter 的 {@code RepositoryRegistrar} 读取并注册成 Spring Bean（无需 @Service）。
+	 *
+	 * <p>增量编译（改一个文件后 IDE/构建只重编那一个）本轮只看得见改动的接口，直接覆盖会把
+	 * 别人从清单里抹掉，表现为启动时 {@code required a bean of type 'X' that could not be found}
+	 * —— 实现类 .class 明明在，只是没被注册。因此先读回既有清单再合并写入。</p>
+	 */
 	private static void writeRepositoryRegistry(List<String> repositories, Filer filer) throws IOException {
+		Set<String> entries = new LinkedHashSet<>(readRegistry(filer));
+		entries.addAll(repositories);
 		StringBuilder sb = new StringBuilder();
-		for (String fqn : repositories) {
+		for (String fqn : entries) {
 			sb.append(fqn).append('\n');
 		}
-		FileObject file = filer.createResource(StandardLocation.CLASS_OUTPUT, "",
-				"META-INF/autumn-data/repositories");
+		FileObject file = filer.createResource(StandardLocation.CLASS_OUTPUT, "", REGISTRY_PATH);
 		try (Writer writer = file.openWriter()) {
 			writer.write(sb.toString());
 		}
+	}
+
+	/** 读回既有清单；读不到（首轮编译、目录还没这个文件）就当作空清单。 */
+	private static List<String> readRegistry(Filer filer) {
+		List<String> entries = new ArrayList<>();
+		try {
+			FileObject existing = filer.getResource(StandardLocation.CLASS_OUTPUT, "", REGISTRY_PATH);
+			StringBuilder content = new StringBuilder();
+			try (Reader reader = existing.openReader(true)) {
+				for (int c = reader.read(); c != -1; c = reader.read()) {
+					content.append((char) c);
+				}
+			}
+			for (String line : content.toString().split("\n")) {
+				if (!line.isBlank()) {
+					entries.add(line.trim());
+				}
+			}
+		}
+		catch (IOException | IllegalArgumentException | IllegalStateException ex) {
+			// 清单不存在或不可读：本轮清单照样全量写入，不做合并
+		}
+		return entries;
 	}
 
 	private void error(String message, Element element) {
