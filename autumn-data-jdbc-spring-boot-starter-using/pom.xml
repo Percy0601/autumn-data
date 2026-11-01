@@ -26,6 +26,11 @@
 			<groupId>xyz.wewin.autumn</groupId>
 			<artifactId>autumn-data-jdbc-spring-boot-starter</artifactId>
 		</dependency>
+		<!-- Web 演示：RestController / 内嵌 Tomcat / Jackson -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-web</artifactId>
+		</dependency>
 
 		<!-- 测试 -->
 		<dependency>
@@ -51,7 +56,7 @@
 		<dependency>
 			<groupId>com.h2database</groupId>
 			<artifactId>h2</artifactId>
-			<scope>test</scope>
+			<scope>runtime</scope><!-- 开发模块专用：让 main 可直接 run 起 Web 演示；测试同样用它 -->
 		</dependency>
 	</dependencies>
 

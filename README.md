@@ -55,6 +55,21 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 - MyBatis 对照（本地 `~/.m2` 真实 POM 核对，见 [docs/dependency-layering.md](docs/dependency-layering.md)）：引擎本体 `org.mybatis:mybatis` 的 POM **没有任何 Spring 依赖**，只有 `ognl`/`javassist`/`cglib` 三个 `<optional>`（字节码已重定位进 JAR）；Spring 依赖只出现在桥接层 `mybatis-spring`（`spring-context`/`spring-jdbc` 且为 `provided`，不透传）与 autoconfigure 层。`mybatis-*` 全家族**零 Spring Data 依赖**——反而是 `spring-data-jdbc` 把 `mybatis`/`mybatis-spring` 标为 optional。autumn 采用同样分层。
 - 根 POM 的 `spring-boot-starter-parent` 仅作 BOM/构建用途，不进入发布产物的依赖树。
 
+## 运行示例（using 模块）
+
+```bash
+./mvnw -B install -DskipTests                     # reactor 快照进本地仓库
+export H2_PASSWORD='<不写入仓库的本地库密码>'       # 凭据只走环境变量
+./mvnw spring-boot:run -pl autumn-data-jdbc-spring-boot-starter-using \
+    -Dspring-boot.run.profiles=demo               # demo profile → H2 TCP 服务库
+curl http://localhost:8080/training/user          # 当前返回 500 = 骨架占位（awaiting M2）
+```
+
+配置约定（全项目只用 `.properties`，不用 yaml）：
+- `application.properties`：连 `jdbc:h2:tcp://localhost:9092/autumn_security;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE`，密码 `${H2_PASSWORD:}`，脚本 `main-schema.sql`（`INSERT IGNORE` + 固定主键，重启不重复插数据）。
+- `src/test/resources/application.properties`：自动化测试用内存库 `jdbc:h2:mem:autumn-using-test`，与 TCP 服务库完全隔离。
+- 改动资源或处理器产物后请用 `./mvnw -B clean test`（旧 `target/classes` 残留会让改动看起来无效）。
+
 ## 构建
 
 ```bash
