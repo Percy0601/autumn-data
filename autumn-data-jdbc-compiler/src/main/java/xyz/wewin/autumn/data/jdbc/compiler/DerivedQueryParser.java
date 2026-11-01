@@ -436,9 +436,13 @@ final class DerivedQueryParser {
 		for (Association association : meta.associations()) {
 			String childProperty = childPropertyOf(property, association);
 			if (childProperty != null) {
-				return fail(methodName, "association '" + association.field() + "' has no property '" + childProperty
-						+ "' on " + association.target().qualifiedName() + " (fields: "
-						+ fieldNames(association.target()) + "); only one association level is resolved");
+			return fail(methodName, "association '" + association.field() + "' has no property '" + childProperty
+					+ "' on " + association.target().qualifiedName() + " (fields: "
+					+ fieldNames(association.target()) + ")"
+					+ (association.target().associations().isEmpty()
+							? "; deeper paths need " + association.target().qualifiedName()
+									+ " to declare its own associations"
+							: ""));
 			}
 			if (property.equalsIgnoreCase(association.field())) {
 				return fail(methodName, "association '" + association.field()

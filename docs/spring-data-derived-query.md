@@ -121,7 +121,13 @@ boolean existsById(ID id);
      `EXISTS (SELECT 1 FROM 子表 WHERE 子表.外键 = 父表.主键 AND 子表.列 …)`，即半连接。
      父行天然不重复，父侧列清单与 `RowMapper` 原样复用，因此不需要 `DISTINCT`，也不影响已有的一对多装配；
      代价是关联表只用于过滤，不能从它取列进 `SELECT`。
-   - **多对一**（`@ManyToOne`）只有当子表列需要出现在 `SELECT` 里时才必须 `JOIN`；首期未实现，方法名命中即报错。
+   - **多对一**（`@ManyToOne`）同样展开成相关子查询，只是连接方向相反
+     `EXISTS (SELECT 1 FROM 子表 WHERE 子表.主键 = 父表.外键 AND 子表.列 …)`；
+     外键列取自 `@JoinColumn(name)`，缺省为字段名转下划线加 `_id`。
+     多对一的**加载**也是两条语句（非 `JOIN`）：父查询后用父表外键值 `IN` 子表主键一次取回子实体，
+     按子表主键建索引后挂回单值字段 —— 因此父表上必须有一个映射该外键列的标量字段（供第二条语句读外键）。
+   - 关联路径可以**多段**：`findByOrdersItemsSku` 会按途经的每层关联包一层嵌套 `EXISTS`。
+     下钻深度取决于子实体自身是否声明了关联（编译期最多再展开一层），不认识的路径仍在方法声明处报错。
 
 ## 9. 当前实现状态（`DerivedQueryParser`）
 
@@ -135,10 +141,21 @@ boolean existsById(ID id);
 | `And` / `Or` | `findByNameAndAgeOrCreatedAtIsNull` | `(name = ? AND age = ?) OR created_at IS NULL` |
 | `OrderBy…Asc/Desc` | `findByNameOrderByNameAscAgeDesc` | 映射列 + 声明顺序 |
 | 一层关联路径 | `findByOrdersOrderNo`、`findByByOwnerMemoLike`、`countByOrdersOrderNoIsNotNull` | `EXISTS` 相关子查询，外键列取自 `@JoinColumn` 或 `mappedBy` 指向的子侧字段 |
-| 返回形态 | `List<T>` / `Optional<T>` | 命中一对多时结果仍走装配（两条语句，无 N+1） |
+| 多段关联路径 | `findByOrdersItemsSku`、`findByAddressCity` | 按每层关联嵌套 `EXISTS`；多对一的连接方向是 `子表.主键 = 父表.外键` |
+| `@Query` 自定义 SQL | `findAdults` / `purgeByName` | 直接采用注解里的 SQL，不解析方法名；参数按声明顺序绑定到 `?`，且不触发关联装配 |
+| `Distinct` | `findDistinctByName` | `SELECT DISTINCT <列> …`（投影里加 `DISTINCT`，不是运行期去重） |
+| `First` / `Top N` | `findFirstByName` / `findTop3ByName` | 行数上限在编译期解析成字面量，运行期由方言拼 `LIMIT` |
+| `deleteBy` / `removeBy` | `deleteByName(long)`、`deleteByNameAndAge(List)` | 返回 `long` 走 `update` 拿受影响行数；返回 `List<T>` 先 `SELECT` 取回再 `DELETE` |
+| `IgnoreCase` / `IgnoringCase` | `findByNameIgnoreCase` | 列与参数一起包 `LOWER()` |
+| `Like` 家族 | `Containing` / `StartingWith` / `EndingWith` | 运行期把实参包成 `%?%` / `?%` / `%?`，不依赖方言的字符串拼接 |
+| 返回形态 | `List<T>` / `Optional<T>` | 命中关联时结果仍走装配（两条语句，无 N+1） |
 
-编译期显式报错（不静默生成半成品）：`Distinct`、`First`/`Top`、`deleteBy`、`StartingWith`/`EndingWith`、
-裸实体返回值、两层以上关联路径、多于一处的 `IN`、参数个数或类型与谓词不符。
+编译期显式报错（不静默生成半成品）：裸实体返回值、多于一处的 `IN`、
+参数个数或类型与谓词不符、未知关键词、关联路径下钻到未声明关联的实体。
+
+标识符引号（保留字安全）由编译期选项开启：`-Aautumn.data.jdbc.dialect=mysql|postgresql|h2|default`；
+默认不加引号（裸标识符），与既有 schema 一致。开启后生成 SQL 里的表名/列名按方言加引号，
+结果集标签不受影响（行映射仍用裸列名）。`@Query` 里手写的 SQL 不会被改写。
 
 ## 10. 与 Micronaut Data 的差异备忘
 

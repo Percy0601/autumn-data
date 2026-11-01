@@ -368,13 +368,31 @@ class DerivedQueryParserTests {
 			.hasMessageContaining("fields: id, userId, orderNo, amount");
 		assertThatThrownBy(() -> parseOn(CUSTOMER, "findByOrders", list()))
 			.hasMessageContaining("association 'orders' needs a property of its own after it");
-		// 两层以上关联不展开：报错点名子实体没有这个属性，并说明只解析一层
+		// 子实体没有再声明关联时无法继续下钻：报错点名子实体没有这个属性，并说明需要子实体自带关联
 		assertThatThrownBy(() -> parseOn(CUSTOMER, "findByOrdersOrdersOrderNo", list(), string("x")))
 			.hasMessageContaining("association 'orders' has no property 'OrdersOrderNo' on demo.Order")
-			.hasMessageContaining("only one association level is resolved");
+			.hasMessageContaining("deeper paths need demo.Order to declare its own associations");
 		// 完全不认识的属性会列出可用的一层关联
 		assertThatThrownBy(() -> parseOn(CUSTOMER, "findByCity", list(), string("city")))
 			.hasMessageContaining("one-level association paths supported: orders, byOwner, lazyOrders");
+	}
+
+	@Test
+	void multiLevelAssociationPathRendersNestedExists() {
+		// orders(一对多) → items(一对多) → sku：两层关联包成嵌套 EXISTS，连接方向都是 child.fk = parent.id
+		assertThat(parseOn(CUSTOMER_MULTI, "findByOrdersItemsSku", list(), string("sku")).sql())
+			.isEqualTo(SELECT + " WHERE EXISTS (SELECT 1 FROM demo_order WHERE demo_order.user_id = demo_user.id"
+					+ " AND EXISTS (SELECT 1 FROM item WHERE item.order_id = demo_order.id AND item.sku = ?))");
+		// 多对一的连接方向相反：child.id = parent.fk（外键在父表）
+		assertThat(parseOn(CUSTOMER_MULTI, "findByAddressCity", list(), string("city")).sql())
+			.isEqualTo(SELECT + " WHERE EXISTS (SELECT 1 FROM address WHERE address.id = demo_user.address_id"
+					+ " AND address.city = ?)");
+		// 关联路径与本表列、关键词混用，且计数同样走嵌套 EXISTS
+		assertThat(parseOn(CUSTOMER_MULTI, "countByOrdersItemsSkuAndName", longType(), string("sku"),
+				string("name")).sql())
+			.isEqualTo("SELECT COUNT(*) FROM demo_user WHERE EXISTS (SELECT 1 FROM demo_order"
+					+ " WHERE demo_order.user_id = demo_user.id AND EXISTS (SELECT 1 FROM item"
+					+ " WHERE item.order_id = demo_order.id AND item.sku = ?)) AND name = ?");
 	}
 
 	private static DerivedQuery parse(String methodName, String returnTypeSource, Parameter... parameters) {

@@ -2,6 +2,8 @@ package xyz.wewin.autumn.data.jdbc.compiler;
 
 import java.util.List;
 
+import xyz.wewin.autumn.data.jdbc.dialect.Dialect;
+
 /**
  * 编译期从实体类提取的元数据快照（表名 / 主键 / 列清单 / 一对多关联），供 SQL 生成与实现类生成共用。
  *
@@ -24,6 +26,37 @@ record EntityMetadata(String qualifiedName, String table, EntityMetadata.Column 
 	/** INSERT 的列：自增主键交由数据库生成，不写进列清单。 */
 	List<Column> insertColumns() {
 		return this.id.generated() ? updateColumns() : this.columns;
+	}
+
+	/**
+	 * 按方言给标识符加引号后的元数据<em>视图</em>：表名与列名已引用，字段名 / 类型 / getter 原样保留。
+	 *
+	 * <p>生成 SQL 的代码（{@code CrudSqlGenerator} 与 {@code DerivedQueryParser}）直接吃这份视图即可输出
+	 * 带引号的标识符，无需改造；生成实现类的代码（{@code ImplementationSource}）仍吃原元数据 ——
+	 * 结果集标签不受引号影响（{@code SELECT "name"} 的标签仍是 {@code name}），所以行映射用未引号列名。</p>
+	 *
+	 * @param dialect 编译期选定的方言；{@code null} 表示不加引号（默认，保持裸标识符）
+	 */
+	static EntityMetadata quoted(EntityMetadata meta, Dialect dialect) {
+		if (dialect == null) {
+			return meta;
+		}
+		return new EntityMetadata(meta.qualifiedName(), dialect.quoteIdentifier(meta.table()),
+				quotedColumn(meta.id(), dialect),
+				meta.columns().stream().map(column -> quotedColumn(column, dialect)).toList(),
+				meta.associations().stream().map(association -> quotedAssociation(association, dialect)).toList());
+	}
+
+	private static Column quotedColumn(Column column, Dialect dialect) {
+		return new Column(column.field(), dialect.quoteIdentifier(column.column()), column.javaType(),
+				column.getter(), column.setter(), column.id(), column.generated());
+	}
+
+	private static Association quotedAssociation(Association association, Dialect dialect) {
+		return new Association(association.field(), association.getter(), association.setter(),
+				association.collectionType(), association.elementType(),
+				dialect.quoteIdentifier(association.foreignKeyColumn()), quoted(association.target(), dialect),
+				association.eager(), association.toOne(), association.foreignKeyGetter());
 	}
 
 	/** 非主键列，用于 UPDATE 的 SET 片段和自增主键实体的 INSERT。 */

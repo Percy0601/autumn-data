@@ -13,6 +13,7 @@ import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Filer;
 import javax.annotation.processing.RoundEnvironment;
 import javax.annotation.processing.SupportedAnnotationTypes;
+import javax.annotation.processing.SupportedOptions;
 import javax.annotation.processing.SupportedSourceVersion;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.AnnotationMirror;
@@ -34,6 +35,14 @@ import javax.tools.FileObject;
 import javax.tools.JavaFileObject;
 import javax.tools.StandardLocation;
 
+import java.util.Locale;
+
+import xyz.wewin.autumn.data.jdbc.dialect.DefaultDialect;
+import xyz.wewin.autumn.data.jdbc.dialect.Dialect;
+import xyz.wewin.autumn.data.jdbc.dialect.H2Dialect;
+import xyz.wewin.autumn.data.jdbc.dialect.MySqlDialect;
+import xyz.wewin.autumn.data.jdbc.dialect.PostgreSqlDialect;
+
 /**
  * JSR-269 注解处理器：为 {@code @AutumnRepository} 接口生成 {@code <名称>Impl} 实现。
  *
@@ -49,10 +58,15 @@ import javax.tools.StandardLocation;
  * 否则在方法声明位置报错 —— 不静默跳过，避免把「少实现一个方法」的锅甩给生成类的编译错误。</p>
  */
 @SupportedAnnotationTypes("xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository")
+// 可选的编译期方言：只用来决定生成的 SQL 里的标识符是否加引号（保留字安全），运行期方言仍由 DialectResolver 按 DataSource 判定
+@SupportedOptions(AutoRepositoryProcessor.DIALECT_OPTION)
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class AutoRepositoryProcessor extends AbstractProcessor {
 
 	static final String REPOSITORY_FQN = "xyz.wewin.autumn.data.jdbc.repository.Repository";
+
+	/** {@code -Aautumn.data.jdbc.dialect=<mysql|postgresql|h2|default>}：开启编译期标识符引号。 */
+	static final String DIALECT_OPTION = "autumn.data.jdbc.dialect";
 
 	/** {@code @Query} 注解，方法上写了它就用其 SQL 而非方法名派生（对标 Spring Data）。 */
 	private static final String QUERY_FQN = "xyz.wewin.autumn.data.jdbc.annotation.Query";
@@ -107,13 +121,16 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 				continue;
 			}
 			String packageName = elements.getPackageOf(repositoryInterface).getQualifiedName().toString();
-			List<DerivedQuery> queries = collectDerivedQueries(repositoryInterface, metadata, elements, types);
+			// SQL 生成吃「引号视图」，生成实现类的代码仍吃原元数据（结果集标签不受引号影响）
+			Dialect dialect = compileTimeDialect(repositoryInterface);
+			EntityMetadata sqlMetadata = EntityMetadata.quoted(metadata, dialect);
+			List<DerivedQuery> queries = collectDerivedQueries(repositoryInterface, sqlMetadata, elements, types);
 			if (queries == null) {
 				// 已经有方法解析失败并在声明处报错，不生成半成品实现
 				continue;
 			}
 			try {
-				Map<String, String> statements = CrudSqlGenerator.generate(metadata);
+				Map<String, String> statements = CrudSqlGenerator.generate(sqlMetadata);
 				writeImplementation(repositoryInterface, packageName, entity, id, metadata, statements, queries,
 						declaresPaging(repositoryInterface, elements, types), processingEnv.getFiler());
 				repositories.add(repositoryInterface.getQualifiedName().toString());
@@ -372,6 +389,30 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 			// 清单不存在或不可读：本轮清单照样全量写入，不做合并
 		}
 		return entries;
+	}
+
+	/**
+	 * 编译期可选的方言：由 {@code -Aautumn.data.jdbc.dialect} 指定，决定生成的 SQL 是否给标识符加引号。
+	 *
+	 * <p>默认不加（返回 {@code null}）：既有的 schema、断言与运行期行为都基于裸标识符，
+	 * 盲加引号会让「未引号建表 + 引号查询」在大小写敏感的库上落空。需要保留字安全时显式开启。</p>
+	 */
+	private Dialect compileTimeDialect(Element reportOn) {
+		String configured = processingEnv.getOptions().get(DIALECT_OPTION);
+		if (configured == null || configured.isBlank()) {
+			return null;
+		}
+		return switch (configured.trim().toLowerCase(Locale.ROOT)) {
+			case "mysql" -> new MySqlDialect();
+			case "postgresql", "postgres" -> new PostgreSqlDialect();
+			case "h2" -> new H2Dialect();
+			case "default", "ansi" -> new DefaultDialect();
+			default -> {
+				error("unsupported value '" + configured + "' for -A" + DIALECT_OPTION
+						+ " (use mysql, postgresql, h2 or default)", reportOn);
+				yield null;
+			}
+		};
 	}
 
 	private void error(String message, Element element) {

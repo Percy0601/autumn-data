@@ -68,6 +68,15 @@ class AutoRepositoryProcessorTests {
 			public interface UserRepository extends xyz.wewin.autumn.data.jdbc.repository.CrudRepository<User, java.lang.Long> {}
 			""";
 
+	/** 编译期方言（标识符引号）用的最小仓储：一条 CRUD + 一条派生查询即可观察引号效果。 */
+	private static final String QUOTED_REPO = """
+			package demo;
+			@xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository
+			public interface QuotedUserRepository extends xyz.wewin.autumn.data.jdbc.repository.CrudRepository<User, java.lang.Long> {
+				java.util.List<demo.User> findByName(java.lang.String name);
+			}
+			""";
+
 	private static final String PAGING_REPO = """
 			package demo;
 			@xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository
@@ -97,6 +106,59 @@ class AutoRepositoryProcessorTests {
 				public void setMemo(java.lang.String memo) { this.memo = memo; }
 				public Customer getOwner() { return this.owner; }
 				public void setOwner(Customer owner) { this.owner = owner; }
+			}
+			""";
+
+	private static final String ADDRESS_ENTITY = """
+			package demo;
+			@jakarta.persistence.Entity
+			@jakarta.persistence.Table(name = "address")
+			public class Address {
+				@jakarta.persistence.Id
+				@jakarta.persistence.GeneratedValue
+				private java.lang.Long id;
+				private java.lang.String city;
+				public java.lang.Long getId() { return this.id; }
+				public void setId(java.lang.Long id) { this.id = id; }
+				public java.lang.String getCity() { return this.city; }
+				public void setCity(java.lang.String city) { this.city = city; }
+			}
+			""";
+
+	/**
+	 * 多对一：父表用 {@code address_id} 指向子表主键，该列同时以标量字段 {@code addressId} 暴露，
+	 * 第二条语句靠它读外键（与一对多「子表暴露外键列」对称）。
+	 */
+	private static final String MANY_TO_ONE_ENTITY = """
+			package demo;
+			@jakarta.persistence.Entity
+			@jakarta.persistence.Table(name = "basic_user")
+			public class User {
+				@jakarta.persistence.Id
+				@jakarta.persistence.GeneratedValue
+				private java.lang.Long id;
+				private java.lang.String username;
+				@jakarta.persistence.Column(name = "address_id")
+				private java.lang.Long addressId;
+				@jakarta.persistence.ManyToOne
+				@jakarta.persistence.JoinColumn(name = "address_id")
+				private Address address;
+				public java.lang.Long getId() { return this.id; }
+				public void setId(java.lang.Long id) { this.id = id; }
+				public java.lang.String getUsername() { return this.username; }
+				public void setUsername(java.lang.String username) { this.username = username; }
+				public java.lang.Long getAddressId() { return this.addressId; }
+				public void setAddressId(java.lang.Long addressId) { this.addressId = addressId; }
+				public Address getAddress() { return this.address; }
+				public void setAddress(Address address) { this.address = address; }
+			}
+			""";
+
+	private static final String MANY_TO_ONE_REPO = """
+			package demo;
+			@xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository
+			public interface UserRepository extends xyz.wewin.autumn.data.jdbc.repository.CrudRepository<User, java.lang.Long> {
+				java.util.List<demo.User> findByAddressCity(java.lang.String city);
 			}
 			""";
 
@@ -288,6 +350,32 @@ class AutoRepositoryProcessorTests {
 	}
 
 	@Test
+	void generatesManyToOneLoadingWithSecondStatement(@TempDir Path dir) throws Exception {
+		Compilation result = compile(dir, List.of(new Source("demo/Address.java", ADDRESS_ENTITY),
+				new Source("demo/User.java", MANY_TO_ONE_ENTITY), new Source("demo/UserRepository.java",
+						MANY_TO_ONE_REPO)));
+		assertThat(result.errorMessages()).isEmpty();
+
+		String source = Files.readString(dir.resolve("gen/demo/UserRepositoryImpl.java"));
+		// 多对一的第二条语句：用父表外键 IN 子表主键，一次取回全部相关子实体（不是 JOIN）
+		assertThat(source).contains("private static final String SQL_ADDRESS_BY_IDS"
+				+ " = \"SELECT id, city FROM address WHERE id IN (:ids) ORDER BY id\"");
+		// 按父表外键挂回单值字段
+		assertThat(source).contains("private void attachAddress(java.util.List<demo.User> parents)");
+		assertThat(source).contains(
+				"this.autumn.query(xyz.wewin.autumn.data.jdbc.sql.Sql.inClause(SQL_ADDRESS_BY_IDS, keys.size())");
+		assertThat(source).contains("byKey.put(child.getId(), child);");
+		assertThat(source).contains("parent.setAddress(byKey.get(parent.getAddressId()));");
+		// findById 与列表查询之后都装配多对一
+		assertThat(source).contains("attachAddress(java.util.List.of(row));");
+		assertThat(source).contains("attachAddress(rows);");
+		// 多对一关联条件：连接方向是 child.id = parent.fk（外键在父表）
+		assertThat(source).contains("private static final String SQL_FIND_BY_ADDRESS_CITY"
+				+ " = \"SELECT id, username, address_id FROM basic_user WHERE EXISTS (SELECT 1 FROM address"
+				+ " WHERE address.id = basic_user.address_id AND address.city = ?)\"");
+	}
+
+	@Test
 	void fallsBackToNamingConventionAndAssignedId(@TempDir Path dir) throws Exception {
 		Compilation result = compile(dir, List.of(new Source("demo/Account.java", PLAIN_ENTITY),
 				new Source("demo/AccountRepository.java", ASSIGNED_ID_REPO)));
@@ -461,7 +549,61 @@ class AutoRepositoryProcessorTests {
 		assertThat(result.errorMessages()).anySatisfy(message -> assertThat(message).contains("has no @Id field"));
 	}
 
+	@Test
+	void quotesIdentifiersWhenCompileTimeDialectIsSet(@TempDir Path dir) throws Exception {
+		// MySQL：反引号
+		Compilation mysql = compile(dir.resolve("mysql"),
+				List.of(new Source("demo/User.java", USER_ENTITY),
+						new Source("demo/QuotedUserRepository.java", QUOTED_REPO)),
+				List.of("-Aautumn.data.jdbc.dialect=mysql"));
+		assertThat(mysql.errorMessages()).isEmpty();
+		String source = Files.readString(dir.resolve("mysql/gen/demo/QuotedUserRepositoryImpl.java"));
+		assertThat(source).contains("private static final String SQL_SELECT_ALL"
+				+ " = \"SELECT `id`, `name`, `age`, `created_at` FROM `demo_user`\"");
+		assertThat(source).contains("private static final String SQL_SELECT_BY_ID"
+				+ " = \"SELECT `id`, `name`, `age`, `created_at` FROM `demo_user` WHERE `id` = ?\"");
+		// 自增主键不写进 INSERT 列清单；派生查询同样加引号
+		assertThat(source).contains("private static final String SQL_INSERT"
+				+ " = \"INSERT INTO `demo_user` (`name`, `age`, `created_at`) VALUES (?, ?, ?)\"");
+		assertThat(source).contains("private static final String SQL_FIND_BY_NAME"
+				+ " = \"SELECT `id`, `name`, `age`, `created_at` FROM `demo_user` WHERE `name` = ?\"");
+		// 结果集标签不受引号影响：行映射仍用裸列名
+		assertThat(source).contains("rs.getObject(\"name\", java.lang.String.class)");
+
+		// PostgreSQL：双引号（在 Java 字符串字面量里转义）
+		Compilation postgres = compile(dir.resolve("pg"),
+				List.of(new Source("demo/User.java", USER_ENTITY),
+						new Source("demo/QuotedUserRepository.java", QUOTED_REPO)),
+				List.of("-Aautumn.data.jdbc.dialect=postgresql"));
+		assertThat(postgres.errorMessages()).isEmpty();
+		String pgSource = Files.readString(dir.resolve("pg/gen/demo/QuotedUserRepositoryImpl.java"));
+		assertThat(pgSource).contains("private static final String SQL_SELECT_ALL"
+				+ " = \"SELECT \\\"id\\\", \\\"name\\\", \\\"age\\\", \\\"created_at\\\" FROM \\\"demo_user\\\"\"");
+	}
+
+	@Test
+	void leavesIdentifiersBareByDefaultAndRejectsUnknownDialect(@TempDir Path dir) throws Exception {
+		// 默认不加引号：既有 schema 与断言都基于裸标识符
+		Compilation bare = compile(dir, List.of(new Source("demo/User.java", USER_ENTITY),
+				new Source("demo/QuotedUserRepository.java", QUOTED_REPO)));
+		assertThat(bare.errorMessages()).isEmpty();
+		assertThat(Files.readString(dir.resolve("gen/demo/QuotedUserRepositoryImpl.java")))
+			.contains("= \"SELECT id, name, age, created_at FROM demo_user\"");
+
+		Compilation unknown = compile(dir.resolve("bad"),
+				List.of(new Source("demo/User.java", USER_ENTITY),
+						new Source("demo/QuotedUserRepository.java", QUOTED_REPO)),
+				List.of("-Aautumn.data.jdbc.dialect=oracle"));
+		assertThat(unknown.errorMessages()).anySatisfy(message -> assertThat(message)
+			.contains("unsupported value 'oracle'")
+			.contains("use mysql, postgresql, h2 or default"));
+	}
+
 	private Compilation compile(Path dir, List<Source> sources) throws Exception {
+		return compile(dir, sources, List.of());
+	}
+
+	private Compilation compile(Path dir, List<Source> sources, List<String> options) throws Exception {
 		Path classes = dir.resolve("classes");
 		Path gen = dir.resolve("gen");
 		Files.createDirectories(classes);
@@ -478,7 +620,9 @@ class AutoRepositoryProcessorTests {
 			fileManager.setLocation(javax.tools.StandardLocation.CLASS_OUTPUT, List.of(classes.toFile()));
 			fileManager.setLocation(javax.tools.StandardLocation.SOURCE_OUTPUT, List.of(gen.toFile()));
 			Iterable<? extends JavaFileObject> units = fileManager.getJavaFileObjectsFromFiles(sourceFiles);
-			this.compiler.getTask(null, fileManager, diagnostics, List.of("-proc:full"), null, units).call();
+			List<String> allOptions = new ArrayList<>(options);
+			allOptions.add("-proc:full");
+			this.compiler.getTask(null, fileManager, diagnostics, allOptions, null, units).call();
 			return new Compilation(diagnostics.getDiagnostics(), gen);
 		}
 	}
