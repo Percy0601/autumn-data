@@ -10,13 +10,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
-import org.springframework.stereotype.Service;
 
 import xyz.wewin.autumn.data.jdbc.dialect.H2Dialect;
 import xyz.wewin.autumn.data.jdbc.page.Page;
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
+import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
-import xyz.wewin.autumn.data.jdbc.spring.AutumnJdbc;
+import xyz.wewin.autumn.data.jdbc.runtime.JdbcConnectionSource;
 import xyz.wewin.autumn.data.jdbc.sql.SqlStatements;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -48,7 +48,8 @@ class GeneratedUserRepositoryImplTest {
 		this.jdbcTemplate.execute("CREATE TABLE demo_order ("
 				+ "id BIGINT AUTO_INCREMENT PRIMARY KEY, user_id BIGINT, order_no VARCHAR(64) NOT NULL,"
 				+ " amount DECIMAL(12, 2))");
-		AutumnJdbc autumn = new AutumnJdbc(this.jdbcTemplate, new H2Dialect(), FetchPolicy.defaults());
+		AutumnJdbc autumn = new AutumnJdbc(new JdbcConnectionSource(this.dataSource), new H2Dialect(),
+				FetchPolicy.defaults());
 		this.repository = new UserRepositoryImpl(autumn);
 		this.orderRepository = new OrderRepositoryImpl(autumn);
 	}
@@ -66,8 +67,8 @@ class GeneratedUserRepositoryImplTest {
 	}
 
 	@Test
-	void implementationIsServiceWithRuntimeFacade() throws Exception {
-		assertThat(UserRepositoryImpl.class.getAnnotation(Service.class)).isNotNull();
+	void implementationHasSingleAutumnJdbcConstructor() throws Exception {
+		// 生成类不标 @Service：它由 starter 的 RepositoryRegistrar 在容器启动时注册为 Bean
 		assertThat(UserRepositoryImpl.class.getConstructor(AutumnJdbc.class)).isNotNull();
 		assertThat(UserRepositoryImpl.class.getDeclaredConstructors()).hasSize(1);
 	}
@@ -140,7 +141,8 @@ class GeneratedUserRepositoryImplTest {
 		}
 		this.orderRepository.saveAll(orders);
 
-		AutumnJdbc capped = new AutumnJdbc(this.jdbcTemplate, new H2Dialect(), new FetchPolicy(2, 100));
+		AutumnJdbc capped = new AutumnJdbc(new JdbcConnectionSource(this.dataSource), new H2Dialect(),
+				new FetchPolicy(2, 100));
 		User limited = new UserRepositoryImpl(capped).findById(alice.getId()).orElseThrow();
 		assertThat(limited.getOrders()).hasSize(2);
 	}

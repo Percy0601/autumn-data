@@ -2,6 +2,7 @@ package xyz.wewin.autumn.data.jdbc.compiler;
 
 import java.io.IOException;
 import java.io.Writer;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -58,6 +59,7 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 			error("autumn-data-jdbc must be on the compile classpath to process @AutumnRepository", null);
 			return false;
 		}
+		List<String> repositories = new ArrayList<>();
 		for (Element element : roundEnv.getElementsAnnotatedWith(annotations.iterator().next())) {
 			if (element.getKind() != ElementKind.INTERFACE) {
 				error("@AutumnRepository can only be applied to interfaces, but "
@@ -85,10 +87,19 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 				writeSqlResource(resource, metadata, CrudSqlGenerator.generate(metadata), processingEnv.getFiler());
 				writeImplementation(repositoryInterface, packageName, entity, id, metadata, resource,
 						declaresPaging(repositoryInterface, elements, types), processingEnv.getFiler());
+				repositories.add(repositoryInterface.getQualifiedName().toString());
 			}
 			catch (IOException ex) {
 				error("Failed to generate implementation for " + repositoryInterface.getQualifiedName() + ": " + ex,
 						repositoryInterface);
+			}
+		}
+		if (!repositories.isEmpty()) {
+			try {
+				writeRepositoryRegistry(repositories, processingEnv.getFiler());
+			}
+			catch (IOException ignored) {
+				// 同一编译单元重复写注册表时忽略（APT 不允许重复 create 同名资源）
 			}
 		}
 		return false;
@@ -172,6 +183,20 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 			}
 			writer.write(ImplementationSource.generate(repositoryInterface.getSimpleName().toString(), simpleName,
 					entity, id, metadata, sqlResource, paging));
+		}
+	}
+
+	/** 把本模块处理到的所有仓储接口 FQN 落盘为 {@code META-INF/autumn-data/repositories}，
+	 * 供 starter 的 {@code RepositoryRegistrar} 读取并注册成 Spring Bean（无需 @Service）。 */
+	private static void writeRepositoryRegistry(List<String> repositories, Filer filer) throws IOException {
+		StringBuilder sb = new StringBuilder();
+		for (String fqn : repositories) {
+			sb.append(fqn).append('\n');
+		}
+		FileObject file = filer.createResource(StandardLocation.CLASS_OUTPUT, "",
+				"META-INF/autumn-data/repositories");
+		try (Writer writer = file.openWriter()) {
+			writer.write(sb.toString());
 		}
 	}
 

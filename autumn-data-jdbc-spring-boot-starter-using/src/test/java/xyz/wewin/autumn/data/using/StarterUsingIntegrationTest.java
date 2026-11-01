@@ -84,7 +84,8 @@ class StarterUsingIntegrationTest {
 
 	@Test
 	void repositoryBeanComesFromCompiledGeneratedImplementation() {
-		// 生成的 Impl 标 @Service，随组件扫描注册；使用方无需手工 @Bean 装配
+		// 生成的 Impl 不标 @Service：由 starter 的 RepositoryRegistrar 依据
+		// META-INF/autumn-data/repositories 注册为 Bean，构造注入 AutumnJdbc
 		assertThat(this.userRepository).isInstanceOf(UserRepositoryImpl.class);
 	}
 

@@ -7,13 +7,15 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
 import xyz.wewin.autumn.data.jdbc.dialect.H2Dialect;
 import xyz.wewin.autumn.data.jdbc.page.Page;
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
+import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
+import xyz.wewin.autumn.data.jdbc.runtime.JdbcConnectionSource;
+import xyz.wewin.autumn.data.jdbc.runtime.RowMapper;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -39,7 +41,7 @@ class AutumnJdbcTests {
 		this.jdbcTemplate.execute("DROP TABLE IF EXISTS demo_item");
 		this.jdbcTemplate
 			.execute("CREATE TABLE demo_item (id BIGINT AUTO_INCREMENT PRIMARY KEY, name VARCHAR(64) NOT NULL, owner_id BIGINT)");
-		this.autumn = new AutumnJdbc(this.jdbcTemplate, new H2Dialect(), FetchPolicy.defaults());
+		this.autumn = new AutumnJdbc(new JdbcConnectionSource(dataSource), new H2Dialect(), FetchPolicy.defaults());
 	}
 
 	@Test
@@ -84,7 +86,8 @@ class AutumnJdbcTests {
 
 	@Test
 	void batchInsertBackfillsAcrossChunks() {
-		AutumnJdbc chunked = new AutumnJdbc(this.jdbcTemplate, new H2Dialect(), new FetchPolicy(1000, 2));
+		AutumnJdbc chunked = new AutumnJdbc(new JdbcConnectionSource(this.jdbcTemplate.getDataSource()),
+				new H2Dialect(), new FetchPolicy(1000, 2));
 		List<Object[]> rows = List.of(new Object[] { "a", 1L }, new Object[] { "b", 1L }, new Object[] { "c", 1L },
 				new Object[] { "d", 1L }, new Object[] { "e", 1L });
 		assertThat(chunked.batchInsertReturningKeys(INSERT_ITEM, "id", rows)).hasSize(5);
@@ -102,7 +105,8 @@ class AutumnJdbcTests {
 	@Test
 	void associationLimitCapsCollectionFetchAndDefaultsToOneThousand() {
 		insertNames(10);
-		AutumnJdbc capped = new AutumnJdbc(this.jdbcTemplate, new H2Dialect(), new FetchPolicy(3, 100));
+		AutumnJdbc capped = new AutumnJdbc(new JdbcConnectionSource(this.jdbcTemplate.getDataSource()), new H2Dialect(),
+				new FetchPolicy(3, 100));
 		assertThat(capped.queryLimited("SELECT name FROM demo_item ORDER BY id", NAME_MAPPER)).hasSize(3);
 		assertThat(this.autumn.queryLimited("SELECT name FROM demo_item ORDER BY id", NAME_MAPPER)).hasSize(10);
 	}

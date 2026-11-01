@@ -21,13 +21,13 @@ final class ImplementationSource {
 
 	private static final String SQL_STATEMENTS = "xyz.wewin.autumn.data.jdbc.sql.SqlStatements";
 
-	private static final String AUTUMN_JDBC = "xyz.wewin.autumn.data.jdbc.spring.AutumnJdbc";
+	private static final String AUTUMN_JDBC = "xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc";
 
 	private static final String PAGE = "xyz.wewin.autumn.data.jdbc.page.Page";
 
 	private static final String PAGEABLE = "xyz.wewin.autumn.data.jdbc.page.Pageable";
 
-	private static final String ROW_MAPPER = "org.springframework.jdbc.core.RowMapper";
+	private static final String ROW_MAPPER = "xyz.wewin.autumn.data.jdbc.runtime.RowMapper";
 
 	private ImplementationSource() {
 	}
@@ -72,11 +72,10 @@ final class ImplementationSource {
 		private String render() {
 			StringBuilder sb = new StringBuilder();
 			sb.append("/** 由 autumn-data-jdbc-compiler 生成，请勿手工修改。 */\n");
-			sb.append("@javax.annotation.processing.Generated(\"")
-				.append(AutoRepositoryProcessor.class.getName())
-				.append("\")\n");
-			sb.append("@org.springframework.stereotype.Service\n");
-			sb.append("public class ").append(this.implSimpleName).append(" implements ")
+		sb.append("@javax.annotation.processing.Generated(\"")
+			.append(AutoRepositoryProcessor.class.getName())
+			.append("\")\n");
+		sb.append("public class ").append(this.implSimpleName).append(" implements ")
 				.append(this.interfaceSimpleName).append(" {\n\n");
 			sb.append("\tprivate static final ").append(SQL_STATEMENTS).append(" SQL = ")
 				.append(SQL_STATEMENTS).append(".load(\"").append(this.sqlResource).append("\");\n\n");

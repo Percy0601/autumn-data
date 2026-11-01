@@ -177,9 +177,10 @@ class AutoRepositoryProcessorTests {
 		assertThat(generated).exists();
 		String source = Files.readString(generated);
 		assertThat(source).contains("class UserRepositoryImpl implements UserRepository");
-		assertThat(source).contains("@org.springframework.stereotype.Service");
+		// 生成类不标 @Service：starter 用 RepositoryRegistrar 在读 META-INF/autumn-data/repositories 后注册为 Bean
+		assertThat(source).doesNotContain("@org.springframework.stereotype.Service");
 		assertThat(source).contains(
-				"public UserRepositoryImpl(xyz.wewin.autumn.data.jdbc.spring.AutumnJdbc autumn)");
+				"public UserRepositoryImpl(xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc autumn)");
 		assertThat(source).contains("row.setAge(rs.getInt(\"age\"))");
 		assertThat(source).contains("row.setCreatedAt(rs.getObject(\"created_at\", java.time.LocalDateTime.class))");
 		// 批量写：新行一条带生成键的批量 INSERT，已有行一条批量 UPDATE
