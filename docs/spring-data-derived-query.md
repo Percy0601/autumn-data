@@ -113,7 +113,7 @@ boolean existsById(ID id);
 
 ## 8. autumn-data-jdbc 的解析优先级（编译期实现约定）
 
-1. 显式注解（`@Query` / FreeMarker 模板，见 `autumn-data-meta`）优先于方法名派生。
+1. 显式注解（`@Query` / FreeMarker 模板，见 `autumn-meta-jdbc`）优先于方法名派生。
 2. 方法名完全匹配第 7 节标准 CRUD 签名 → 走内置实现。
 3. 剩余方法按第 1~6 节解析；解析失败（未知关键词、属性不存在、参数个数不符、返回类型不符）必须在 APT 阶段输出定位到方法声明的错误，不允许静默生成。
 4. 关联查询：嵌套 `PropertyPath` 的落地形态按关联基数分两种。
@@ -166,4 +166,4 @@ boolean existsById(ID id);
 | 空值关键词 | `Null` / `NotNull` 与 `IsEmpty` 区分 | 相近 |
 | 关联查询 | 隐式 join，规则见第 5、8 节 | `@Join`/`joinType` 显式声明为主 |
 
-autumn 目标：以 Spring Data 的**方法名约定**为接口体验，以 Micronaut Data 的**编译期生成**为实现方式，动态 SQL 交给 `autumn-data-meta`（FreeMarker）。
+autumn 目标：以 Spring Data 的**方法名约定**为接口体验，以 Micronaut Data 的**编译期生成**为实现方式，动态 SQL 交给 `autumn-meta-jdbc`（FreeMarker）。

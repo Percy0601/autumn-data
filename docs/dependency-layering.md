@@ -73,7 +73,7 @@ spring-data-jdbc -> spring-data-relational, spring-data-commons,
 
 ## 5. 对 autumn 的取舍
 
-1. **核心模块（`autumn-data-jdbc` / `autumn-data-meta`）不依赖 `spring-boot-starter-jdbc`**：
+1. **核心模块（`autumn-data-jdbc` / `autumn-meta-jdbc`，方言在 `autumn-common-jdbc`）不依赖 `spring-boot-starter-jdbc`**：
    - 现网代码实测只 import `javax.sql.DataSource` + `java.sql.*` + `freemarker.*`，无一处 Spring。
    - 只需 `com.zaxxer:HikariCP`（版本由 `spring-boot-starter-parent` BOM 管理，无需写死）。
    - 事务：首期直接用 JDBC 原生 `Connection.setAutoCommit(false)` / `commit()`；若使用方要 `@Transactional`，只需在 classpath 上有 `spring-tx` + `spring-jdbc` 的 `DataSourceTransactionManager`（对 `DataSource` 编程，不依赖我们的类），无需核心模块透传。

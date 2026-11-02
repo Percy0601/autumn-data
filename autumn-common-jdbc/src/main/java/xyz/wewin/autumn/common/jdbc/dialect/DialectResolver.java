@@ -1,4 +1,4 @@
-package xyz.wewin.autumn.data.meta.dialect;
+package xyz.wewin.autumn.common.jdbc.dialect;
 
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
@@ -6,8 +6,9 @@ import java.sql.SQLException;
 import javax.sql.DataSource;
 
 /**
- * 根据 {@link DataSource} 的数据库产品名自动识别并选择对应 {@link Dialect}（meta 模块）。
+ * 根据 {@link DataSource} 的数据库产品名自动识别并选择对应 {@link Dialect}。
  *
+ * <p>识别规则（大小写不敏感，包含匹配）：</p>
  * <ul>
  *   <li>{@code mysql}  → {@link MySqlDialect}</li>
  *   <li>{@code postgre} → {@link PostgreSqlDialect}</li>

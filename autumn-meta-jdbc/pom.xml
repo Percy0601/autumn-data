@@ -7,9 +7,9 @@
 		<artifactId>autumn-data</artifactId>
 		<version>0.0.1-SNAPSHOT</version>
 	</parent>
-	<artifactId>autumn-data-meta</artifactId>
-	<name>autumn-data-meta</name>
-	<description>轻量动态 SQL 引擎：对标 MyBatis，使用 FreeMarker(.ftl) 替代 XML，支持运行时动态加载。数据源 HikariCP。</description>
+	<artifactId>autumn-meta-jdbc</artifactId>
+	<name>autumn-meta-jdbc</name>
+	<description>轻量动态 SQL 引擎：对标 MyBatis，使用 FreeMarker(.ftl) 替代 XML，支持运行时动态加载。数据源 HikariCP；方言复用 autumn-common-jdbc。</description>
 
 	<properties>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -18,6 +18,11 @@
 	</properties>
 
 	<dependencies>
+		<!-- 方言抽象（Dialect / DialectResolver / 各库实现）：公共 JDBC 底座 -->
+		<dependency>
+			<groupId>xyz.wewin.autumn</groupId>
+			<artifactId>autumn-common-jdbc</artifactId>
+		</dependency>
 		<!-- HikariCP 连接池 + JdbcClient / JdbcTemplate -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>

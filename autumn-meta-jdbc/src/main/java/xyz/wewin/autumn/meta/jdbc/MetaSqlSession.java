@@ -1,4 +1,4 @@
-package xyz.wewin.autumn.data.meta;
+package xyz.wewin.autumn.meta.jdbc;
 
 /**
  * Meta SQL 会话（meta 模块对外门面，后续步骤实现）。

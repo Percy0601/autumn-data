@@ -1,10 +1,11 @@
-package xyz.wewin.autumn.data.jdbc.dialect;
+package xyz.wewin.autumn.common.jdbc.dialect;
 
 /**
- * 数据库方言抽象。
+ * 数据库方言抽象（公共 JDBC 底座）。
  *
- * <p>两个模块（jdbc / meta）都依赖方言来处理不同数据库之间 SQL 语法的差异，
- * 目前至少覆盖 MySQL 与 PostgreSQL，并可按需扩展（Oracle / SQL Server / H2 等）。</p>
+ * <p>供 {@code autumn-data-jdbc} 与 {@code autumn-meta-jdbc} 等数据访问模块复用，
+ * 封装不同数据库之间 SQL 语法层的差异，目前至少覆盖 MySQL 与 PostgreSQL，
+ * 并可按需扩展（Oracle / SQL Server / H2 等）。</p>
  *
  * <p>设计原则：方言只负责“语法层差异”，不持有任何连接；连接由调用方通过
  * {@link DialectResolver} 根据 {@code DataSource} 元数据选择对应方言。</p>

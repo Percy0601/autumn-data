@@ -23,11 +23,12 @@
 	</parent>
 
 	<modules>
+		<module>autumn-common-jdbc</module>
 		<module>autumn-data-jdbc</module>
 		<module>autumn-data-jdbc-compiler</module>
 		<module>autumn-data-jdbc-spring-boot-starter</module>
 		<module>autumn-data-jdbc-spring-boot-starter-using</module>
-		<module>autumn-data-meta</module>
+		<module>autumn-meta-jdbc</module>
 	</modules>
 
 	<properties>
@@ -53,6 +54,11 @@
 			<!-- 内部模块 -->
 			<dependency>
 				<groupId>xyz.wewin.autumn</groupId>
+				<artifactId>autumn-common-jdbc</artifactId>
+				<version>${project.version}</version>
+			</dependency>
+			<dependency>
+				<groupId>xyz.wewin.autumn</groupId>
 				<artifactId>autumn-data-jdbc</artifactId>
 				<version>${project.version}</version>
 			</dependency>
@@ -68,7 +74,7 @@
 			</dependency>
 			<dependency>
 				<groupId>xyz.wewin.autumn</groupId>
-				<artifactId>autumn-data-meta</artifactId>
+				<artifactId>autumn-meta-jdbc</artifactId>
 				<version>${project.version}</version>
 			</dependency>
 			<!-- JPA 注解（@Entity/@Table/@Id/@Column），供 jdbc 模块在编译期读取实体元数据 -->

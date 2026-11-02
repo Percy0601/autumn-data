@@ -21,10 +21,10 @@
 	</properties>
 
 	<dependencies>
-		<!-- 只做类型引用（校验仓储接口/读实体注解），不使用其运行时类，故 provided -->
+		<!-- 编译期方言（决定生成 SQL 是否给标识符加引号），故 provided -->
 		<dependency>
 			<groupId>xyz.wewin.autumn</groupId>
-			<artifactId>autumn-data-jdbc</artifactId>
+			<artifactId>autumn-common-jdbc</artifactId>
 			<scope>provided</scope>
 		</dependency>
 		<dependency>

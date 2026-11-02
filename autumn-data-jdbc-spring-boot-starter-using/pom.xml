@@ -73,9 +73,10 @@
 							<artifactId>autumn-data-jdbc-compiler</artifactId>
 							<version>${project.version}</version>
 						</path>
+						<!-- 处理器运行期需要方言类（编译期 new MySqlDialect 等） -->
 						<path>
 							<groupId>xyz.wewin.autumn</groupId>
-							<artifactId>autumn-data-jdbc</artifactId>
+							<artifactId>autumn-common-jdbc</artifactId>
 							<version>${project.version}</version>
 						</path>
 					</annotationProcessorPaths>

@@ -23,6 +23,11 @@
 			<groupId>xyz.wewin.autumn</groupId>
 			<artifactId>autumn-data-jdbc</artifactId>
 		</dependency>
+		<!-- 方言抽象（自动配置直接引用 Dialect / DialectResolver） -->
+		<dependency>
+			<groupId>xyz.wewin.autumn</groupId>
+			<artifactId>autumn-common-jdbc</artifactId>
+		</dependency>
 		<!-- Spring Boot JDBC 基础设施：DataSource 绑定、HikariCP、spring-jdbc/spring-tx、logging starter -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
