@@ -1,1 +1,2 @@
 xyz.wewin.autumn.data.jdbc.autoconfigure.AutumnDataJdbcAutoConfiguration
+xyz.wewin.autumn.data.jdbc.autoconfigure.AutumnDataMetaAutoConfiguration

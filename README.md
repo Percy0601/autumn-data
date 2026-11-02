@@ -8,7 +8,7 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 | --- | --- | --- |
 | `autumn-data-common` | JDBC 公共底座 | 数据库方言抽象（`Dialect` / `DialectResolver` / ANSI / MySQL / PostgreSQL / H2 实现）与通用 JDBC 基础设施；`MetaDataSource` 多数据源注册表（懒加载 + 空闲池轮询回收，面向多连接池场景）；`GlobalScheduler` 全局唯一定时任务线程池；核心零 Spring，被 `autumn-data-jdbc` 与 `autumn-data-meta-jdbc` 复用。 |
 | `autumn-data-jdbc` | 零反射 JDBC 仓储 | 采用 **Spring Data 注解风格**（`Repository` / `CrudRepository` / `@Query` / `@Param`），并参考 **Micronaut Data** 在**编译期**通过注解处理器生成实现类，运行时零反射。核心**不依赖 Spring**，数据源连接池使用 **HikariCP**。 |
-| `autumn-data-jdbc-spring-boot-starter` | Spring Boot 集成层（唯一使用方入口） | 约定大于配置：只引这一个依赖 + `spring.datasource.*` 即可用。仿 MyBatis 分层（引擎零 Spring / 集成层依赖 Boot），自动配置 `Dialect` Bean，支持 `autumn.data.jdbc.dialect` 显式指定或按 `DataSource` 元数据自动识别。 |
+| `autumn-data-jdbc-spring-boot-starter` | Spring Boot 集成层（唯一使用方入口） | 约定大于配置：只引这一个依赖 + `spring.datasource.*` 即可用。仿 MyBatis 分层（引擎零 Spring / 集成层依赖 Boot），自动配置 `Dialect` Bean，支持 `autumn.data.jdbc.dialect` 显式指定或按 `DataSource` 元数据自动识别。多库场景可用 `autumn.data.meta.enabled=true` 让 `SpringMetaDataSource`（继承 Spring `AbstractDataSource`）接管数据源，底层交给 `MetaDataSource`。 |
 | `autumn-data-jdbc-compiler` | JSR-269 注解处理器 | 编译期为 `@AutumnRepository` 接口生成 `<名称>Impl`；仅 `annotationProcessorPaths` 使用，**运行时不依赖**。已实现：实体元数据提取（`@Entity`/`@Table`/`@Id`/`@Column`/`@GeneratedValue`/`@OneToMany`）、CRUD + 分页 + 一对多 + 方法名派生查询 SQL **编译期内联为生成类常量**、`RowMapper` 与批量读写/装配代码生成。解析不了的方法在**接口方法声明处**报错，不静默生成半成品。 |
 | `autumn-data-jdbc-spring-boot-starter-using` | 使用方示例（不发布） | **使用驱动开发的主战场**：只引 starter + 挂 compiler 处理器，在这里写后续所有用法（单表、一对多、多对一、派生查询），以用法倒逼核心实现。 |
 | `autumn-data-meta-jdbc` | 轻量动态 SQL 引擎 | 对标 **MyBatis** 但更轻量，支持**运行时动态加载**；用 **FreeMarker（.ftl）** 语法替代 MyBatis 的 XML SQL。数据源连接池同样使用 **HikariCP**；方言复用 `autumn-data-common`。 |
@@ -38,6 +38,7 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 - [x] 派生查询支持一层关联条件：`findByOrdersOrderNo` 编译期展开成 `EXISTS` 相关子查询（半连接，父行不重复、不影响一对多装配），外键列取自 `@JoinColumn` 或 `mappedBy`
 - [x] compiler：解析不了的接口方法（未知属性/关键词、参数或返回类型不符、`Distinct`/`First`/`deleteBy`/两层以上关联）在**方法声明处**报错，不再静默跳过后由 javac 报「实现类未覆盖…」
 - [x] 一次性取数上下文（`AutumnDataContextHolder`，按线程保存 + `wrap` 线程池透传）：分页关联加载三态（`DEFAULT` 阈值级联 / `CASCADE` 强制级联 / `DISABLED` 强制关闭）与**字段投影**（`selectFields` / `excludeFields` 运行期真裁剪 `SELECT` 列清单，主键与多对一外键编译期判定为不可省略，级联不被裁剪打断）；被最近一次取实体行的查询消费后自动清除，无需手动 `clear`
+- [x] starter 多数据源接管（`autumn.data.meta.enabled=true`，默认关闭）：`SpringMetaDataSource` 继承 Spring 的 `AbstractDataSource` 成为应用唯一的 `DataSource`（配置排在 `DataSourceAutoConfiguration` 之前，Boot 建池自动退让），底层就是 `MetaDataSource` 注册表；默认池参数仍来自 `spring.datasource.*`（含 `spring.datasource.hikari.*` 调优项），额外池 `autumn.data.meta.pools.<名称>.*` 懒建 + 空闲回收，运行期 `register(name, supplier)` 可继续追加；Spring 事务只绑默认池，`@Transactional` 提交/回滚实测不变（using 模块有示例与集成测试）
 - [ ] `OrderBy` 之外的排序入参（`findAllBy(Sort)`）与 `Pageable` 排序
 - [ ] `autumn-data-meta-jdbc` 同步去 Spring 依赖（同样挪到各自 starter）
 - [ ] `autumn-data-meta-jdbc`：FreeMarker 动态 Mapper 执行引擎
@@ -54,6 +55,27 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 ```
 
 只配 `spring.datasource.*` 开箱得到：HikariCP `DataSource`、`JdbcTemplate`/`JdbcClient`、`PlatformTransactionManager`（Boot 自带自动配置）+ autumn 的 `Dialect` Bean（按数据库元数据自动识别；`autumn.data.jdbc.dialect=mysql|postgresql|h2|default|className:<fqcn>` 可覆盖，自定义 `Dialect` Bean 可顶替，`autumn.data.jdbc.enabled=false` 整体关闭）。后续仓储实现（APT 生成）的注册同样收进这个 starter，核心模块保持零 Spring。
+
+多库场景打开接管开关（默认关，关掉时行为与上面完全一致）：`SpringMetaDataSource`（`AbstractDataSource` 子类）成为应用唯一的 `DataSource`，Boot 的建池随之退让，注册/懒加载/空闲回收交给 `MetaDataSource`，轮询任务跑在 `GlobalScheduler` 上。
+
+```properties
+autumn.data.meta.enabled=true
+autumn.data.meta.default-pool-name=default   # 无参 getConnection() 与 @Transactional 绑这个池
+autumn.data.meta.sweep-interval=2m           # 留空则用 MetaDataSource 内置的 3 分钟
+autumn.data.meta.pools.tenant-a.url=jdbc:h2:tcp://localhost:9092/tenant_a
+autumn.data.meta.pools.tenant-a.username=sa
+```
+
+```java
+@Autowired SpringMetaDataSource metaDataSource;
+
+metaDataSource.getConnection();                    // 默认池：Spring、事务管理器、生成的仓储都走这条
+metaDataSource.connection("tenant-a");             // 按池名取连接（首次访问才建池）
+metaDataSource.pool("tenant-a");                   // 拿真实 DataSource：给它单建一个事务管理器
+metaDataSource.register("tenant-live", () -> ...); // 运行期追加，工厂方式登记不预占连接
+```
+
+Spring 事务只绑定默认池那一个实例，额外池不参与外层 `@Transactional`；跨池分布式事务不在这一层解决。示例见 `autumn-data-jdbc-spring-boot-starter-using` 的 `MultiDataSourceDemo` 与 `application-meta.properties`。
 
 | 模块 | 运行时依赖 | 编译期依赖 | test |
 | --- | --- | --- | --- |
