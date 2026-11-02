@@ -1,4 +1,4 @@
-package xyz.wewin.autumn.common.jdbc.dialect;
+package xyz.wewin.autumn.data.common.dialect;
 
 /**
  * MySQL 方言。

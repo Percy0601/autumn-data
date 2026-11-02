@@ -1,4 +1,4 @@
-package xyz.wewin.autumn.common.jdbc.dialect;
+package xyz.wewin.autumn.data.common.dialect;
 
 /**
  * H2 内存库方言（主要用于测试，语法上与 PostgreSQL 基本一致）。

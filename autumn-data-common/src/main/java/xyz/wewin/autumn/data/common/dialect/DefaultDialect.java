@@ -1,19 +1,15 @@
-package xyz.wewin.autumn.common.jdbc.dialect;
+package xyz.wewin.autumn.data.common.dialect;
 
 /**
- * PostgreSQL 方言。
+ * ANSI 通用方言（兜底实现）。
  *
- * <ul>
- *   <li>标识符引用：双引号 {@code "id"}</li>
- *   <li>自增列：{@code SERIAL} / {@code GENERATED ... AS IDENTITY}</li>
- *   <li>分页：{@code LIMIT rowCount OFFSET offset}</li>
- * </ul>
+ * <p>适用于未识别的数据库或单元测试；分页采用 {@code LIMIT ... OFFSET ...} 标准形式。</p>
  */
-public class PostgreSqlDialect implements Dialect {
+public class DefaultDialect implements Dialect {
 
 	@Override
 	public String productName() {
-		return "PostgreSQL";
+		return "ANSI";
 	}
 
 	@Override

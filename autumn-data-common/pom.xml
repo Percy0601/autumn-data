@@ -7,9 +7,9 @@
 		<artifactId>autumn-data</artifactId>
 		<version>0.0.1-SNAPSHOT</version>
 	</parent>
-	<artifactId>autumn-common-jdbc</artifactId>
-	<name>autumn-common-jdbc</name>
-	<description>JDBC 公共底座：数据库方言抽象（Dialect / DialectResolver / 各库实现）与通用 JDBC 基础设施。核心零 Spring，供 autumn-data-jdbc 与 autumn-meta-jdbc 复用。</description>
+	<artifactId>autumn-data-common</artifactId>
+	<name>autumn-data-common</name>
+	<description>JDBC 公共底座：数据库方言抽象（Dialect / DialectResolver / 各库实现）与通用 JDBC 基础设施。核心零 Spring，供 autumn-data-jdbc 与 autumn-data-meta-jdbc 复用。</description>
 
 	<properties>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>

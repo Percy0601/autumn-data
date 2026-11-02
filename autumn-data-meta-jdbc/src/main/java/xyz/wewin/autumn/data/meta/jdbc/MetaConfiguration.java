@@ -1,4 +1,4 @@
-package xyz.wewin.autumn.meta.jdbc;
+package xyz.wewin.autumn.data.meta.jdbc;
 
 import freemarker.template.Configuration;
 import freemarker.template.Template;
