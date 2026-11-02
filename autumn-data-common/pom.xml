@@ -9,7 +9,7 @@
 	</parent>
 	<artifactId>autumn-data-common</artifactId>
 	<name>autumn-data-common</name>
-	<description>JDBC 公共底座：数据库方言抽象（Dialect / DialectResolver / 各库实现）与通用 JDBC 基础设施。核心零 Spring，供 autumn-data-jdbc 与 autumn-data-meta-jdbc 复用。</description>
+	<description>JDBC 公共底座：数据库方言抽象（Dialect / DialectResolver / 各库实现）、MetaDataSource 多数据源管理（懒加载注册表 + 空闲池轮询回收）与通用 JDBC 基础设施。核心零 Spring，供 autumn-data-jdbc 与 autumn-data-meta-jdbc 复用。</description>
 
 	<properties>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -19,6 +19,30 @@
 
 	<dependencies>
 		<!-- 纯 JDK：仅使用 java.sql / javax.sql（DataSource），无第三方运行依赖 -->
+		<!-- HikariCP（optional，不传递到下游）：仅 MetaDataSource 空闲池回收检测读取 HikariPoolMXBean 使用；下游模块按需自行声明 -->
+		<dependency>
+			<groupId>com.zaxxer</groupId>
+			<artifactId>HikariCP</artifactId>
+			<optional>true</optional>
+		</dependency>
+		<!-- 测试：H2 内存库（验证 MetaDataSource 多池注册/懒加载/回收） -->
+		<dependency>
+			<groupId>com.h2database</groupId>
+			<artifactId>h2</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!-- 测试：JUnit 5 -->
+		<dependency>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<!-- 测试：Mockito（精确控制 Hikari 池状态，验证回收判定） -->
+		<dependency>
+			<groupId>org.mockito</groupId>
+			<artifactId>mockito-core</artifactId>
+			<scope>test</scope>
+		</dependency>
 	</dependencies>
 
 </project>
