@@ -22,7 +22,10 @@ import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Column;
  * 结果集映射是生成的显式取值代码 —— 全程零反射、运行期零资源 I/O。</p>
  *
  * <p>一对多：一条父查询 + 一条按外键 {@code IN} 的子查询，再按外键分组写回集合；
- * 子查询行数由 {@code AutumnJdbc#queryLimited} 按 {@code associationLimit} 截断。</p>
+ * 子查询行数由 {@code AutumnJdbc#queryLimited} 按 {@code associationLimit} 截断。
+ * 分页装配额外按关联加载模式分级（见 {@code findAllPageableBody}）：
+ * DEFAULT（20 条分页级联）= 页大小不超过阈值（默认 20）eager 加载 1:n / n:1，超过阈值不自动级联；
+ * CASCADE = 任何页大小强制级联；DISABLED = 任何页大小强制关闭关联（不查询）。</p>
  */
 final class ImplementationSource {
 
@@ -36,6 +39,13 @@ final class ImplementationSource {
 	private static final String PAGEABLE = "xyz.wewin.autumn.data.jdbc.page.Pageable";
 
 	private static final String ROW_MAPPER = "xyz.wewin.autumn.data.jdbc.runtime.RowMapper";
+
+	/** 分页关联加载分级策略的上下文持有器与值对象（编译期生成的分页代码按线程读取它）。 */
+	private static final String CONTEXT_HOLDER = "xyz.wewin.autumn.data.jdbc.runtime.AutumnDataContextHolder";
+
+	private static final String AUTUMN_DATA_CONTEXT = "xyz.wewin.autumn.data.jdbc.runtime.AutumnDataContext";
+
+	private static final String ASSOCIATION_MODE = "xyz.wewin.autumn.data.jdbc.runtime.AssociationMode";
 
 	private ImplementationSource() {
 	}
@@ -552,19 +562,40 @@ final class ImplementationSource {
 			return sb.append("return rows;").toString();
 		}
 
+		/**
+		 * 分页装配：1:n / n:1 仍走两条语句（无 N+1），但按 {@link AssociationMode} 分级：
+		 * <ul>
+		 *     <li>DEFAULT：页大小 ≤ 阈值（默认 20）eager 加载关联；超过阈值不自动级联。</li>
+		 *     <li>CASCADE：任何页大小强制级联。</li>
+		 *     <li>DISABLED：任何页大小强制关闭关联（不查询）。</li>
+		 * </ul>
+		 * 模式经 {@link AutumnDataContextHolder#get()} 读取，一次性上下文被「最近一次」查询消费后自动清除。
+		 */
 		private String findAllPageableBody() {
 			String select = "this.autumn.page(" + sqlConst(CrudSqlGenerator.PAGE_ALL) + ", "
 					+ sqlConst(CrudSqlGenerator.COUNT) + ", ROW_MAPPER, pageable)";
 			if (eagerAssociations().isEmpty()) {
 				return "return " + select + ";";
 			}
+			String ctx = CONTEXT_HOLDER + ".get()";
 			StringBuilder sb = new StringBuilder(PAGE + "<" + this.entity + "> page = " + select + ";\n")
 				.append("java.util.List<")
 				.append(this.entity)
-				.append("> rows = page.content();\n");
+				.append("> rows = page.content();\n")
+				.append(AUTUMN_DATA_CONTEXT + " __ctx = " + ctx + ";\n")
+				.append("boolean __cascade;\n")
+				.append("switch (__ctx.mode()) {\n")
+				.append("\tcase " + ASSOCIATION_MODE + ".CASCADE: __cascade = true; break;\n")
+				.append("\tcase " + ASSOCIATION_MODE + ".DISABLED: __cascade = false; break;\n")
+				.append("\tdefault: __cascade = pageable.size() <= __ctx.largePageThreshold();\n")
+				.append("}\n")
+				.append("if (__cascade) {\n");
 			for (Association association : eagerAssociations()) {
-				sb.append(association.attachMethod()).append("(rows);\n");
+				sb.append("\t").append(association.attachMethod()).append("(rows);\n");
 			}
+			sb.append("}\n")
+				// 一次性上下文（startContext/forceCascade/disableCascade）被「最近一次」查询消费后自动清除，无需手动 clear
+				.append(CONTEXT_HOLDER + ".consumePending();\n");
 			return sb.append("return page;").toString();
 		}
 

@@ -14,6 +14,7 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import xyz.wewin.autumn.data.common.dialect.H2Dialect;
 import xyz.wewin.autumn.data.jdbc.page.Page;
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
+import xyz.wewin.autumn.data.jdbc.runtime.AutumnDataContextHolder;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 import xyz.wewin.autumn.data.jdbc.runtime.JdbcConnectionSource;
@@ -155,6 +156,76 @@ class GeneratedUserRepositoryImplTest {
 				new FetchPolicy(2, 100));
 		User limited = new UserRepositoryImpl(capped).findById(alice.getId()).orElseThrow();
 		assertThat(limited.getOrders()).hasSize(2);
+	}
+
+	@Test
+	void defaultModeSkipsAssociationForLargePage() {
+		User alice = this.repository.save(newUser("alice"));
+		User bob = this.repository.save(newUser("bob"));
+		this.orderRepository.saveAll(List.of(newOrder(alice.getId(), "SO-1"), newOrder(bob.getId(), "SO-2")));
+
+		// DEFAULT 模式：页大小 25 > 阈值 20 → 不自动级联（交给调用方），关联为空
+		Page<User> large = this.repository.findAll(Pageable.of(0, 25));
+		assertThat(large.content()).allSatisfy(user -> assertThat(user.getOrders()).isEmpty());
+	}
+
+	@Test
+	void defaultModeLoadsAssociationForSmallPage() {
+		User alice = this.repository.save(newUser("alice"));
+		this.orderRepository.saveAll(List.of(newOrder(alice.getId(), "SO-1")));
+
+		// DEFAULT 模式：页大小 2 <= 阈值 20 → 默认级联，关联正常加载
+		Page<User> small = this.repository.findAll(Pageable.of(0, 2));
+		assertThat(small.content()).singleElement()
+			.satisfies(user -> assertThat(user.getOrders()).extracting(Order::getOrderNo)
+				.containsExactly("SO-1"));
+	}
+
+	@Test
+	void cascadeModeForcesAssociationEvenOnLargePage() {
+		User alice = this.repository.save(newUser("alice"));
+		User bob = this.repository.save(newUser("bob"));
+		this.orderRepository.saveAll(List.of(newOrder(alice.getId(), "SO-1"), newOrder(bob.getId(), "SO-2")));
+
+		// 一次性强制级联（CASCADE）：页大小 25 > 阈值，仍加载关联；查完自动清除
+		AutumnDataContextHolder.forceCascade();
+		Page<User> large = this.repository.findAll(Pageable.of(0, 25));
+		assertThat(large.content()).extracting(user -> user.getOrders().size())
+			.containsExactlyInAnyOrder(1, 1);
+
+		// 一次性上下文已自动消费 → 再次大页查询回到 DEFAULT，不再级联
+		Page<User> backToDefault = this.repository.findAll(Pageable.of(0, 25));
+		assertThat(backToDefault.content()).allSatisfy(user -> assertThat(user.getOrders()).isEmpty());
+	}
+
+	@Test
+	void disabledModeSkipsAssociationEvenOnSmallPage() {
+		User alice = this.repository.save(newUser("alice"));
+		this.orderRepository.saveAll(List.of(newOrder(alice.getId(), "SO-1")));
+
+		// 一次性强制关闭（DISABLED）：即便页大小 2 <= 阈值，也不查询关联
+		AutumnDataContextHolder.disableCascade();
+		Page<User> small = this.repository.findAll(Pageable.of(0, 2));
+		assertThat(small.content()).singleElement()
+			.satisfies(user -> assertThat(user.getOrders()).isEmpty());
+	}
+
+	@Test
+	void oneShotDisableCascadeAutoClearsAndDoesNotLeak() {
+		User alice = this.repository.save(newUser("alice"));
+		this.orderRepository.saveAll(List.of(newOrder(alice.getId(), "SO-1")));
+
+		// 一次性关闭：本次小页查询不加载关联
+		AutumnDataContextHolder.disableCascade();
+		Page<User> first = this.repository.findAll(Pageable.of(0, 2));
+		assertThat(first.content()).singleElement()
+			.satisfies(user -> assertThat(user.getOrders()).isEmpty());
+
+		// 一次性上下文已自动清除 → 下一次查询回到 DEFAULT，小页正常级联加载
+		Page<User> second = this.repository.findAll(Pageable.of(0, 2));
+		assertThat(second.content()).singleElement()
+			.satisfies(user -> assertThat(user.getOrders()).extracting(Order::getOrderNo)
+				.containsExactly("SO-1"));
 	}
 
 	@Test

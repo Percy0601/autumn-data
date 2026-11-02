@@ -129,6 +129,22 @@ boolean existsById(ID id);
    - 关联路径可以**多段**：`findByOrdersItemsSku` 会按途经的每层关联包一层嵌套 `EXISTS`。
      下钻深度取决于子实体自身是否声明了关联（编译期最多再展开一层），不认识的路径仍在方法声明处报错。
 
+5. **分页关联加载三态（`AutumnDataContextHolder`）**：分页查询（`findAll(Pageable)`）的 1:n / n:1
+   装配按 **`AssociationMode`** 三态分级处理（只对分页查询生效，非分页的 `findAll` / `findById` / 派生查询不受影响）：
+   - **`0 DEFAULT`（默认）「20 条分页级联」**：页大小 **≤ 阈值（默认 20，由 `AutumnDataContext.largePageThreshold()` 控制）**
+     一律 eager 加载 1:n 与 n:1；页大小 **> 阈值** 则**不再自动级联**，改由调用方按需取（即最初的设计：低于阈值默认处理，超过阈值交给 AutumnData）。
+   - **`1 CASCADE`（强制级联）**：任何页大小都 eager 加载关联，无视阈值。
+   - **`2 DISABLED`（强制关闭）**：任何页大小都**不查询 / 不装配**关联。
+   - 模式按**线程**保存，因此天然支持「请求级」控制；`AutumnDataContextHolder` 用 `InheritableThreadLocal`
+     支持 `new Thread()` 派生子线程继承上下文，并提供 `wrap(Runnable)` / `wrap(Callable)` 实现**线程池透传**
+     （提交时捕获上下文、工作线程还原、执行后清除），对池化线程同样可感知。
+   - 调用方用法（对标 PageHelper，无需手动清除）：
+     - **一次性（推荐）**：`AutumnDataContextHolder.disableCascade();` / `forceCascade();` 之后紧跟的**最近一次**
+       `findAll(Pageable)` 会按该模式加载 / 跳过关联，生成代码执行完该查询后**自动清除**该一次性上下文，不影响后续查询。
+       更通用的是 `AutumnDataContextHolder.startContext(new AutumnDataContext(AssociationMode.DISABLED, 20));`。
+     - **持久（请求级）**：`AutumnDataContextHolder.set(ctx)` 对整个线程持续生效，需 `clear()` 或随线程结束清除，
+       适合在拦截器里按请求统一设置。
+
 ## 9. 当前实现状态（`DerivedQueryParser`）
 
 已生成：
