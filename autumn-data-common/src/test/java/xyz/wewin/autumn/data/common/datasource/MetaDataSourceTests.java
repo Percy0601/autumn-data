@@ -5,6 +5,7 @@ import com.zaxxer.hikari.HikariPoolMXBean;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import xyz.wewin.autumn.data.common.concurrent.GlobalScheduler;
 
 import javax.sql.DataSource;
 import java.lang.reflect.Field;
@@ -13,12 +14,15 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -68,11 +72,11 @@ class MetaDataSourceTests {
         return ds;
     }
 
-    /** 反射读取私有 sweeper 字段（仅测试断言轮询线程是否启动）。 */
-    private static ScheduledExecutorService sweeperField() throws Exception {
-        Field field = MetaDataSource.class.getDeclaredField("sweeper");
+    /** 反射读取私有轮询任务句柄（仅测试断言轮询任务是否挂在全局线程池上）。 */
+    private static ScheduledFuture<?> sweepTaskField() throws Exception {
+        Field field = MetaDataSource.class.getDeclaredField("sweepTask");
         field.setAccessible(true);
-        return (ScheduledExecutorService) field.get(null);
+        return (ScheduledFuture<?>) field.get(null);
     }
 
     private static void execute(Connection conn, String sql) throws SQLException {
@@ -149,15 +153,15 @@ class MetaDataSourceTests {
     @Test
     void singlePoolDoesNotStartSweeper() throws Exception {
         MetaDataSource.register("only", hikari("only", 1));
-        assertNull(sweeperField(), "单池模式不应启动轮询线程");
+        assertNull(sweepTaskField(), "单池模式不应挂轮询任务");
     }
 
     @Test
     void secondPoolStartsSweeper() throws Exception {
         MetaDataSource.register("a", hikari("sa", 1));
-        assertNull(sweeperField());
+        assertNull(sweepTaskField());
         MetaDataSource.register("b", hikari("sb", 1));
-        assertNotNull(sweeperField(), "多池模式应启动轮询线程");
+        assertNotNull(sweepTaskField(), "多池模式应挂上轮询任务");
     }
 
     // ------------------------------------------------------------------
@@ -270,12 +274,12 @@ class MetaDataSourceTests {
         HikariDataSource tenant = mockHikari(0, 0);
         MetaDataSource.register("tenant1", tenant);
 
-        // 等待真实守护轮询线程执行回收（间隔 1s，2s 内应命中）
+        // 等待全局线程池上的轮询任务执行回收（间隔 1s，2s 内应命中）
         long deadline = System.currentTimeMillis() + 8000;
         while (System.currentTimeMillis() < deadline && MetaDataSource.contains("tenant1")) {
             Thread.sleep(50);
         }
-        assertFalse(MetaDataSource.contains("tenant1"), "守护轮询线程应在间隔内回收空池");
+        assertFalse(MetaDataSource.contains("tenant1"), "轮询任务应在间隔内回收空池");
         verify(tenant).close();
     }
 
@@ -295,7 +299,7 @@ class MetaDataSourceTests {
         assertEquals(0, MetaDataSource.size());
         assertFalse(MetaDataSource.contains("a"));
         assertFalse(MetaDataSource.contains("lazy"));
-        assertNull(sweeperField(), "shutdown 后轮询线程应停止");
+        assertNull(sweepTaskField(), "shutdown 后轮询任务应被摘掉");
         assertThrows(SQLException.class, MetaDataSource.INSTANCE::getConnection);
     }
 
@@ -305,6 +309,37 @@ class MetaDataSourceTests {
         assertThrows(IllegalArgumentException.class, () -> MetaDataSource.setSweepInterval(-5));
         MetaDataSource.setSweepInterval(10);
         assertEquals(10, MetaDataSource.getSweepInterval());
+    }
+
+    @Test
+    void setSweepIntervalRearmsInsteadOfStacking() throws Exception {
+        MetaDataSource.register("a", hikari("iv1", 1));
+        MetaDataSource.register("b", hikari("iv2", 1));
+        ScheduledFuture<?> before = sweepTaskField();
+        assertNotNull(before);
+
+        MetaDataSource.setSweepInterval(7);
+
+        ScheduledFuture<?> after = sweepTaskField();
+        assertNotSame(before, after, "改间隔应重挂任务");
+        assertTrue(before.isCancelled(), "旧任务必须撤销，不能留下两个轮询");
+        assertFalse(after.isCancelled());
+        assertEquals(7, MetaDataSource.getSweepInterval());
+    }
+
+    @Test
+    void shutdownCancelsOwnTaskButKeepsGlobalScheduler() throws Exception {
+        MetaDataSource.register("a", hikari("gl1", 1));
+        MetaDataSource.register("b", hikari("gl2", 1));
+        ScheduledExecutorService pool = GlobalScheduler.scheduler();
+        assertTrue(GlobalScheduler.isStarted(), "挂轮询任务时懒启动全局线程池");
+
+        MetaDataSource.shutdown();
+
+        assertNull(sweepTaskField(), "本组件的轮询任务应被摘掉");
+        assertFalse(pool.isShutdown(),
+                "全局线程池不属于 MetaDataSource，别的组件还在用，不能顺手关掉");
+        assertSame(pool, GlobalScheduler.scheduler(), "关闭后其他组件取到的仍是同一个池");
     }
 
     // ------------------------------------------------------------------

@@ -2,6 +2,7 @@ package xyz.wewin.autumn.data.common.datasource;
 
 import com.zaxxer.hikari.HikariDataSource;
 import com.zaxxer.hikari.HikariPoolMXBean;
+import xyz.wewin.autumn.data.common.concurrent.GlobalScheduler;
 
 import javax.sql.DataSource;
 import java.io.PrintWriter;
@@ -13,10 +14,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.logging.Logger;
@@ -33,10 +32,11 @@ import java.util.logging.Logger;
  *
  * <p><b>核心行为</b>：</p>
  * <ol>
- *   <li><b>单池模式</b>：只注册一个池时，MetaDataSource 仅是轻量委托，不启动任何轮询线程，
+ *   <li><b>单池模式</b>：只注册一个池时，MetaDataSource 仅是轻量委托，不挂任何轮询任务，
  *       连接池完全由 HikariCP 内部自行维护。</li>
- *   <li><b>多池模式</b>：注册第二个池时，启动一个守护线程（{@code daemon}），默认每 3 分钟
- *       轮询一次，回收「已空」的 Hikari 池：{@code totalConnections == 0 && activeConnections == 0}
+ *   <li><b>多池模式</b>：注册第二个池时，在全局线程池（{@link GlobalScheduler}，框架内唯一的
+ *       定时任务池，本类不再自建线程）上挂一个轮询任务，默认每 3 分钟一次，回收「已空」的
+ *       Hikari 池：{@code totalConnections == 0 && activeConnections == 0}
  *       视为连接池已空，执行 {@code close()} 并从注册表移除（见 {@link #sweep()}）。</li>
  *   <li><b>懒加载</b>：{@link #register(String, Supplier)} 只登记创建工厂不建池；首次
  *       {@link #get(String)} / {@link #getConnection(String)} 时才创建（{@code ConcurrentHashMap.computeIfAbsent}，
@@ -46,9 +46,10 @@ import java.util.logging.Logger;
  *   <li><b>非 Hikari 池</b>：无法观测内部连接状态，不参与自动回收，仅作为普通条目保留。</li>
  * </ol>
  *
- * <p><b>线程安全</b>：所有静态方法线程安全；轮询线程为守护线程，应用退出不阻塞。</p>
+ * <p><b>线程安全</b>：所有静态方法线程安全；轮询任务跑在全局守护线程池上，应用退出不阻塞。</p>
  *
- * <p><b>关闭顺序</b>：应用停止时调用 {@link #shutdown()} 关闭全部连接池并停止轮询。</p>
+ * <p><b>关闭顺序</b>：应用停止时调用 {@link #shutdown()} 关闭全部连接池并摘掉轮询任务；
+ * 全局线程池本身由 {@link GlobalScheduler#shutdown()} 在应用最后统一关闭。</p>
  */
 public final class MetaDataSource implements DataSource {
 
@@ -64,11 +65,14 @@ public final class MetaDataSource implements DataSource {
     /** 默认池（第一个注册的池）：DataSource 委托目标；永不参与自动回收。 */
     private static final AtomicReference<DataSource> PRIMARY = new AtomicReference<>();
 
-    /** 空闲池轮询调度器（守护线程），仅在多池模式（池数 ≥ 2）下启动。 */
-    private static volatile ScheduledExecutorService sweeper;
+    /**
+     * 空闲池轮询任务在全局线程池上的句柄，仅在多池模式（池数 ≥ 2）下挂载。
+     * 只在 {@link #SWEEP_LOCK} 下读写；{@code null} 即「当前没有轮询任务」。
+     */
+    private static volatile ScheduledFuture<?> sweepTask;
 
-    /** 轮询调度器启动标记，保证只启动一次。 */
-    private static final AtomicBoolean SWEEPER_STARTED = new AtomicBoolean(false);
+    /** 轮询任务挂载/重排/撤销的互斥锁，保证同名的全局任务至多一个。 */
+    private static final Object SWEEP_LOCK = new Object();
 
     /** 默认轮询间隔：3 分钟。 */
     private static volatile long sweepIntervalSeconds = 180L;
@@ -197,15 +201,13 @@ public final class MetaDataSource implements DataSource {
     }
 
     /**
-     * 关闭全部连接池、清空注册表并停止轮询线程。应用停止时调用。
+     * 关闭全部连接池、清空注册表并摘掉轮询任务。应用停止时调用。
+     *
+     * <p>只撤销本组件在全局线程池上的任务，<b>不关全局线程池</b>——别的组件可能还在用它；
+     * 整池的收尾关闭交给 {@link GlobalScheduler#shutdown()}。</p>
      */
     public static void shutdown() {
-        ScheduledExecutorService scheduler = sweeper;
-        if (scheduler != null) {
-            scheduler.shutdownNow();
-            sweeper = null;
-            SWEEPER_STARTED.set(false);
-        }
+        cancelSweepTask();
         for (DataSource dataSource : POOLS.values()) {
             closeQuietly(dataSource);
         }
@@ -219,7 +221,7 @@ public final class MetaDataSource implements DataSource {
     // ------------------------------------------------------------------
 
     /**
-     * 设置空闲池轮询间隔（秒）。默认 3 分钟；已在运行多池模式时会以新间隔重启调度器。
+     * 设置空闲池轮询间隔（秒）。默认 3 分钟；已在多池模式下会按新间隔重挂轮询任务。
      *
      * @param seconds 轮询间隔（秒），必须 ≥ 1
      */
@@ -227,13 +229,12 @@ public final class MetaDataSource implements DataSource {
         if (seconds < 1) {
             throw new IllegalArgumentException("Sweep interval must be >= 1 second, got: " + seconds);
         }
-        sweepIntervalSeconds = seconds;
-        ScheduledExecutorService scheduler = sweeper;
-        if (scheduler != null && !scheduler.isShutdown()) {
-            scheduler.shutdownNow();
-            sweeper = null;
-            SWEEPER_STARTED.set(false);
-            ensureSweeper();
+        synchronized (SWEEP_LOCK) {
+            sweepIntervalSeconds = seconds;
+            if (sweepTask != null) {
+                cancelQuietly(sweepTask);
+                sweepTask = scheduleSweep(seconds);
+            }
         }
     }
 
@@ -247,7 +248,7 @@ public final class MetaDataSource implements DataSource {
     /**
      * 轮询回收：对每个非默认 Hikari 池，若内部连接池已空
      * （{@code totalConnections == 0 && activeConnections == 0}）则关闭并从注册表移除。
-     * 默认池与非 Hikari 池跳过。包私有：供测试直接触发，轮询线程亦调用此方法。
+     * 默认池与非 Hikari 池跳过。包私有：供测试直接触发，轮询任务亦调用此方法。
      */
     static void sweep() {
         for (Map.Entry<String, DataSource> entry : POOLS.entrySet()) {
@@ -271,17 +272,38 @@ public final class MetaDataSource implements DataSource {
         return false;
     }
 
-    /** 池数 ≥ 2 时启动单线程守护轮询器（只启动一次）。 */
+    /** 池数 ≥ 2 时在全局线程池上挂轮询任务（已挂则不重复挂）。 */
     private static void ensureSweeper() {
-        if (POOLS.size() >= 2 && SWEEPER_STARTED.compareAndSet(false, true)) {
-            ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(runnable -> {
-                Thread thread = new Thread(runnable, "autumn-data-meta-datasource-sweeper");
-                thread.setDaemon(true);
-                return thread;
-            });
-            sweeper = scheduler;
-            scheduler.scheduleWithFixedDelay(MetaDataSource::sweep,
-                    sweepIntervalSeconds, sweepIntervalSeconds, TimeUnit.SECONDS);
+        if (POOLS.size() < 2) {
+            return;
+        }
+        synchronized (SWEEP_LOCK) {
+            if (sweepTask == null) {
+                sweepTask = scheduleSweep(sweepIntervalSeconds);
+            }
+        }
+    }
+
+    private static ScheduledFuture<?> scheduleSweep(long seconds) {
+        return GlobalScheduler.scheduleWithFixedDelay(MetaDataSource::sweep, seconds, seconds, TimeUnit.SECONDS);
+    }
+
+    /** 撤销本组件的轮询任务；不关全局线程池，其他组件还在用。 */
+    private static void cancelSweepTask() {
+        synchronized (SWEEP_LOCK) {
+            if (sweepTask != null) {
+                cancelQuietly(sweepTask);
+                sweepTask = null;
+            }
+        }
+    }
+
+    /** 摘掉一个已排期的任务：不打断正在执行的那一轮，取消失败也只记日志，不阻断后续关闭流程。 */
+    private static void cancelQuietly(ScheduledFuture<?> task) {
+        try {
+            task.cancel(false);
+        } catch (Exception e) {
+            LOG.warning(() -> "Failed to cancel the idle-pool sweep task: " + e);
         }
     }
 
