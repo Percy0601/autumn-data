@@ -137,8 +137,9 @@ boolean existsById(ID id);
    - 关联路径可以**多段**：`findByOrdersItemsSku` 会按途经的每层关联包一层嵌套 `EXISTS`。
      下钻深度取决于子实体自身是否声明了关联（编译期最多再展开一层），不认识的路径仍在方法声明处报错。
 
-5. **分页关联加载三态（`AutumnDataContextHolder`）**：分页查询（`findAll(Pageable)`）的 1:n / n:1
-   装配按 **`AssociationMode`** 三态分级处理（只对分页查询生效，非分页的 `findAll` / `findById` / 派生查询不受影响）：
+5. **分页关联加载三态（`AutumnDataContextHolder`）**：分页查询（`findAll(Pageable)` 与返回 `Page<T>` 的派生查询）
+   的 1:n / n:1 装配按 **`AssociationMode`** 三态分级处理（只对分页装配生效，单行 `findById` / 非分页 `findAll`
+   仍按编译期形态恒级联）：
    - **`0 DEFAULT`（默认）「20 条分页级联」**：页大小 **≤ 阈值（默认 20，由 `AutumnDataContext.largePageThreshold()` 控制）**
      一律 eager 加载 1:n 与 n:1；页大小 **> 阈值** 则**不再自动级联**，改由调用方按需取（即最初的设计：低于阈值默认处理，超过阈值交给 AutumnData）。
    - **`1 CASCADE`（强制级联）**：任何页大小都 eager 加载关联，无视阈值。
@@ -148,10 +149,34 @@ boolean existsById(ID id);
      （提交时捕获上下文、工作线程还原、执行后清除），对池化线程同样可感知。
    - 调用方用法（对标 PageHelper，无需手动清除）：
      - **一次性（推荐）**：`AutumnDataContextHolder.disableCascade();` / `forceCascade();` 之后紧跟的**最近一次**
-       `findAll(Pageable)` 会按该模式加载 / 跳过关联，生成代码执行完该查询后**自动清除**该一次性上下文，不影响后续查询。
+       取实体行的查询会按该模式加载 / 跳过关联，生成代码执行完该查询后**自动清除**一次性上下文，不影响后续查询。
        更通用的是 `AutumnDataContextHolder.startContext(new AutumnDataContext(AssociationMode.DISABLED, 20));`。
      - **持久（请求级）**：`AutumnDataContextHolder.set(ctx)` 对整个线程持续生效，需 `clear()` 或随线程结束清除，
        适合在拦截器里按请求统一设置。
+
+6. **字段投影（`FieldProjection`）**：同一条一次性上下文还能声明「这次只取哪几列」或「这次排除哪几列」，
+   用来减少不必要的列走网络与内存 —— 查询往往只要其中两三个属性，而编译期无法预知调用方要什么。
+   - **编译期仍是全列**：默认路径完全不变，`SELECT` 由 `private static final String` 常量写定，运行期零拼串。
+     处理器只为每条取实体行的语句<em>额外</em>内联一份「投影模板」常量（列清单换成 `{cols}`），例如
+     `SQL_SELECT_ALL = "SELECT id, username, email FROM basic_user"` 旁边多出
+     `SQL_SELECT_ALL_PROJECTION = "SELECT {cols} FROM basic_user"`。
+   - **运行期真裁剪**：设了投影才把 `{cols}` 换成挑出的列名（`Sql.withColumns`），并改走投影版行映射器
+     `__rowProjected` —— 未选中的列根本不在结果集里，属性留在实体默认值上（包装类型为 `null`，
+     基本类型为 `0`/`false`）；没设投影时走的是全列常量，一次字符串拼接都没有。
+   - **不可省略列**：主键、以及多对一装配要读的外键标量列（`@ManyToOne` 对应的那个字段）由编译期判定为
+     恒取，因此裁剪列不会打断 1:n / n:1 装配，也不会让 `save` 的回填失去主键。
+   - 用法（与级联模式共用一次性上下文，两者互不覆盖，一起被最近一次查询消费）：
+     ```java
+     AutumnDataContextHolder.selectFields("username");          // 白名单：实际执行 SELECT id, username FROM basic_user
+     List<User> users = userRepository.findAll();               // 取完自动清除，下一次仍是全列
+
+     AutumnDataContextHolder.excludeFields("email");            // 黑名单：排除该列，其余照旧
+     Page<User> page = userRepository.findAll(Pageable.of(0, 20));
+     ```
+   - 属性名写**实体字段名**（驼峰），不是列名 —— 列名由编译期的映射决定（含方言引号形态）。
+   - 已知边界：`@Query` 里手写的 SQL 没有 `{cols}` 模板，不参与投影也不消费一次性上下文；
+     `countBy` / `existsBy` 这类不取行的语句同样不消费（顺延到下一次取实体行的查询）；
+     `Distinct` + `OrderBy` + 投影三者叠加时，若排序列被裁掉，数据库会直接报错（不会静默给出乱序结果）。
 
 ## 9. 当前实现状态（`DerivedQueryParser`）
 
@@ -174,6 +199,12 @@ boolean existsById(ID id);
 | `IgnoreCase` / `IgnoringCase` | `findByNameIgnoreCase` | 列与参数一起包 `LOWER()` |
 | `Like` 家族 | `Containing` / `StartingWith` / `EndingWith` | 运行期把实参包成 `%?%` / `?%` / `%?`，不依赖方言的字符串拼接 |
 | 返回形态 | `List<T>` / `Optional<T>` | 命中关联时结果仍走装配（两条语句，无 N+1） |
+
+设了字段投影（第 8 节第 6 条）才启用的编译期产物：每条取实体行的语句旁多一条 `{cols}` 模板常量
+（`SQL_SELECT_ALL_PROJECTION`、`SQL_FIND_BY_NAME_PROJECTION`、`deleteBy` 返列表时挂在 `_SELECT` 上），
+外加 `__PROJ_FIELDS` / `__PROJ_COLUMNS` / `__PROJ_REQUIRED` 三张表与 `__projectionColumns` /
+`__rowProjected` / `__projectedMapper` 三个私有成员。实体没有任何可裁剪列（全为主键 / 必需外键）时，
+这些产物一个都不生成，取数语句也就没有投影分支。
 
 编译期显式报错（不静默生成半成品）：裸实体返回值、多于一处的 `IN`、
 参数个数或类型与谓词不符、未知关键词、关联路径下钻到未声明关联的实体。

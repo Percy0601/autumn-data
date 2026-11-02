@@ -139,22 +139,31 @@ final class DerivedQueryParser {
 				: " ORDER BY " + ordering.sql();
 		String where = whereClause(branches);
 		String distinctPrefix = subject.distinct() ? "DISTINCT " : "";
+		// 投影模板的列清单：与全列语句同形，只把列换成 {cols} 标记；实体全是必需列时不生成
+		String projectionColumns = meta.projectionEligible() ? distinctPrefix + EntityMetadata.PROJECTION_MARKER : null;
 		String selectSql;
 		String mainSql;
+		String projectionSql = "";
 		if (isDelete) {
 			// deleteBy 返回实体列表时，先 SELECT 把要删的行取回再 DELETE，两条语句共用同一 WHERE
 			selectSql = "SELECT " + distinctPrefix + columns(meta) + " FROM " + meta.table() + where + orderSql;
 			mainSql = "DELETE FROM " + meta.table() + where;
+			if (projectionColumns != null) {
+				projectionSql = "SELECT " + projectionColumns + " FROM " + meta.table() + where + orderSql;
+			}
 		}
 		else {
 			String projection = isCountOrExists ? "COUNT(*)" : distinctPrefix + columns(meta);
 			mainSql = "SELECT " + projection + " FROM " + meta.table() + where + orderSql;
 			selectSql = "";
+			if (!isCountOrExists && projectionColumns != null) {
+				projectionSql = "SELECT " + projectionColumns + " FROM " + meta.table() + where + orderSql;
+			}
 		}
 		// 分页要回查总行数：同一 WHERE、不带 ORDER BY 的计数语句
 		String countSql = paged ? "SELECT COUNT(*) FROM " + meta.table() + where : "";
-		return new DerivedQuery(methodName, kind, returnTypeSource, parameters, bindings, mainSql, countSql,
-				selectSql, subject.distinct(), subject.limit(), false);
+		return new DerivedQuery(methodName, kind, returnTypeSource, parameters, bindings, mainSql, projectionSql,
+				countSql, selectSql, subject.distinct(), subject.limit(), false);
 	}
 
 	/**

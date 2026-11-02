@@ -17,6 +17,7 @@ import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnDataContextHolder;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
+import xyz.wewin.autumn.data.jdbc.runtime.FieldProjection;
 import xyz.wewin.autumn.data.jdbc.runtime.JdbcConnectionSource;
 import xyz.wewin.autumn.data.jdbc.sql.Sql;
 
@@ -52,6 +53,8 @@ class GeneratedUserRepositoryImplTest {
 				FetchPolicy.defaults());
 		this.repository = new UserRepositoryImpl(autumn);
 		this.orderRepository = new OrderRepositoryImpl(autumn);
+		// 上一个用例若在断言前抛错，一次性上下文就不会被消费；用例开始前清一次，避免串台
+		AutumnDataContextHolder.clear();
 	}
 
 	@Test
@@ -274,6 +277,122 @@ class GeneratedUserRepositoryImplTest {
 		assertThat(this.repository.findByOrdersOrderNo("SO-1")).singleElement()
 			.satisfies(user -> assertThat(user.getOrders()).extracting(Order::getOrderNo)
 				.containsExactly("SO-1", "SO-2"));
+	}
+
+	@Test
+	void projectionTemplateIsCompiledInAndTrimmedAtRuntime() throws Exception {
+		// 编译期默认仍是全列；每条取实体行的语句额外内联一份 {cols} 模板
+		assertThat(constant("SQL_SELECT_ALL")).isEqualTo("SELECT id, username, email FROM basic_user");
+		assertThat(constant("SQL_SELECT_ALL_PROJECTION")).isEqualTo("SELECT {cols} FROM basic_user");
+		assertThat(constant("SQL_PAGE_ALL_PROJECTION")).isEqualTo("SELECT {cols} FROM basic_user ORDER BY id");
+		assertThat(constant("SQL_FIND_BY_USERNAME_PROJECTION")).isEqualTo("SELECT {cols} FROM basic_user"
+				+ " WHERE username = ?");
+		// 运行期挑列：主键编译期判定为不可省略，恒进清单（否则回填、级联装配都断了）
+		assertThat(projectionColumns(FieldProjection.include("username"))).isEqualTo("id, username");
+		assertThat(projectionColumns(FieldProjection.exclude("email"))).isEqualTo("id, username");
+		// 列清单按实体声明顺序拼装，与调用方写投影的先后无关
+		assertThat(projectionColumns(FieldProjection.include("email", "username")))
+			.isEqualTo("id, username, email");
+		assertThat(Sql.withColumns(constant("SQL_SELECT_ALL_PROJECTION"),
+				projectionColumns(FieldProjection.include("username")))).isEqualTo("SELECT id, username FROM basic_user");
+	}
+
+	@Test
+	void selectFieldsTrimsColumnsAndLeavesUnselectedAtEntityDefault() {
+		this.repository.saveAll(List.of(newUser("alice"), newUser("bob")));
+
+		AutumnDataContextHolder.selectFields("username");
+		List<User> users = this.repository.findAll();
+		// 真裁剪 SELECT：未取的列不再占网络与内存，属性留在实体默认值上
+		assertThat(users).hasSize(2).allSatisfy(user -> {
+			assertThat(user.getId()).isNotNull();
+			assertThat(user.getUsername()).isNotNull();
+			assertThat(user.getEmail()).isNull();
+		});
+
+		// 一次性：下一次查询回到编译期的全列形态
+		assertThat(this.repository.findAll()).extracting(User::getEmail).doesNotContainNull();
+	}
+
+	@Test
+	void excludeFieldsKeepsEverythingElse() {
+		this.repository.saveAll(List.of(newUser("alice"), newUser("bob")));
+
+		AutumnDataContextHolder.excludeFields("email");
+		assertThat(this.repository.findAll()).allSatisfy(user -> {
+			assertThat(user.getUsername()).isNotNull();
+			assertThat(user.getEmail()).isNull();
+		});
+	}
+
+	@Test
+	void projectionAppliesToSingleRowBatchAndPagedReads() {
+		User alice = this.repository.save(newUser("alice"));
+		User bob = this.repository.save(newUser("bob"));
+
+		AutumnDataContextHolder.selectFields("username");
+		assertThat(this.repository.findById(alice.getId()).orElseThrow().getEmail()).isNull();
+
+		AutumnDataContextHolder.selectFields("username");
+		assertThat(this.repository.findAllById(List.of(alice.getId(), bob.getId()))).allSatisfy(user ->
+				assertThat(user.getEmail()).isNull());
+
+		AutumnDataContextHolder.selectFields("username");
+		Page<User> page = this.repository.findAll(Pageable.of(0, 2));
+		assertThat(page.content()).hasSize(2).allSatisfy(user -> assertThat(user.getEmail()).isNull());
+		// 计数语句不带列清单：总数不受投影影响
+		assertThat(page.total()).isEqualTo(2L);
+
+		AutumnDataContextHolder.selectFields("username");
+		assertThat(this.repository.findByUsername("alice").getFirst().getEmail()).isNull();
+	}
+
+	@Test
+	void projectionKeepsAssociationAssemblyAndComposesWithCascadeMode() {
+		User alice = this.repository.save(newUser("alice"));
+		this.orderRepository.saveAll(List.of(newOrder(alice.getId(), "SO-1"), newOrder(alice.getId(), "SO-2")));
+
+		// 投影 + 默认级联：只取 username 与主键，一对多仍走第二条语句装配（主键不可省略才办得到）
+		AutumnDataContextHolder.selectFields("username");
+		User projected = this.repository.findById(alice.getId()).orElseThrow();
+		assertThat(projected.getEmail()).isNull();
+		assertThat(projected.getOrders()).extracting(Order::getOrderNo).containsExactly("SO-1", "SO-2");
+
+		// 投影 + 一次性强制级联：大页仍级联，且列被裁剪；两个设置一起被消费
+		this.repository.save(newUser("bob"));
+		AutumnDataContextHolder.forceCascade();
+		AutumnDataContextHolder.selectFields("username");
+		Page<User> large = this.repository.findAll(Pageable.of(0, 25));
+		assertThat(large.content()).allSatisfy(user -> {
+			assertThat(user.getEmail()).isNull();
+			assertThat(user.getOrders()).isNotNull();
+		});
+		assertThat(large.content()).filteredOn(user -> user.getUsername().equals("alice")).singleElement()
+			.satisfies(user -> assertThat(user.getOrders()).hasSize(2));
+
+		// 一次性上下文已被消费：回到全列 + DEFAULT 模式
+		Page<User> next = this.repository.findAll(Pageable.of(0, 2));
+		assertThat(next.content()).allSatisfy(user -> assertThat(user.getEmail()).isNotNull());
+	}
+
+	@Test
+	void countAndExistsDoNotConsumeThePendingProjection() {
+		this.repository.saveAll(List.of(newUser("alice"), newUser("bob")));
+
+		// 不取行的语句（count / existsBy）与写操作都不消费：投影顺延到下一次取实体行的查询
+		AutumnDataContextHolder.selectFields("username");
+		assertThat(this.repository.count()).isEqualTo(2L);
+		assertThat(this.repository.findByUsername("alice").getFirst().getEmail()).isNull();
+
+		// 顺延的那一次查询把它消费掉
+		assertThat(this.repository.findByUsername("bob").getFirst().getEmail()).isNotNull();
+	}
+
+	private static String projectionColumns(FieldProjection projection) throws Exception {
+		java.lang.reflect.Method method = UserRepositoryImpl.class.getDeclaredMethod("__projectionColumns",
+				FieldProjection.class);
+		method.setAccessible(true);
+		return (String) method.invoke(null, projection);
 	}
 
 	private static User newUser(String username) {

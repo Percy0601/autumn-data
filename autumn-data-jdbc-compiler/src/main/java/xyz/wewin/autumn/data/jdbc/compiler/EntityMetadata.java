@@ -1,6 +1,8 @@
 package xyz.wewin.autumn.data.jdbc.compiler;
 
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import xyz.wewin.autumn.data.common.dialect.Dialect;
 
@@ -62,6 +64,38 @@ record EntityMetadata(String qualifiedName, String table, EntityMetadata.Column 
 	/** 非主键列，用于 UPDATE 的 SET 片段和自增主键实体的 INSERT。 */
 	List<Column> updateColumns() {
 		return this.columns.stream().filter(column -> !column.id()).toList();
+	}
+
+	/**
+	 * 字段投影在 SELECT 模板里的列占位标记，例如 {@code SELECT {cols} FROM basic_user ORDER BY id}。
+	 * 与运行期 {@code Sql#COLUMNS_MARKER} 是同一个字面量（两个模块互不依赖，故各留一份）。
+	 */
+	static final String PROJECTION_MARKER = "{cols}";
+
+	/**
+	 * 投影时<em>不可省略</em>的字段：主键（一对多装配与分页稳定顺序都靠它）、
+	 * 以及多对一装配要读的外键字段（{@code attachXxx} 从父实体上取外键值去 {@code IN} 子表主键）。
+	 * 这些列即使被用户排除也照样进 SELECT，否则裁剪列会把级联悄悄打断。
+	 */
+	Set<String> projectionRequiredFields() {
+		Set<String> required = new LinkedHashSet<>();
+		required.add(this.id.field());
+		for (Association association : this.associations) {
+			if (!association.eager() || !association.toOne()) {
+				continue;
+			}
+			this.columns.stream()
+				.filter(column -> column.getter().equals(association.foreignKeyGetter()))
+				.findFirst()
+				.ifPresent(column -> required.add(column.field()));
+		}
+		return required;
+	}
+
+	/** 是否存在可被投影掉的列：全是必需列时投影对该实体没有意义，不生成模板与精简取值代码。 */
+	boolean projectionEligible() {
+		Set<String> required = projectionRequiredFields();
+		return this.columns.stream().anyMatch(column -> !required.contains(column.field()));
 	}
 
 	/** 主键类型的装箱形态，用于从结果集按类型取关联外键。 */

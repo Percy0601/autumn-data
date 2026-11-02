@@ -26,6 +26,11 @@ import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Column;
  * 分页装配额外按关联加载模式分级（见 {@code findAllPageableBody}）：
  * DEFAULT（20 条分页级联）= 页大小不超过阈值（默认 20）eager 加载 1:n / n:1，超过阈值不自动级联；
  * CASCADE = 任何页大小强制级联；DISABLED = 任何页大小强制关闭关联（不查询）。</p>
+ *
+ * <p>字段投影（{@code FieldProjection}）：编译期每条取实体行的语句都额外内联一份「投影模板」
+ * （列清单换成 {@code {cols}}），运行期只有设了投影才把标记换成精简列清单并走投影映射器 ——
+ * <b>不设投影的默认路径仍是全列常量、零拼接</b>。主键与多对一装配要读的外键列编译期判定为不可省略，
+ * 恒进 {@code SELECT}，因此裁剪列不会打断级联。</p>
  */
 final class ImplementationSource {
 
@@ -47,13 +52,23 @@ final class ImplementationSource {
 
 	private static final String ASSOCIATION_MODE = "xyz.wewin.autumn.data.jdbc.runtime.AssociationMode";
 
+	/** 一次性字段投影：设了它才把编译期的全列语句换成 {@code {cols}} 模板拼精简列。 */
+	private static final String FIELD_PROJECTION = "xyz.wewin.autumn.data.jdbc.runtime.FieldProjection";
+
+	/** 投影模板常量名后缀，与 {@code CrudSqlGenerator.PROJECTION} 生成的常量名一致。 */
+	private static final String PROJECTION_SUFFIX = "_PROJECTION";
+
+	/** 投影路径的行映射器：把线程上生效的投影带进 {@code __rowProjected}。 */
+	private static final String PROJECTED_MAPPER = "__projectedMapper(__projection)";
+
 	private ImplementationSource() {
 	}
 
 	static String generate(String interfaceSimpleName, String implSimpleName, String entity, String id,
-			EntityMetadata meta, Map<String, String> statements, List<DerivedQuery> queries, boolean paging) {
-		return new Generation(interfaceSimpleName, implSimpleName, entity, id, meta, statements, queries, paging)
-			.render();
+			EntityMetadata meta, EntityMetadata sqlMeta, Map<String, String> statements, List<DerivedQuery> queries,
+			boolean paging) {
+		return new Generation(interfaceSimpleName, implSimpleName, entity, id, meta, sqlMeta, statements, queries,
+				paging).render();
 	}
 
 	/** 一次生成的上下文，方法各自返回一段源码文本。 */
@@ -69,6 +84,9 @@ final class ImplementationSource {
 
 		private final EntityMetadata meta;
 
+		/** 同一元数据的方言引号视图：投影时拼进 {@code SELECT} 的列名要用它，取值标签仍用 {@code meta} 的裸列名。 */
+		private final EntityMetadata sqlMeta;
+
 		private final Map<String, String> statements;
 
 		private final List<DerivedQuery> queries;
@@ -76,12 +94,14 @@ final class ImplementationSource {
 		private final boolean paging;
 
 		private Generation(String interfaceSimpleName, String implSimpleName, String entity, String id,
-				EntityMetadata meta, Map<String, String> statements, List<DerivedQuery> queries, boolean paging) {
+				EntityMetadata meta, EntityMetadata sqlMeta, Map<String, String> statements,
+				List<DerivedQuery> queries, boolean paging) {
 			this.interfaceSimpleName = interfaceSimpleName;
 			this.implSimpleName = implSimpleName;
 			this.entity = entity;
 			this.id = id;
 			this.meta = meta;
+			this.sqlMeta = sqlMeta;
 			this.statements = statements;
 			this.queries = queries;
 			this.paging = paging;
@@ -89,6 +109,142 @@ final class ImplementationSource {
 
 		private List<Association> eagerAssociations() {
 			return this.meta.associations().stream().filter(Association::eager).toList();
+		}
+
+		/** 实体是否存在可裁剪的列（主键与级联必需列之外）；全为必需列时不生成投影相关代码。 */
+		private boolean projectable() {
+			return this.meta.projectionEligible();
+		}
+
+		/** {@code 常量名 → 常量名_PROJECTION}：{@code deleteBy} 返实体列表时模板挂在 {@code _SELECT} 语句上。 */
+		private static String projectionConstOf(String constName, Kind kind) {
+			return (kind == Kind.DELETE_LIST ? constName + "_SELECT" : constName) + PROJECTION_SUFFIX;
+		}
+
+		/** CRUD 取实体语句的投影模板常量名；实体无可裁剪列时返回 {@code null}（该语句只有全列形态）。 */
+		private String crudProjectionConst(String statementKey) {
+			return projectable() ? sqlConst(statementKey + CrudSqlGenerator.PROJECTION) : null;
+		}
+
+		/** 集合条件要把 {@code IN (:ids)} 按参数个数展开；全列与投影两条形态包同一层。参数个数表达式为 null 时不展开。 */
+		private static String inWrapped(String sqlExpr, String sizeExpression) {
+			return sizeExpression == null ? sqlExpr
+					: SQL_HELPER + ".inClause(" + sqlExpr + ", " + sizeExpression + ")";
+		}
+
+		private String inWrapped(String sqlExpr, Binding collection) {
+			return inWrapped(sqlExpr, collection == null ? null : collection.expression() + ".size()");
+		}
+
+		/** 投影形态的 SQL 表达式：把编译期内联的模板里的 {@code {cols}} 换成运行期挑出的精简列清单。 */
+		private static String projectedColumns(String projectionConst) {
+			return SQL_HELPER + ".withColumns(" + projectionConst + ", __projectionColumns(__projection))";
+		}
+
+		/**
+		 * 取实体行的调用：默认走编译期写定的全列常量 + {@code ROW_MAPPER}（绝大多数查询，运行期零拼接）；
+		 * 设了字段投影才走 {@code {cols}} 模板拼出的精简列 + 投影映射器。
+		 *
+		 * @param receiver {@code AutumnJdbc} 上的方法前缀，如 {@code this.autumn.query}
+		 * @param fullSql 全列形态里排在行映射器之前的实参（分页时是「主语句, 计数语句」两段）
+		 * @param projectionSql 投影形态的同位置实参；该语句不裁剪列时传 {@code null}
+		 * @param tailArguments 行映射器之后的其余实参（自带前导逗号，无则空串）
+		 */
+		private String fetch(String receiver, String fullSql, String projectionSql, String tailArguments) {
+			return fetch(receiver, "", fullSql, projectionSql, tailArguments);
+		}
+
+		/**
+		 * 同上，额外允许在 SQL 之前放一段实参前缀（{@code First/Top} 的重载把行数上限排在 SQL 前面）。
+		 */
+		private String fetch(String receiver, String prefix, String fullSql, String projectionSql,
+				String tailArguments) {
+			String full = receiver + "(" + prefix + fullSql + ", ROW_MAPPER" + tailArguments + ")";
+			if (projectionSql == null) {
+				return full;
+			}
+			return "(__projection == null) ? " + full + " : " + receiver + "(" + prefix + projectionSql + ", "
+					+ PROJECTED_MAPPER + tailArguments + ")";
+		}
+
+		/** 标准 CRUD 取实体行的调用（{@code sizeExpression} 非空表示该语句有 {@code IN} 待展开）。 */
+		private String crudFetch(String receiver, String statementKey, String sizeExpression, String tailArguments) {
+			String projectionConst = crudProjectionConst(statementKey);
+			return fetch(receiver, inWrapped(sqlConst(statementKey), sizeExpression),
+					projectionConst == null ? null
+							: inWrapped(projectedColumns(projectionConst), sizeExpression),
+					tailArguments);
+		}
+
+		/** 方法体首行：读线程上生效的一次性字段投影（实体无可裁剪列时不需要）。 */
+		private String projectionPrelude() {
+			return projectable()
+					? FIELD_PROJECTION + " __projection = " + CONTEXT_HOLDER + ".projection();\n"
+					: "";
+		}
+
+		/** 一次性上下文（级联模式与字段投影）被最近一次取实体的查询消费掉，之后自动回到编译期默认形态。 */
+		private static String consumePending() {
+			return CONTEXT_HOLDER + ".consumePending();\n";
+		}
+
+		/** 投影三元组：属性名 / 进 {@code SELECT} 的列名（方言引号形态）/ 是否不可省略。 */
+		private String projectionColumnArrays() {
+			Set<String> required = this.meta.projectionRequiredFields();
+			List<String> fields = new ArrayList<>();
+			List<String> columns = new ArrayList<>();
+			List<String> requiredFlags = new ArrayList<>();
+			for (int i = 0; i < this.meta.columns().size(); i++) {
+				Column column = this.meta.columns().get(i);
+				fields.add('"' + column.field() + '"');
+				// 方言引号形态的列名里可能带双引号（PostgreSQL/H2 用 " 包裹），必须转义后再写进字面量
+				columns.add('"' + escapeJava(this.sqlMeta.columns().get(i).column()) + '"');
+				requiredFlags.add(String.valueOf(required.contains(column.field())));
+			}
+			return "\t/** 字段投影的列清单：属性名、进 SELECT 的列名（方言引号形态）、该列是否不可省略。 */\n"
+					+ "\tprivate static final String[] __PROJ_FIELDS = { " + String.join(", ", fields) + " };\n\n"
+					+ "\tprivate static final String[] __PROJ_COLUMNS = { " + String.join(", ", columns)
+					+ " };\n\n" + "\tprivate static final boolean[] __PROJ_REQUIRED = { "
+					+ String.join(", ", requiredFlags) + " };\n\n";
+		}
+
+		/** 按投影挑列：白/黑名单由 {@code FieldProjection} 判定，不可省略列（主键、级联外键）恒进清单。 */
+		private String projectionColumnsMethod() {
+			List<String> body = List.of("StringBuilder columns = new StringBuilder();",
+					"for (int i = 0; i < __PROJ_FIELDS.length; i++) {",
+					"\tif (__projection.projects(__PROJ_FIELDS[i], __PROJ_REQUIRED[i])) {",
+					"\t\tif (columns.length() > 0) {",
+					"\t\t\tcolumns.append(\", \");",
+					"\t\t}",
+					"\t\tcolumns.append(__PROJ_COLUMNS[i]);",
+					"\t}",
+					"}",
+					"return columns.toString();");
+			return "\tprivate static String __projectionColumns(" + FIELD_PROJECTION + " __projection) {\n"
+					+ indent(String.join("\n", body)) + "\t}\n\n";
+		}
+
+		/** 投影版实体构造：只取被选中的列，未选中的属性留在实体默认值上。 */
+		private String projectedRowMethod() {
+			Set<String> required = this.meta.projectionRequiredFields();
+			List<String> lines = new ArrayList<>();
+			lines.add(this.meta.qualifiedName() + " row = new " + this.meta.qualifiedName() + "();");
+			for (Column column : this.meta.columns()) {
+				lines.add("if (projection.projects(\"" + column.field() + "\", " + required.contains(column.field())
+						+ ")) {");
+				lines.add("\trow." + column.setter() + "(" + readColumn(column) + ");");
+				lines.add("}");
+			}
+			lines.add("return row;");
+			return "\tprivate static " + this.entity + " __rowProjected(java.sql.ResultSet rs,"
+					+ " " + FIELD_PROJECTION + " projection) throws java.sql.SQLException {\n"
+					+ indent(String.join("\n", lines)) + "\t}\n\n";
+		}
+
+		/** 投影版映射器：把生效投影带进 {@code __rowProjected}，与 {@code ROW_MAPPER} 并存。 */
+		private String projectedMapperMethod() {
+			return "\tprivate static " + ROW_MAPPER + '<' + this.entity + "> __projectedMapper(" + FIELD_PROJECTION
+					+ " projection) {\n\t\treturn (rs, rowNum) -> __rowProjected(rs, projection);\n\t}\n\n";
 		}
 
 		private String render() {
@@ -119,10 +275,24 @@ final class ImplementationSource {
 				sb.append("\tprivate static final String ").append(queryConstNames.get(i)).append("_COUNT = \"")
 					.append(escapeJava(query.countSql())).append("\";\n\n");
 			}
+			// 取实体行的派生查询再存一条投影模板：与全列语句同形，只把列清单换成 {cols}
+			if (query.projectable()) {
+				sb.append("\tprivate static final String ")
+					.append(projectionConstOf(queryConstNames.get(i), query.kind()))
+					.append(" = \"")
+					.append(escapeJava(query.projectionSql()))
+					.append("\";\n\n");
+			}
 		}
 		sb.append(rowMapperField(this.meta, "ROW_MAPPER", this.entity));
 			for (Association association : eagerAssociations()) {
 				sb.append(association.toOne() ? childRowMapperFieldToOne(association) : childRowMapperField(association));
+			}
+			if (projectable()) {
+				sb.append(projectionColumnArrays());
+				sb.append(projectionColumnsMethod());
+				sb.append(projectedRowMethod());
+				sb.append(projectedMapperMethod());
 			}
 			sb.append("\tprivate final " + AUTUMN_JDBC + " autumn;\n\n");
 			sb.append(constructor());
@@ -134,7 +304,7 @@ final class ImplementationSource {
 			sb.append(method("boolean existsById(" + this.id + " id)",
 					"return this.autumn.count(" + sqlConst(CrudSqlGenerator.EXISTS_BY_ID) + ", id) > 0;"));
 			sb.append(method("java.util.List<" + this.entity + "> findAll()",
-					loaded("this.autumn.query(" + sqlConst(CrudSqlGenerator.SELECT_ALL) + ", ROW_MAPPER)")));
+					loaded(crudFetch("this.autumn.query", CrudSqlGenerator.SELECT_ALL, null, ""))));
 			if (this.paging) {
 				sb.append(method(PAGE + "<" + this.entity + "> findAll(" + PAGEABLE + " pageable)",
 						findAllPageableBody()));
@@ -158,8 +328,9 @@ final class ImplementationSource {
 				String constName = queryConstNames.get(i);
 				String selectConstName = query.kind() == Kind.DELETE_LIST ? constName + "_SELECT" : "";
 				String countConstName = query.kind() == Kind.PAGE ? constName + "_COUNT" : "";
+				String projectionConstName = query.projectable() ? projectionConstOf(constName, query.kind()) : "";
 				sb.append(method(derivedSignature(query),
-						derivedBody(query, constName, selectConstName, countConstName)));
+						derivedBody(query, constName, selectConstName, countConstName, projectionConstName)));
 			}
 			sb.append(privateMethod("insert", "void", this.entity + " entity", insertBody()));
 			for (Association association : eagerAssociations()) {
@@ -244,65 +415,69 @@ final class ImplementationSource {
 		 * {@code long} 走 {@code update} 拿受影响行数，返回 {@code List<T>} 先 {@code SELECT} 取回再 {@code DELETE}。</p>
 		 */
 		private String derivedBody(DerivedQuery query, String constName, String selectConstName,
-				String countConstName) {
+				String countConstName, String projectionConstName) {
 			List<Binding> bindings = query.bindings();
 			Binding collection = bindings.stream().filter(Binding::collectionValues).findFirst().orElse(null);
 			StringBuilder prelude = new StringBuilder();
 			String sqlArgument = constName;
 			String valueArguments;
-		if (collection == null) {
-			valueArguments = bindings.stream().map(this::valueExpressionFor).collect(Collectors.joining(", "));
-		}
-		else {
-			sqlArgument = SQL_HELPER + ".inClause(" + constName + ", " + collection.expression() + ".size())";
-			prelude.append("java.util.List<Object> values = new java.util.ArrayList<>();\n");
-			for (Binding binding : bindings) {
-				prelude.append(binding.collectionValues() ? "values.addAll(" : "values.add(")
-					.append(valueExpressionFor(binding))
-					.append(");\n");
+			if (collection == null) {
+				valueArguments = bindings.stream().map(this::valueExpressionFor).collect(Collectors.joining(", "));
 			}
-			valueArguments = "values.toArray()";
-		}
+			else {
+				sqlArgument = SQL_HELPER + ".inClause(" + constName + ", " + collection.expression() + ".size())";
+				prelude.append("java.util.List<Object> values = new java.util.ArrayList<>();\n");
+				for (Binding binding : bindings) {
+					prelude.append(binding.collectionValues() ? "values.addAll(" : "values.add(")
+						.append(valueExpressionFor(binding))
+						.append(");\n");
+				}
+				valueArguments = "values.toArray()";
+			}
+			// AutumnJdbc 的形参顺序是 (sql, mapper, args...)，取值实参在行映射器之后
+			String tailArguments = bindings.isEmpty() ? "" : ", " + valueArguments;
 			// deleteBy 返回实体列表：SELECT 与 DELETE 共用同一 WHERE，因此走同一个 inClause 展开与取值实参
-			String selectArgument = query.kind() == Kind.DELETE_LIST
-					? (collection == null ? selectConstName
-							: SQL_HELPER + ".inClause(" + selectConstName + ", " + collection.expression() + ".size())")
+			String selectArgument = query.kind() == Kind.DELETE_LIST ? inWrapped(selectConstName, collection)
 					: sqlArgument;
-			// AutumnJdbc 的形参顺序是 (sql, mapper, args...)，计数/删除语句没有 mapper
-			String queryArguments = selectArgument + ", ROW_MAPPER"
-					+ (bindings.isEmpty() ? "" : ", " + valueArguments);
-			// 分页查询的计数语句：与主语句同一 WHERE；集合参数同样要按个数展开 IN 占位符
-			String countSqlArgument = query.kind() == Kind.PAGE
-					? (collection == null ? countConstName
-							: SQL_HELPER + ".inClause(" + countConstName + ", " + collection.expression() + ".size())")
-					: sqlArgument;
-			String countArguments = countSqlArgument + (bindings.isEmpty() ? "" : ", " + valueArguments);
+			// 投影模板与全列语句同 WHERE，只是列清单换成 {cols}；该查询不可裁剪列时没有投影形态
+			String projectionArgument = projectionConstName.isEmpty() ? null
+					: inWrapped(projectedColumns(projectionConstName), collection);
+			// 分页查询的计数语句：与主语句同一 WHERE、不受投影影响
+			String countSqlArgument = query.kind() == Kind.PAGE ? inWrapped(countConstName, collection) : sqlArgument;
+			String countArguments = countSqlArgument + tailArguments;
 			long limit = query.limit();
 			if (limit > 0 && (query.kind() == Kind.LIST || query.kind() == Kind.OPTIONAL)) {
-				// First/Top：行数上限作为字面量传给带 limit 的重载，由方言拼 LIMIT（不污染编译期 SQL 常量）
-				String limitedArguments = limit + "L, " + selectArgument + ", ROW_MAPPER"
-						+ (bindings.isEmpty() ? "" : ", " + valueArguments);
-				return query.kind() == Kind.LIST
-						? prelude + loaded("this.autumn.query(" + limitedArguments + ")")
-						: prelude + derivedOptional(limitedArguments);
+				// First/Top：行数上限作为字面量传给带 limit 的重载（上限排在 SQL 之前），由方言拼 LIMIT
+				String receiver = query.kind() == Kind.LIST ? "this.autumn.query" : "this.autumn.queryOptional";
+				String limitPrefix = limit + "L, ";
+				return prelude + (query.kind() == Kind.LIST
+						? loaded(fetch(receiver, limitPrefix, selectArgument, projectionArgument, tailArguments))
+						: derivedOptional(
+								fetch(receiver, limitPrefix, selectArgument, projectionArgument, tailArguments)));
 			}
+			String selectCall = fetch("this.autumn.query", selectArgument, projectionArgument, tailArguments);
 			return switch (query.kind()) {
+				// @Query 的 SQL 由用户写死：既不裁剪列、也不装配关联，因此不参与一次性上下文（不读也不消费）
 				case LIST -> query.custom()
-						? prelude + "return this.autumn.query(" + queryArguments + ");"
-						: prelude + loaded("this.autumn.query(" + queryArguments + ")");
+						? prelude + "return " + fetch("this.autumn.query", selectArgument, null, tailArguments) + ";"
+						: prelude + loaded(selectCall);
 				case OPTIONAL -> query.custom()
-						? prelude + "return this.autumn.queryOptional(" + queryArguments + ");"
-						: prelude + derivedOptional(queryArguments);
+						? prelude + "return "
+								+ fetch("this.autumn.queryOptional", selectArgument, null, tailArguments) + ";"
+						: prelude + derivedOptional(
+								fetch("this.autumn.queryOptional", selectArgument, projectionArgument, tailArguments));
 				case COUNT -> prelude + "return this.autumn.count(" + countArguments + ");";
 				case EXISTS -> prelude + "return this.autumn.count(" + countArguments + ") > 0;";
 				case DELETE -> prelude + (query.returnTypeSource().equals("void") ? "" : "return ")
 						+ "this.autumn.update(" + countArguments + ");";
-				case DELETE_LIST -> prelude
-						+ "java.util.List<" + this.entity + "> rows = this.autumn.query(" + queryArguments + ");\n"
-						+ "if (!rows.isEmpty()) {\n\tthis.autumn.update(" + countArguments + ");\n}\n"
+				case DELETE_LIST -> prelude + projectionPrelude()
+						+ "java.util.List<" + this.entity + "> rows = " + selectCall + ";\n"
+						+ "if (!rows.isEmpty()) {\n\tthis.autumn.update(" + countArguments + ");\n}\n" + consumePending()
 						+ "return rows;";
-				case PAGE -> prelude + pagedBody(selectArgument + ", " + countSqlArgument + ", ROW_MAPPER, pageable"
-						+ (bindings.isEmpty() ? "" : ", " + valueArguments));
+				case PAGE -> prelude + pagedBody(fetch("this.autumn.page",
+						selectArgument + ", " + countSqlArgument,
+						projectionArgument == null ? null : projectionArgument + ", " + countSqlArgument,
+						", pageable" + tailArguments));
 			};
 		}
 
@@ -311,13 +486,15 @@ final class ImplementationSource {
 		 * （方法名的 {@code OrderBy}），因此「分页 + 排序」组合无需运行期拼串。
 		 * 关联装配与 {@code findAll(Pageable)} 一样受 {@code AssociationMode} 三态控制。
 		 */
-		private String pagedBody(String pageArguments) {
-			String select = "this.autumn.page(" + pageArguments + ")";
+		private String pagedBody(String pageCall) {
+			StringBuilder sb = new StringBuilder(projectionPrelude())
+				.append(PAGE + "<" + this.entity + "> page = ")
+				.append(pageCall)
+				.append(";\n");
 			if (eagerAssociations().isEmpty()) {
-				return "return " + select + ";";
+				return sb.append(consumePending()).append("return page;").toString();
 			}
-			StringBuilder sb = new StringBuilder(PAGE + "<" + this.entity + "> page = " + select + ";\n")
-				.append("java.util.List<")
+			sb.append("java.util.List<")
 				.append(this.entity)
 				.append("> rows = page.content();\n")
 				.append(AUTUMN_DATA_CONTEXT + " __ctx = " + CONTEXT_HOLDER + ".get();\n")
@@ -332,8 +509,8 @@ final class ImplementationSource {
 				sb.append("\t").append(association.attachMethod()).append("(rows);\n");
 			}
 			sb.append("}\n")
-				// 一次性上下文被「最近一次」查询消费后自动清除，无需手动 clear
-				.append(CONTEXT_HOLDER + ".consumePending();\n");
+				// 一次性上下文（级联模式 / 字段投影）被「最近一次」查询消费后自动清除，无需手动 clear
+				.append(consumePending());
 			return sb.append("return page;").toString();
 		}
 
@@ -347,17 +524,17 @@ final class ImplementationSource {
 		};
 	}
 
-	/** 单行结果：查到就按父主键装配一对多，查不到返回空 {@code Optional}。 */
-		private String derivedOptional(String arguments) {
-			String select = "this.autumn.queryOptional(" + arguments + ")";
+		/** 单行结果：查到就按父主键装配一对多，查不到返回空 {@code Optional}；取完消费一次性上下文。 */
+		private String derivedOptional(String queryCall) {
+			String read = "java.util.Optional<" + this.entity + "> found = " + queryCall + ";\n";
 			if (eagerAssociations().isEmpty()) {
-				return "return " + select + ";";
+				return projectionPrelude() + read + consumePending() + "return found;";
 			}
 			List<String> attach = eagerAssociations().stream()
 				.map(association -> "\t" + association.attachMethod() + "(java.util.List.of(row));")
 				.toList();
-			return "java.util.Optional<" + this.entity + "> found = " + select + ";\n" + "found.ifPresent(row -> {\n"
-					+ String.join("\n", attach) + "\n});\nreturn found;";
+			return projectionPrelude() + read + "found.ifPresent(row -> {\n" + String.join("\n", attach)
+					+ "\n});\n" + consumePending() + "return found;";
 		}
 
 		/** 把 SQL 文本转义成 Java 字符串字面量片段（仅处理会破坏字符串的字符）。 */
@@ -583,28 +760,20 @@ final class ImplementationSource {
 					+ ".size(); i++) {\n" + "\t\t\t" + assign + "\n" + "\t\t}\n" + "\t}";
 		}
 
+		/** 单主键取数：与派生的 {@code Optional} 查询同一条装配路径（投影 + 级联 + 一次性上下文消费）。 */
 		private String findByIdBody() {
-			String select = "this.autumn.queryOptional(" + sqlConst(CrudSqlGenerator.SELECT_BY_ID)
-					+ ", ROW_MAPPER, id)";
-			if (eagerAssociations().isEmpty()) {
-				return "return " + select + ";";
-			}
-			List<String> attach = eagerAssociations().stream()
-				.map(a -> "\t" + a.attachMethod() + "(java.util.List.of(row));")
-				.toList();
-			return "java.util.Optional<" + this.entity + "> found = " + select + ";\n"
-					+ "found.ifPresent(row -> {\n" + String.join("\n", attach) + "\n});\nreturn found;";
+			return derivedOptional(
+					crudFetch("this.autumn.queryOptional", CrudSqlGenerator.SELECT_BY_ID, null, ", id"));
 		}
 
-		/** {@code List<Entity> rows = <query>; } 后逐条关联装配；无关联时直接返回查询结果。 */
+		/** {@code List<Entity> rows = <query>; } 后逐条关联装配，最后消费一次性上下文；无关联时只取数与消费。 */
 		private String loaded(String queryCall) {
-			if (eagerAssociations().isEmpty()) {
-				return "return " + queryCall + ";";
-			}
-			StringBuilder sb = new StringBuilder("java.util.List<" + this.entity + "> rows = " + queryCall + ";\n");
+			StringBuilder sb = new StringBuilder(projectionPrelude());
+			sb.append("java.util.List<").append(this.entity).append("> rows = ").append(queryCall).append(";\n");
 			for (Association association : eagerAssociations()) {
 				sb.append(association.attachMethod()).append("(rows);\n");
 			}
+			sb.append(consumePending());
 			return sb.append("return rows;").toString();
 		}
 
@@ -618,36 +787,16 @@ final class ImplementationSource {
 		 * 模式经 {@link AutumnDataContextHolder#get()} 读取，一次性上下文被「最近一次」查询消费后自动清除。
 		 */
 		private String findAllPageableBody() {
-			String select = "this.autumn.page(" + sqlConst(CrudSqlGenerator.PAGE_ALL) + ", "
-					+ sqlConst(CrudSqlGenerator.COUNT) + ", ROW_MAPPER, pageable)";
-			if (eagerAssociations().isEmpty()) {
-				return "return " + select + ";";
-			}
-			String ctx = CONTEXT_HOLDER + ".get()";
-			StringBuilder sb = new StringBuilder(PAGE + "<" + this.entity + "> page = " + select + ";\n")
-				.append("java.util.List<")
-				.append(this.entity)
-				.append("> rows = page.content();\n")
-				.append(AUTUMN_DATA_CONTEXT + " __ctx = " + ctx + ";\n")
-				.append("boolean __cascade;\n")
-				.append("switch (__ctx.mode()) {\n")
-				.append("\tcase " + ASSOCIATION_MODE + ".CASCADE: __cascade = true; break;\n")
-				.append("\tcase " + ASSOCIATION_MODE + ".DISABLED: __cascade = false; break;\n")
-				.append("\tdefault: __cascade = pageable.size() <= __ctx.largePageThreshold();\n")
-				.append("}\n")
-				.append("if (__cascade) {\n");
-			for (Association association : eagerAssociations()) {
-				sb.append("\t").append(association.attachMethod()).append("(rows);\n");
-			}
-			sb.append("}\n")
-				// 一次性上下文（startContext/forceCascade/disableCascade）被「最近一次」查询消费后自动清除，无需手动 clear
-				.append(CONTEXT_HOLDER + ".consumePending();\n");
-			return sb.append("return page;").toString();
+			String countSql = sqlConst(CrudSqlGenerator.COUNT);
+			String projectionConst = crudProjectionConst(CrudSqlGenerator.PAGE_ALL);
+			return pagedBody(fetch("this.autumn.page", sqlConst(CrudSqlGenerator.PAGE_ALL) + ", " + countSql,
+					projectionConst == null ? null : projectedColumns(projectionConst) + ", " + countSql,
+					", pageable"));
 		}
 
 		private String findAllByIdBody() {
-			String query = "this.autumn.query(" + SQL_HELPER + ".inClause(" + sqlConst(CrudSqlGenerator.SELECT_BY_IDS)
-					+ ", ids.size()), ROW_MAPPER, ids.toArray())";
+			String query = crudFetch("this.autumn.query", CrudSqlGenerator.SELECT_BY_IDS, "ids.size()",
+					", ids.toArray()");
 			return "if (ids.isEmpty()) {\n" + "\treturn java.util.List.of();\n" + "}\n" + loaded(query);
 		}
 

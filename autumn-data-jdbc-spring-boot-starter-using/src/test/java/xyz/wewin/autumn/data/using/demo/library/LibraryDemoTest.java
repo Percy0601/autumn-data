@@ -54,6 +54,8 @@ class LibraryDemoTest {
 		this.bookRepository = new BookRepositoryImpl(autumn);
 		this.categoryRepository = new CategoryRepositoryImpl(autumn);
 		this.bookCategoryRepository = new BookCategoryRepositoryImpl(autumn);
+		// 上一个用例若在断言前抛错，一次性上下文就不会被消费；用例开始前清一次，避免串台
+		AutumnDataContextHolder.clear();
 	}
 
 	private void createSchema() {
@@ -387,6 +389,71 @@ class LibraryDemoTest {
 			.extracting(Author::getName)
 			.isEqualTo("金庸");
 		assertThat(this.authorRepository.findTop3ByOrderByAgeDesc()).hasSize(3);
+	}
+
+	// ==================================================================
+	// 字段投影：一次性上下文只裁剪主实体标量列
+	// ==================================================================
+
+	@Test
+	void projectionKeepsForeignKeySoNToOneAssemblySurvivesColumnTrimming() {
+		AutumnDataContextHolder.selectFields("title");
+		Book projected = this.bookRepository.findById(1L).orElseThrow();
+		// 只取 title 与不可省略的 id / author_id：其余列留在实体默认值（基本类型退化为 0，包装类型退化为 null）
+		assertThat(projected.getTitle()).isEqualTo("呐喊");
+		assertThat(projected.getIsbn()).isNull();
+		assertThat(projected.getPrice()).isNull();
+		assertThat(projected.getPages()).isZero();
+		assertThat(projected.getSoldCount()).isZero();
+		// 多对一靠父表上的外键标量列装配，该列编译期判定为不可省略 → 裁剪列不会打断级联
+		assertThat(projected.getAuthor()).extracting(Author::getName).isEqualTo("鲁迅");
+
+		// 一次性上下文被这次查询消费：下一次回到编译期的全列形态
+		assertThat(this.bookRepository.findById(1L).orElseThrow().getIsbn()).isEqualTo("ISBN-1001");
+	}
+
+	@Test
+	void projectionAppliesToPageableAndDerivedReadsWithoutBreakingOneToMany() {
+		AutumnDataContextHolder.excludeFields("isbn", "publishedAt");
+		Page<Book> page = this.bookRepository.findAll(Pageable.of(0, 2));
+		// 一对多的第二条语句按父主键取子行：父主键恒取，因此关联照旧装配
+		assertThat(page.content()).hasSize(2).allSatisfy(book -> {
+			assertThat(book.getIsbn()).isNull();
+			assertThat(book.getPublishedAt()).isNull();
+			assertThat(book.getTitle()).isNotNull();
+			assertThat(book.getBookCategories()).isNotNull();
+		});
+
+		// 派生查询同样可裁剪；计数语句不带列清单，total 不受投影影响
+		AutumnDataContextHolder.selectFields("price");
+		Page<Book> filtered = this.bookRepository.findByAuthorIdOrderBySoldCountDesc(1L, Pageable.of(0, 2));
+		assertThat(filtered.total()).isEqualTo(3);
+		assertThat(filtered.content()).allSatisfy(book -> {
+			assertThat(book.getPrice()).isNotNull();
+			assertThat(book.getTitle()).isNull();
+		});
+	}
+
+	@Test
+	void projectionComposesWithDisabledCascadeOnSameOneShotContext() {
+		// 同一个一次性上下文里同时设定模式与投影：本次分页查询既不装配关联，也只取需要的列
+		AutumnDataContextHolder.disableCascade();
+		AutumnDataContextHolder.selectFields("title");
+		Page<Book> disabled = this.bookRepository.findAll(Pageable.of(0, 2));
+		assertThat(disabled.content()).hasSize(2).allSatisfy(book -> {
+			assertThat(book.getTitle()).isNotNull();
+			assertThat(book.getIsbn()).isNull();
+			// 模式只管分页装配（单行查询按编译期形态恒级联），投影只管列清单
+			assertThat(book.getAuthor()).isNull();
+			assertThat(book.getBookCategories()).isEmpty();
+		});
+
+		// 两项设置一起被消费：下一次回到默认（小页级联 + 全列）
+		Page<Book> restored = this.bookRepository.findAll(Pageable.of(0, 2));
+		assertThat(restored.content()).allSatisfy(book -> {
+			assertThat(book.getIsbn()).isNotNull();
+			assertThat(book.getAuthor()).isNotNull();
+		});
 	}
 
 }

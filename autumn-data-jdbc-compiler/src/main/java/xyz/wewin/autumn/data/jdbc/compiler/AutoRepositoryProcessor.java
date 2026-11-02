@@ -133,8 +133,8 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 			}
 			try {
 				Map<String, String> statements = CrudSqlGenerator.generate(sqlMetadata);
-				writeImplementation(repositoryInterface, packageName, entity, id, metadata, statements, queries,
-						declaresPaging(repositoryInterface, elements, types), processingEnv.getFiler());
+				writeImplementation(repositoryInterface, packageName, entity, id, metadata, sqlMetadata, statements,
+						queries, declaresPaging(repositoryInterface, elements, types), processingEnv.getFiler());
 				repositories.add(repositoryInterface.getQualifiedName().toString());
 			}
 			catch (IOException ex) {
@@ -351,8 +351,8 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 	}
 
 	private static void writeImplementation(TypeElement repositoryInterface, String packageName, String entity,
-			String id, EntityMetadata metadata, Map<String, String> statements, List<DerivedQuery> queries,
-			boolean paging, Filer filer) throws IOException {
+			String id, EntityMetadata metadata, EntityMetadata sqlMetadata, Map<String, String> statements,
+			List<DerivedQuery> queries, boolean paging, Filer filer) throws IOException {
 		String simpleName = repositoryInterface.getSimpleName() + "Impl";
 		String qualifiedName = packageName.isEmpty() ? simpleName : packageName + "." + simpleName;
 		JavaFileObject file = filer.createSourceFile(qualifiedName, repositoryInterface);
@@ -360,8 +360,9 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 			if (!packageName.isEmpty()) {
 				writer.write("package " + packageName + ";\n\n");
 			}
+			// 投影列清单要拼进 SELECT，用方言引号视图；取值与其余代码仍用原元数据
 			writer.write(ImplementationSource.generate(repositoryInterface.getSimpleName().toString(), simpleName,
-					entity, id, metadata, statements, queries, paging));
+					entity, id, metadata, sqlMetadata, statements, queries, paging));
 		}
 	}
 

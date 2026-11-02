@@ -14,6 +14,8 @@ import java.util.List;
  * @param parameters 形参表，用于生成方法签名
  * @param bindings 占位符的取值来源，顺序与 SQL 里的 {@code ?} 严格一致
  * @param sql 解析出的主语句：{@code SELECT}/{@code COUNT(*)} 或 {@code deleteBy} 的 {@code DELETE}
+ * @param projectionSql 与主语句同形的<em>投影模板</em>：列清单换成 {@code {cols}} 标记，运行期设了字段投影才用；
+ *            计数/存在性/删除语句与 {@code @Query} 手写 SQL 不裁剪列，此字段为空串
  * @param countSql 仅 {@link Kind#PAGE} 用：同一 WHERE 的计数语句（不带 ORDER BY），其余形态为空串
  * @param selectSql 仅 {@code deleteBy} 返回实体列表时用：先按条件 {@code SELECT} 把要删的行取回再删，
  *            其余形态为空串
@@ -22,13 +24,19 @@ import java.util.List;
  * @param custom 是否来自 {@code @Query}：是则跳过一对多装配（自定义 SQL 未必选了外键列）
  */
 record DerivedQuery(String methodName, DerivedQuery.Kind kind, String returnTypeSource, List<Parameter> parameters,
-		List<DerivedQuery.Binding> bindings, String sql, String countSql, String selectSql, boolean distinct,
-		long limit, boolean custom) {
+		List<DerivedQuery.Binding> bindings, String sql, String projectionSql, String countSql, String selectSql,
+		boolean distinct, long limit, boolean custom) {
 
 	/** 非分页查询：没有独立的计数语句。 */
 	DerivedQuery(String methodName, Kind kind, String returnTypeSource, List<Parameter> parameters,
 			List<Binding> bindings, String sql, String selectSql, boolean distinct, long limit, boolean custom) {
-		this(methodName, kind, returnTypeSource, parameters, bindings, sql, "", selectSql, distinct, limit, custom);
+		this(methodName, kind, returnTypeSource, parameters, bindings, sql, "", "", selectSql, distinct, limit,
+				custom);
+	}
+
+	/** 该查询取实体行的语句常量名后缀：有投影模板时才生成，运行期用它替换 {@code {cols}}。 */
+	boolean projectable() {
+		return !this.projectionSql.isEmpty();
 	}
 
 	/** 生成方法的结果形态。 */

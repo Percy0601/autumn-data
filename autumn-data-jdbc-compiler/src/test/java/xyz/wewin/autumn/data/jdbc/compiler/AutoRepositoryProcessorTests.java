@@ -272,6 +272,17 @@ class AutoRepositoryProcessorTests {
 			}
 			""";
 
+	/** 生成类里的 SQL 助手全名（运行期展开 {@code IN} 占位符、替换投影列清单）。 */
+	private static final String SQL = "xyz.wewin.autumn.data.jdbc.sql.Sql";
+
+	/** 每个取实体行的方法开头都会读一次性字段投影。 */
+	private static final String READ_PROJECTION = "\t\t" + "xyz.wewin.autumn.data.jdbc.runtime.FieldProjection"
+			+ " __projection = xyz.wewin.autumn.data.jdbc.runtime.AutumnDataContextHolder.projection();\n";
+
+	/** 取完就消费上下文：级联模式与字段投影只作用于最近一次查询。 */
+	private static final String CONSUME_CONTEXT = "\t\txyz.wewin.autumn.data.jdbc.runtime.AutumnDataContextHolder"
+			+ ".consumePending();\n";
+
 	private final JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
 
 	@Test
@@ -407,63 +418,93 @@ class AutoRepositoryProcessorTests {
 				"private static final String SQL_FIND_BY_NAME_AND_AGE_LESS_THAN_ORDER_BY_NAME_ASC"
 						+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE name = ? AND age < ?"
 						+ " ORDER BY name ASC\"");
+		// 取实体行的语句额外内联一条投影模板：列清单换成 {cols}，运行期设了投影才替换
+		assertThat(source).contains("private static final String SQL_FIND_BY_NAME_PROJECTION"
+				+ " = \"SELECT {cols} FROM demo_user WHERE name = ?\"");
+		assertThat(source).contains("private static final String SQL_SELECT_ALL_PROJECTION"
+				+ " = \"SELECT {cols} FROM demo_user\"");
+		assertThat(source).contains("private static final String SQL_FIND_DISTINCT_BY_NAME_PROJECTION"
+				+ " = \"SELECT DISTINCT {cols} FROM demo_user WHERE name = ?\"");
+		// 投影三元组：属性名 / 进 SELECT 的列名 / 该列是否不可省略（主键恒取，否则回填与级联都断了）
+		assertThat(source).contains("private static final String[] __PROJ_FIELDS = { \"id\", \"name\", \"age\","
+				+ " \"createdAt\" };");
+		assertThat(source).contains("private static final String[] __PROJ_COLUMNS = { \"id\", \"name\", \"age\","
+				+ " \"created_at\" };");
+		assertThat(source).contains("private static final boolean[] __PROJ_REQUIRED = { true, false, false, false };");
 		// 结果形态决定调用：List 走 query、Optional 走 queryOptional、count/exists 走 count（没有 mapper）
-		assertThat(source).contains(
-				"public java.util.List<demo.User> findByName(java.lang.Integer name) {\n\t\treturn this.autumn.query(");
+		// 取实体行的方法先读一次性投影，默认分支仍是全列常量 + ROW_MAPPER
+		assertThat(source).contains("public java.util.List<demo.User> findByName(java.lang.Integer name) {\n"
+				+ READ_PROJECTION + "\t\tjava.util.List<demo.User> rows = (__projection == null) ? this.autumn.query(");
 		assertThat(source).contains("public java.util.Optional<demo.User> getByName(java.lang.String name) {\n"
-				+ "\t\treturn this.autumn.queryOptional(SQL_GET_BY_NAME, ROW_MAPPER, name);");
+				+ READ_PROJECTION
+				+ "\t\tjava.util.Optional<demo.User> found = (__projection == null)"
+				+ " ? this.autumn.queryOptional(SQL_GET_BY_NAME, ROW_MAPPER, name) : this.autumn.queryOptional("
+				+ SQL + ".withColumns(SQL_GET_BY_NAME_PROJECTION, __projectionColumns(__projection)),"
+				+ " __projectedMapper(__projection), name);\n" + CONSUME_CONTEXT + "\t\treturn found;");
 		assertThat(source).contains("public long countByName(java.lang.String name) {\n"
 				+ "\t\treturn this.autumn.count(SQL_COUNT_BY_NAME, name);");
 		assertThat(source).contains("public boolean existsByAgeGreaterThan(int age) {\n"
 				+ "\t\treturn this.autumn.count(SQL_EXISTS_BY_AGE_GREATER_THAN, age) > 0;");
-		// 集合条件：运行期按集合大小展开占位符，所以标量和集合混排时实参先收进一个数组
+		// 集合条件：运行期按集合大小展开占位符，所以标量和集合混排时实参先收进一个数组；投影模板同样要展开 IN
 		assertThat(source).contains("private static final String SQL_FIND_BY_AGE_IN"
 				+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE age IN (:ids)\"");
 		assertThat(source).contains("public java.util.List<demo.User> findByAgeIn(java.util.List<java.lang.Long> ages) {\n"
 				+ "\t\tjava.util.List<Object> values = new java.util.ArrayList<>();\n" + "\t\tvalues.addAll(ages);\n"
-				+ "\t\treturn this.autumn.query(xyz.wewin.autumn.data.jdbc.sql.Sql.inClause(SQL_FIND_BY_AGE_IN,"
-				+ " ages.size()), ROW_MAPPER, values.toArray());");
+				+ READ_PROJECTION + "\t\tjava.util.List<demo.User> rows = (__projection == null) ? this.autumn.query("
+				+ SQL + ".inClause(SQL_FIND_BY_AGE_IN, ages.size()), ROW_MAPPER, values.toArray())");
+		assertThat(source).contains(SQL + ".inClause(" + SQL + ".withColumns(SQL_FIND_BY_AGE_IN_PROJECTION,"
+				+ " __projectionColumns(__projection)), ages.size())");
 		// Like 家族：SQL 仍是占位符，取数时由生成代码把实参包成 %v% / v% / %v
 		assertThat(source).contains("private static final String SQL_FIND_BY_NAME_CONTAINING"
 				+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE name LIKE ?\"");
 		assertThat(source).contains("public java.util.List<demo.User> findByNameContaining(java.lang.String name) {\n"
-				+ "\t\treturn this.autumn.query(SQL_FIND_BY_NAME_CONTAINING, ROW_MAPPER, \"%\" + name + \"%\");");
+				+ READ_PROJECTION + "\t\tjava.util.List<demo.User> rows = (__projection == null) ? this.autumn.query("
+				+ "SQL_FIND_BY_NAME_CONTAINING, ROW_MAPPER, \"%\" + name + \"%\")");
 		// 否定关键词与 IgnoreCase
 		assertThat(source).contains("private static final String SQL_FIND_BY_AGE_IS_NOT"
 				+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE age <> ?\"");
 		assertThat(source).contains("private static final String SQL_FIND_BY_NAME_IGNORE_CASE"
 				+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE LOWER(name) = LOWER(?)\"");
 		assertThat(source).contains("public java.util.List<demo.User> findByNameIgnoreCase(java.lang.String name) {\n"
-				+ "\t\treturn this.autumn.query(SQL_FIND_BY_NAME_IGNORE_CASE, ROW_MAPPER, name);");
+				+ READ_PROJECTION + "\t\tjava.util.List<demo.User> rows = (__projection == null) ? this.autumn.query("
+				+ "SQL_FIND_BY_NAME_IGNORE_CASE, ROW_MAPPER, name)");
 		// Distinct：DISTINCT 内联进 SELECT 投影，SQL 常量本身不含 LIMIT/OFFSET
 		assertThat(source).contains("private static final String SQL_FIND_DISTINCT_BY_NAME"
 				+ " = \"SELECT DISTINCT id, name, age, created_at FROM demo_user WHERE name = ?\"");
 		assertThat(source).contains("public java.util.List<demo.User> findDistinctByName(java.lang.String name) {\n"
-				+ "\t\treturn this.autumn.query(SQL_FIND_DISTINCT_BY_NAME, ROW_MAPPER, name);");
+				+ READ_PROJECTION + "\t\tjava.util.List<demo.User> rows = (__projection == null) ? this.autumn.query("
+				+ "SQL_FIND_DISTINCT_BY_NAME, ROW_MAPPER, name)");
 		// First/Top：行数上限作为字面量传给带 limit 的 query 重载（放在首位，避免与无 limit 重载歧义），方言在运行期拼 LIMIT
 		assertThat(source).contains("private static final String SQL_FIND_TOP3_BY_NAME"
 				+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE name = ?\"");
 		assertThat(source).contains("public java.util.List<demo.User> findTop3ByName(java.lang.String name) {\n"
-				+ "\t\treturn this.autumn.query(3L, SQL_FIND_TOP3_BY_NAME, ROW_MAPPER, name);");
+				+ READ_PROJECTION + "\t\tjava.util.List<demo.User> rows = (__projection == null) ? this.autumn.query("
+				+ "3L, SQL_FIND_TOP3_BY_NAME, ROW_MAPPER, name) : this.autumn.query(3L,"
+				+ " " + SQL + ".withColumns(SQL_FIND_TOP3_BY_NAME_PROJECTION, __projectionColumns(__projection)),"
+				+ " __projectedMapper(__projection), name);");
 		assertThat(source).contains("public java.util.List<demo.User> findFirstByName(java.lang.String name) {\n"
-				+ "\t\treturn this.autumn.query(1L, SQL_FIND_FIRST_BY_NAME, ROW_MAPPER, name);");
+				+ READ_PROJECTION + "\t\tjava.util.List<demo.User> rows = (__projection == null) ? this.autumn.query("
+				+ "1L, SQL_FIND_FIRST_BY_NAME, ROW_MAPPER, name)");
 		// deleteBy 返回 long：DELETE 走 update 拿受影响行数
 		assertThat(source).contains("private static final String SQL_DELETE_BY_NAME"
 				+ " = \"DELETE FROM demo_user WHERE name = ?\"");
 		assertThat(source).contains("public long deleteByName(java.lang.String name) {\n"
 				+ "\t\treturn this.autumn.update(SQL_DELETE_BY_NAME, name);");
-		// deleteBy 返回 List<Entity>：先 SELECT 取回再 DELETE，两条语句各成一常量
+		// deleteBy 返回 List<Entity>：先 SELECT 取回再 DELETE，两条语句各成一常量；取回的那条可投影，DELETE 不受影响
 		assertThat(source).contains("private static final String SQL_DELETE_BY_NAME_AND_AGE"
 				+ " = \"DELETE FROM demo_user WHERE name = ? AND age = ?\"");
 		assertThat(source).contains("private static final String SQL_DELETE_BY_NAME_AND_AGE_SELECT"
 				+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE name = ? AND age = ?\"");
-		assertThat(source).contains("public java.util.List<demo.User> deleteByNameAndAge(java.lang.String name, int age) {\n"
-				+ "\t\tjava.util.List<demo.User> rows = this.autumn.query(SQL_DELETE_BY_NAME_AND_AGE_SELECT, ROW_MAPPER,"
-				+ " name, age);\n\t\tif (!rows.isEmpty()) {\n\t\t\tthis.autumn.update(SQL_DELETE_BY_NAME_AND_AGE, name, age);\n\t\t}\n"
-				+ "\t\treturn rows;");
-		// @Query：SQL 直接采用注解文本，不再解析方法名；自定义 SQL 不触发一对多装配
+		assertThat(source).contains("private static final String SQL_DELETE_BY_NAME_AND_AGE_SELECT_PROJECTION"
+				+ " = \"SELECT {cols} FROM demo_user WHERE name = ? AND age = ?\"");
+		assertThat(source).contains(
+				"public java.util.List<demo.User> deleteByNameAndAge(java.lang.String name, int age) {\n"
+						+ READ_PROJECTION + "\t\tjava.util.List<demo.User> rows = (__projection == null)"
+						+ " ? this.autumn.query(SQL_DELETE_BY_NAME_AND_AGE_SELECT, ROW_MAPPER, name, age)");
+		// @Query：SQL 直接采用注解文本，不再解析方法名；自定义 SQL 不触发一对多装配，也不参与投影（读不到 {cols} 模板）
 		assertThat(source).contains("private static final String SQL_FIND_ADULTS"
 				+ " = \"SELECT id, name, age, created_at FROM demo_user WHERE age > ?\"");
+		assertThat(source).doesNotContain("SQL_FIND_ADULTS_PROJECTION");
 		assertThat(source).contains("public java.util.List<demo.User> findAdults(int age) {\n"
 				+ "\t\treturn this.autumn.query(SQL_FIND_ADULTS, ROW_MAPPER, age);");
 		// @Query 返回 void 的写操作走 update，无 return
@@ -490,8 +531,11 @@ class AutoRepositoryProcessorTests {
 				+ " WHERE demo_order.owner_id = demo_user.id AND demo_order.memo LIKE ?)\"");
 		// 派生查询照样走关联装配（两条语句取子行），不会退回 N+1
 		assertThat(source).contains("public java.util.List<demo.Customer> findByOrdersMemo(java.lang.String memo) {\n"
-				+ "\t\tjava.util.List<demo.Customer> rows = this.autumn.query(SQL_FIND_BY_ORDERS_MEMO,"
-				+ " ROW_MAPPER, memo);\n" + "\t\tattachOrders(rows);\n" + "\t\tattachByOwner(rows);");
+				+ READ_PROJECTION + "\t\tjava.util.List<demo.Customer> rows = (__projection == null)"
+				+ " ? this.autumn.query(SQL_FIND_BY_ORDERS_MEMO, ROW_MAPPER, memo)"
+				+ " : this.autumn.query(" + SQL + ".withColumns(SQL_FIND_BY_ORDERS_MEMO_PROJECTION,"
+				+ " __projectionColumns(__projection)), __projectedMapper(__projection), memo);\n"
+				+ "\t\tattachOrders(rows);\n" + "\t\tattachByOwner(rows);\n" + CONSUME_CONTEXT + "\t\treturn rows;");
 	}
 
 	@Test

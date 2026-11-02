@@ -3,7 +3,7 @@ package xyz.wewin.autumn.data.jdbc.runtime;
 import java.util.concurrent.Callable;
 
 /**
- * 线程级上下文持有器：按线程保存 {@link AutumnDataContext}（分页关联加载模式），运行期生成代码与调用方共享。
+ * 线程级上下文持有器：按线程保存 {@link AutumnDataContext}（分页关联加载模式 + 字段投影），运行期生成代码与调用方共享。
  *
  * <h2>关联加载三态（{@link AssociationMode}）</h2>
  * <ul>
@@ -13,12 +13,21 @@ import java.util.concurrent.Callable;
  *     <li><b>2 {@code DISABLED}</b>：强制关闭，任何页大小都不查询 / 装配关联。</li>
  * </ul>
  *
+ * <h2>字段投影（{@link FieldProjection}）</h2>
+ * 编译期生成的 {@code SELECT} 默认<em>全列</em>；{@link #selectFields(String...)} /
+ * {@link #excludeFields(String...)} 之后，最近一次取实体的查询只取需要的那几列（少走的列就不再占网络与内存），
+ * 未选中的属性留在实体默认值上。主键与多对一装配要读的外键列由编译期判定为<em>不可省略</em>，恒取，
+ * 因此裁剪列不会打断级联。
+ *
  * <h2>两种用法</h2>
  * <ul>
  *     <li><b>一次性（推荐，对标 PageHelper.startPage）</b>：{@link #startContext} /
- *         {@link #forceCascade()} / {@link #disableCascade()} 开启后，只作用于<b>最近一次</b>分页查询，
+ *         {@link #forceCascade()} / {@link #disableCascade()} / {@link #selectFields(String...)} /
+ *         {@link #excludeFields(String...)} 开启后，只作用于<b>最近一次</b>取实体的查询
+ *         （{@code findAll} / {@code findById} / {@code findAllById} / 分页 / 派生查询；
+ *         {@code countBy} / {@code existsBy} 这类不取行的语句不消费，顺延到下一次取实体的查询），
  *         生成代码执行该查询后自动 {@link #consumePending()} 清除，<b>无需手动 clear</b>。
- *         若开启后没紧跟分页查询，则顺延到下一次分页查询被消费（与 PageHelper 行为一致）。</li>
+ *         若开启后没紧跟这类查询，则顺延到下一次被消费（与 PageHelper 行为一致）。</li>
  *     <li><b>持久（请求级）</b>：{@link #set} 设定后对整个线程 / 请求持续生效，需 {@link #clear()} 或随线程结束清除；
  *         适合在拦截器里按请求统一设置。</li>
  * </ul>
@@ -65,23 +74,47 @@ public final class AutumnDataContextHolder {
 		CONTEXT.set(context);
 	}
 
-	/** 一次性设置：只作用于「最近一次」分页查询，查询消费后自动清除（对标 PageHelper.startPage，无需手动 clear）。 */
+	/** 一次性设置：只作用于「最近一次」取实体的查询，查询消费后自动清除（对标 PageHelper.startPage，无需手动 clear）。 */
 	public static void startContext(AutumnDataContext context) {
 		PENDING.set(context);
 	}
 
-	/** 便捷：一次性强制级联（模式 {@link AssociationMode#CASCADE}），只作用于最近一次分页查询。 */
+	/** 便捷：一次性强制级联（模式 {@link AssociationMode#CASCADE}），只作用于最近一次分页查询；已设定的投影保留。 */
 	public static void forceCascade() {
-		startContext(new AutumnDataContext(AssociationMode.CASCADE, AutumnDataContext.defaults().largePageThreshold()));
+		startContext(get().withMode(AssociationMode.CASCADE));
 	}
 
-	/** 便捷：一次性强制关闭关联（模式 {@link AssociationMode#DISABLED}），只作用于最近一次分页查询。 */
+	/** 便捷：一次性强制关闭关联（模式 {@link AssociationMode#DISABLED}），只作用于最近一次分页查询；已设定的投影保留。 */
 	public static void disableCascade() {
-		startContext(new AutumnDataContext(AssociationMode.DISABLED, AutumnDataContext.defaults().largePageThreshold()));
+		startContext(get().withMode(AssociationMode.DISABLED));
 	}
 
 	/**
-	 * 由生成代码在「最近一次」分页查询执行后调用：清除一次性 {@code PENDING}。
+	 * 便捷：一次性字段投影 —— 最近一次取实体的查询只 {@code SELECT} 这些属性列，查完自动清除。
+	 * 级联模式与阈值沿用当前生效上下文，可与 {@link #forceCascade()} / {@link #disableCascade()} 组合使用。
+	 */
+	public static void selectFields(String... fields) {
+		startProjection(FieldProjection.include(fields));
+	}
+
+	/** 便捷：一次性字段投影 —— 最近一次取实体的查询排除这些属性列，其余照旧。 */
+	public static void excludeFields(String... fields) {
+		startProjection(FieldProjection.exclude(fields));
+	}
+
+	/** 生效的字段投影；未设置时返回 {@code null}，生成代码据此走编译期写定的全列语句。 */
+	public static FieldProjection projection() {
+		return get().projection();
+	}
+
+	/** 一次性设置投影，保留当前的级联模式与阈值。 */
+	private static void startProjection(FieldProjection projection) {
+		AutumnDataContext current = get();
+		startContext(current.withProjection(projection));
+	}
+
+	/**
+	 * 由生成代码在「最近一次」取实体的查询执行后调用：清除一次性 {@code PENDING}。
 	 * 持久 {@code CONTEXT} 不受影响；未设置一次性上下文时为无操作。
 	 */
 	public static void consumePending() {
