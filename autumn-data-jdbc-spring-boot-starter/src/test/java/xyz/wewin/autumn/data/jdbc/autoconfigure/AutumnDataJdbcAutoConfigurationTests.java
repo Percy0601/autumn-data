@@ -7,9 +7,9 @@ import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
-import xyz.wewin.autumn.common.jdbc.dialect.Dialect;
-import xyz.wewin.autumn.common.jdbc.dialect.H2Dialect;
-import xyz.wewin.autumn.common.jdbc.dialect.MySqlDialect;
+import xyz.wewin.autumn.data.common.dialect.Dialect;
+import xyz.wewin.autumn.data.common.dialect.H2Dialect;
+import xyz.wewin.autumn.data.common.dialect.MySqlDialect;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 

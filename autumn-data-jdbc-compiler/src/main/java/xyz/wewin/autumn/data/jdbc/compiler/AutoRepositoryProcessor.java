@@ -37,11 +37,11 @@ import javax.tools.StandardLocation;
 
 import java.util.Locale;
 
-import xyz.wewin.autumn.common.jdbc.dialect.DefaultDialect;
-import xyz.wewin.autumn.common.jdbc.dialect.Dialect;
-import xyz.wewin.autumn.common.jdbc.dialect.H2Dialect;
-import xyz.wewin.autumn.common.jdbc.dialect.MySqlDialect;
-import xyz.wewin.autumn.common.jdbc.dialect.PostgreSqlDialect;
+import xyz.wewin.autumn.data.common.dialect.DefaultDialect;
+import xyz.wewin.autumn.data.common.dialect.Dialect;
+import xyz.wewin.autumn.data.common.dialect.H2Dialect;
+import xyz.wewin.autumn.data.common.dialect.MySqlDialect;
+import xyz.wewin.autumn.data.common.dialect.PostgreSqlDialect;
 
 /**
  * JSR-269 注解处理器：为 {@code @AutumnRepository} 接口生成 {@code <名称>Impl} 实现。

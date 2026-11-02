@@ -9,8 +9,8 @@ import org.springframework.jdbc.core.JdbcOperations;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.transaction.annotation.Transactional;
 
-import xyz.wewin.autumn.common.jdbc.dialect.Dialect;
-import xyz.wewin.autumn.common.jdbc.dialect.H2Dialect;
+import xyz.wewin.autumn.data.common.dialect.Dialect;
+import xyz.wewin.autumn.data.common.dialect.H2Dialect;
 import xyz.wewin.autumn.data.jdbc.page.Page;
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.using.demo.Order;

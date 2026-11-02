@@ -9,7 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
-import xyz.wewin.autumn.common.jdbc.dialect.Dialect;
+import xyz.wewin.autumn.data.common.dialect.Dialect;
 import xyz.wewin.autumn.data.jdbc.page.Page;
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
 

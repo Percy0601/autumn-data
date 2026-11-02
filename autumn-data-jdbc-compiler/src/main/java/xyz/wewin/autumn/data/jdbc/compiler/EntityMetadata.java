@@ -2,7 +2,7 @@ package xyz.wewin.autumn.data.jdbc.compiler;
 
 import java.util.List;
 
-import xyz.wewin.autumn.common.jdbc.dialect.Dialect;
+import xyz.wewin.autumn.data.common.dialect.Dialect;
 
 /**
  * 编译期从实体类提取的元数据快照（表名 / 主键 / 列清单 / 一对多关联），供 SQL 生成与实现类生成共用。

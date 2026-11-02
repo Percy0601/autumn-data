@@ -6,21 +6,21 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 
 | 模块 | 定位 | 关键特性 |
 | --- | --- | --- |
-| `autumn-common-jdbc` | JDBC 公共底座 | 数据库方言抽象（`Dialect` / `DialectResolver` / ANSI / MySQL / PostgreSQL / H2 实现）与通用 JDBC 基础设施；核心零 Spring，被 `autumn-data-jdbc` 与 `autumn-meta-jdbc` 复用。 |
+| `autumn-data-common` | JDBC 公共底座 | 数据库方言抽象（`Dialect` / `DialectResolver` / ANSI / MySQL / PostgreSQL / H2 实现）与通用 JDBC 基础设施；核心零 Spring，被 `autumn-data-jdbc` 与 `autumn-data-meta-jdbc` 复用。 |
 | `autumn-data-jdbc` | 零反射 JDBC 仓储 | 采用 **Spring Data 注解风格**（`Repository` / `CrudRepository` / `@Query` / `@Param`），并参考 **Micronaut Data** 在**编译期**通过注解处理器生成实现类，运行时零反射。核心**不依赖 Spring**，数据源连接池使用 **HikariCP**。 |
 | `autumn-data-jdbc-spring-boot-starter` | Spring Boot 集成层（唯一使用方入口） | 约定大于配置：只引这一个依赖 + `spring.datasource.*` 即可用。仿 MyBatis 分层（引擎零 Spring / 集成层依赖 Boot），自动配置 `Dialect` Bean，支持 `autumn.data.jdbc.dialect` 显式指定或按 `DataSource` 元数据自动识别。 |
 | `autumn-data-jdbc-compiler` | JSR-269 注解处理器 | 编译期为 `@AutumnRepository` 接口生成 `<名称>Impl`；仅 `annotationProcessorPaths` 使用，**运行时不依赖**。已实现：实体元数据提取（`@Entity`/`@Table`/`@Id`/`@Column`/`@GeneratedValue`/`@OneToMany`）、CRUD + 分页 + 一对多 + 方法名派生查询 SQL **编译期内联为生成类常量**、`RowMapper` 与批量读写/装配代码生成。解析不了的方法在**接口方法声明处**报错，不静默生成半成品。 |
 | `autumn-data-jdbc-spring-boot-starter-using` | 使用方示例（不发布） | **使用驱动开发的主战场**：只引 starter + 挂 compiler 处理器，在这里写后续所有用法（单表、一对多、多对一、派生查询），以用法倒逼核心实现。 |
-| `autumn-meta-jdbc` | 轻量动态 SQL 引擎 | 对标 **MyBatis** 但更轻量，支持**运行时动态加载**；用 **FreeMarker（.ftl）** 语法替代 MyBatis 的 XML SQL。数据源连接池同样使用 **HikariCP**；方言复用 `autumn-common-jdbc`。 |
+| `autumn-data-meta-jdbc` | 轻量动态 SQL 引擎 | 对标 **MyBatis** 但更轻量，支持**运行时动态加载**；用 **FreeMarker（.ftl）** 语法替代 MyBatis 的 XML SQL。数据源连接池同样使用 **HikariCP**；方言复用 `autumn-data-common`。 |
 
-各数据访问模块共享 `autumn-common-jdbc` 的多数据库方言（`Dialect`）抽象，至少支持 **MySQL** 与 **PostgreSQL**，并可通过 `DialectResolver` 根据 `DataSource` 的元数据自动识别。
+各数据访问模块共享 `autumn-data-common` 的多数据库方言（`Dialect`）抽象，至少支持 **MySQL** 与 **PostgreSQL**，并可通过 `DialectResolver` 根据 `DataSource` 的元数据自动识别。
 
 ## 当前进度（初始化阶段）
 
 - [x] 根 POM / `.gitignore` / `.gitattributes` / Maven Wrapper
 - [x] `autumn-data-jdbc` 模块骨架 + 多数据库 `Dialect`
-- [x] 新增 `autumn-common-jdbc`：收编 jdbc / meta 两套重复 `Dialect` 为公共底座，各模块改为依赖它
-- [x] `autumn-meta-jdbc` 模块骨架 + FreeMarker 配置（原 `autumn-data-meta`，方言已收编至 `autumn-common-jdbc`）
+- [x] 新增 `autumn-data-common`：收编 jdbc / meta 两套重复 `Dialect` 为公共底座，各模块改为依赖它
+- [x] `autumn-data-meta-jdbc` 模块骨架 + FreeMarker 配置（原 `autumn-data-meta`，方言已收编至 `autumn-data-common`）
 - [x] Spring Data 派生查询（方法名约定）规范文档：[docs/spring-data-derived-query.md](docs/spring-data-derived-query.md)
 - [x] 依赖分层实证对照（MyBatis / Spring Data / starter-jdbc）：[docs/dependency-layering.md](docs/dependency-layering.md)
 - [x] 依赖精简：`autumn-data-jdbc` 去掉 `spring-boot-starter-jdbc`，只留 `HikariCP` + `slf4j-api` + `jakarta.persistence-api`
@@ -36,8 +36,8 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 - [x] 派生查询支持一层关联条件：`findByOrdersOrderNo` 编译期展开成 `EXISTS` 相关子查询（半连接，父行不重复、不影响一对多装配），外键列取自 `@JoinColumn` 或 `mappedBy`
 - [x] compiler：解析不了的接口方法（未知属性/关键词、参数或返回类型不符、`Distinct`/`First`/`deleteBy`/两层以上关联）在**方法声明处**报错，不再静默跳过后由 javac 报「实现类未覆盖…」
 - [ ] `OrderBy` 之外的排序入参（`findAllBy(Sort)`）与 `Pageable` 排序
-- [ ] `autumn-meta-jdbc` 同步去 Spring 依赖（同样挪到各自 starter）
-- [ ] `autumn-meta-jdbc`：FreeMarker 动态 Mapper 执行引擎
+- [ ] `autumn-data-meta-jdbc` 同步去 Spring 依赖（同样挪到各自 starter）
+- [ ] `autumn-data-meta-jdbc`：FreeMarker 动态 Mapper 执行引擎
 
 ## 依赖策略
 
@@ -54,10 +54,10 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 
 | 模块 | 运行时依赖 | 编译期依赖 | test |
 | --- | --- | --- | --- |
-| `autumn-common-jdbc` | 纯 JDK（`java.sql` / `javax.sql`） | — | — |
-| `autumn-data-jdbc` | `autumn-common-jdbc`、`com.zaxxer:HikariCP`、`org.slf4j:slf4j-api`、`javax.sql.DataSource`（JDK） | `jakarta.persistence:jakarta.persistence-api`（实体注解）、APT（待加） | H2 |
-| `autumn-data-jdbc-spring-boot-starter` | `autumn-data-jdbc`、`autumn-common-jdbc`、`spring-boot-starter-jdbc`、`spring-boot-autoconfigure` | `spring-boot-configuration-processor`（构建期，不入依赖树） | H2、spring-boot-test |
-| `autumn-meta-jdbc` | `autumn-common-jdbc`、`com.zaxxer:HikariCP`、`org.freemarker:freemarker` | — | H2 |
+| `autumn-data-common` | 纯 JDK（`java.sql` / `javax.sql`） | — | — |
+| `autumn-data-jdbc` | `autumn-data-common`、`com.zaxxer:HikariCP`、`org.slf4j:slf4j-api`、`javax.sql.DataSource`（JDK） | `jakarta.persistence:jakarta.persistence-api`（实体注解）、APT（待加） | H2 |
+| `autumn-data-jdbc-spring-boot-starter` | `autumn-data-jdbc`、`autumn-data-common`、`spring-boot-starter-jdbc`、`spring-boot-autoconfigure` | `spring-boot-configuration-processor`（构建期，不入依赖树） | H2、spring-boot-test |
+| `autumn-data-meta-jdbc` | `autumn-data-common`、`com.zaxxer:HikariCP`、`org.freemarker:freemarker` | — | H2 |
 
 说明：
 - `spring-boot-starter-jdbc` 传递引入 `spring-boot-starter` → `spring-boot` + `snakeyaml` + `logback` + `jsp` 等，以及 `spring-jdbc`/`spring-tx`，对「编译期生成 SQL、运行时零反射」的核心库属于额外负担。

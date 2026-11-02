@@ -2,8 +2,8 @@ package xyz.wewin.autumn.data.jdbc.runtime;
 
 import javax.sql.DataSource;
 
-import xyz.wewin.autumn.common.jdbc.dialect.Dialect;
-import xyz.wewin.autumn.common.jdbc.dialect.DialectResolver;
+import xyz.wewin.autumn.data.common.dialect.Dialect;
+import xyz.wewin.autumn.data.common.dialect.DialectResolver;
 
 /**
  * 无 Spring 引导：给定一个 {@link DataSource} 即可拿到仓储实例

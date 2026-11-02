@@ -13,12 +13,12 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 
-import xyz.wewin.autumn.common.jdbc.dialect.DefaultDialect;
-import xyz.wewin.autumn.common.jdbc.dialect.Dialect;
-import xyz.wewin.autumn.common.jdbc.dialect.DialectResolver;
-import xyz.wewin.autumn.common.jdbc.dialect.H2Dialect;
-import xyz.wewin.autumn.common.jdbc.dialect.MySqlDialect;
-import xyz.wewin.autumn.common.jdbc.dialect.PostgreSqlDialect;
+import xyz.wewin.autumn.data.common.dialect.DefaultDialect;
+import xyz.wewin.autumn.data.common.dialect.Dialect;
+import xyz.wewin.autumn.data.common.dialect.DialectResolver;
+import xyz.wewin.autumn.data.common.dialect.H2Dialect;
+import xyz.wewin.autumn.data.common.dialect.MySqlDialect;
+import xyz.wewin.autumn.data.common.dialect.PostgreSqlDialect;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.ConnectionSource;
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;

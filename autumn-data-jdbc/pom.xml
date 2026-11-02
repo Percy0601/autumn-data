@@ -21,7 +21,7 @@
 		<!-- 方言抽象（Dialect / DialectResolver / 各库实现）：公共 JDBC 底座 -->
 		<dependency>
 			<groupId>xyz.wewin.autumn</groupId>
-			<artifactId>autumn-common-jdbc</artifactId>
+			<artifactId>autumn-data-common</artifactId>
 		</dependency>
 		<!-- 核心模块零 Spring：只保留连接池与 JDK java.sql/javax.sql。版本由父 BOM（spring-boot-starter-parent）管理 -->
 		<dependency>

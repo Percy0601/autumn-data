@@ -24,7 +24,7 @@
 		<!-- 编译期方言（决定生成 SQL 是否给标识符加引号），故 provided -->
 		<dependency>
 			<groupId>xyz.wewin.autumn</groupId>
-			<artifactId>autumn-common-jdbc</artifactId>
+			<artifactId>autumn-data-common</artifactId>
 			<scope>provided</scope>
 		</dependency>
 		<dependency>
