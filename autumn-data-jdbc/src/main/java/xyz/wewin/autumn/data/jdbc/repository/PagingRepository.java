@@ -9,6 +9,10 @@ import xyz.wewin.autumn.data.jdbc.page.Pageable;
  * <p>只暴露翻页，不含按业务字段排序 —— 排序字段需要在编译期映射成列名才安全，
  * 随派生查询一起提供（docs/spring-data-derived-query.md 第 6 节）。</p>
  *
+ * <p>需要「分页 + 排序」时，在自己接口里声明返回 {@link Page} 且末位形参是 {@link Pageable} 的方法，
+ * 排序由方法名的 {@code OrderBy} 编译期映射成列名，例如
+ * {@code Page<Book> findAllOrderByPriceDesc(Pageable pageable)}。</p>
+ *
  * @param <T> 实体类型
  * @param <ID> 主键类型
  */

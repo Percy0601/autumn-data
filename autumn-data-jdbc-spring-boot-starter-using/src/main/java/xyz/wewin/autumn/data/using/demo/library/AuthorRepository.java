@@ -6,6 +6,8 @@ import java.util.List;
 import java.util.Optional;
 
 import xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository;
+import xyz.wewin.autumn.data.jdbc.page.Page;
+import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.jdbc.repository.CrudRepository;
 import xyz.wewin.autumn.data.jdbc.repository.PagingRepository;
 
@@ -146,6 +148,17 @@ public interface AuthorRepository extends CrudRepository<Author, Long>, PagingRe
 
 	/** 只有排序、没有条件的方法名同样支持。 */
 	List<Author> findAllOrderByAgeDesc();
+
+	// ======================================================================
+	// 分页 + 排序：Pageable 给页码与页大小，OrderBy 给编译期映射好的排序列
+	// （返回 Page<T> 且末位形参是 Pageable 即触发）
+	// ======================================================================
+
+	Page<Author> findAllOrderByAgeDesc(Pageable pageable);
+
+	Page<Author> findByActiveIsTrueOrderByAgeDesc(Pageable pageable);
+
+	Page<Author> findByAgeGreaterThanOrderByAgeDescNameAsc(int age, Pageable pageable);
 
 	List<Author> findByActiveOrderByAgeAscNameDesc(Boolean active);
 

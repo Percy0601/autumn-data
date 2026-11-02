@@ -14,6 +14,7 @@ import java.util.List;
  * @param parameters 形参表，用于生成方法签名
  * @param bindings 占位符的取值来源，顺序与 SQL 里的 {@code ?} 严格一致
  * @param sql 解析出的主语句：{@code SELECT}/{@code COUNT(*)} 或 {@code deleteBy} 的 {@code DELETE}
+ * @param countSql 仅 {@link Kind#PAGE} 用：同一 WHERE 的计数语句（不带 ORDER BY），其余形态为空串
  * @param selectSql 仅 {@code deleteBy} 返回实体列表时用：先按条件 {@code SELECT} 把要删的行取回再删，
  *            其余形态为空串
  * @param distinct 主语是否带 {@code Distinct}
@@ -21,8 +22,14 @@ import java.util.List;
  * @param custom 是否来自 {@code @Query}：是则跳过一对多装配（自定义 SQL 未必选了外键列）
  */
 record DerivedQuery(String methodName, DerivedQuery.Kind kind, String returnTypeSource, List<Parameter> parameters,
-		List<DerivedQuery.Binding> bindings, String sql, String selectSql, boolean distinct, long limit,
-		boolean custom) {
+		List<DerivedQuery.Binding> bindings, String sql, String countSql, String selectSql, boolean distinct,
+		long limit, boolean custom) {
+
+	/** 非分页查询：没有独立的计数语句。 */
+	DerivedQuery(String methodName, Kind kind, String returnTypeSource, List<Parameter> parameters,
+			List<Binding> bindings, String sql, String selectSql, boolean distinct, long limit, boolean custom) {
+		this(methodName, kind, returnTypeSource, parameters, bindings, sql, "", selectSql, distinct, limit, custom);
+	}
 
 	/** 生成方法的结果形态。 */
 	enum Kind {
@@ -43,7 +50,13 @@ record DerivedQuery(String methodName, DerivedQuery.Kind kind, String returnType
 	DELETE,
 
 	/** 删除并返回被删实体（{@code List<T>}）。 */
-	DELETE_LIST
+	DELETE_LIST,
+
+	/**
+	 * 分页：末位形参是 {@code Pageable}，返回 {@code Page<T>}。
+	 * 排序仍由方法名的 {@code OrderBy} 在编译期映射成列名，因此兼具分页与排序且无拼串注入风险。
+	 */
+	PAGE
 	}
 
 	/**

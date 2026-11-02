@@ -4,7 +4,9 @@ package xyz.wewin.autumn.data.jdbc.page;
  * 分页请求：页码从 0 开始。
  *
  * <p>翻页按主键顺序稳定输出；按业务字段排序随派生查询一起提供，
- * 因为排序字段必须在编译期映射到列名才安全（避免把用户输入直接拼进 ORDER BY）。</p>
+ * 因为排序字段必须在编译期映射到列名才安全（避免把用户输入直接拼进 ORDER BY）。
+ * 需要「分页 + 排序」时，声明返回 {@code Page<T>} 且末位形参是本类型的派生查询方法，
+ * 排序同样来自方法名的 {@code OrderBy}（见 docs/spring-data-derived-query.md 第 6 节）。</p>
  */
 public record Pageable(int page, int size) {
 

@@ -114,6 +114,11 @@ final class ImplementationSource {
 				sb.append("\tprivate static final String ").append(queryConstNames.get(i)).append("_SELECT = \"")
 					.append(escapeJava(query.selectSql())).append("\";\n\n");
 			}
+			// 分页派生查询另存一条计数常量：与主语句同 WHERE、不带 ORDER BY
+			if (query.kind() == Kind.PAGE) {
+				sb.append("\tprivate static final String ").append(queryConstNames.get(i)).append("_COUNT = \"")
+					.append(escapeJava(query.countSql())).append("\";\n\n");
+			}
 		}
 		sb.append(rowMapperField(this.meta, "ROW_MAPPER", this.entity));
 			for (Association association : eagerAssociations()) {
@@ -152,7 +157,9 @@ final class ImplementationSource {
 				DerivedQuery query = this.queries.get(i);
 				String constName = queryConstNames.get(i);
 				String selectConstName = query.kind() == Kind.DELETE_LIST ? constName + "_SELECT" : "";
-				sb.append(method(derivedSignature(query), derivedBody(query, constName, selectConstName)));
+				String countConstName = query.kind() == Kind.PAGE ? constName + "_COUNT" : "";
+				sb.append(method(derivedSignature(query),
+						derivedBody(query, constName, selectConstName, countConstName)));
 			}
 			sb.append(privateMethod("insert", "void", this.entity + " entity", insertBody()));
 			for (Association association : eagerAssociations()) {
@@ -236,7 +243,8 @@ final class ImplementationSource {
 		 * {@code AutumnJdbc} 的带 {@code limit} 重载，由方言在运行期拼 {@code LIMIT}；{@code deleteBy} 返回
 		 * {@code long} 走 {@code update} 拿受影响行数，返回 {@code List<T>} 先 {@code SELECT} 取回再 {@code DELETE}。</p>
 		 */
-		private String derivedBody(DerivedQuery query, String constName, String selectConstName) {
+		private String derivedBody(DerivedQuery query, String constName, String selectConstName,
+				String countConstName) {
 			List<Binding> bindings = query.bindings();
 			Binding collection = bindings.stream().filter(Binding::collectionValues).findFirst().orElse(null);
 			StringBuilder prelude = new StringBuilder();
@@ -263,7 +271,12 @@ final class ImplementationSource {
 			// AutumnJdbc 的形参顺序是 (sql, mapper, args...)，计数/删除语句没有 mapper
 			String queryArguments = selectArgument + ", ROW_MAPPER"
 					+ (bindings.isEmpty() ? "" : ", " + valueArguments);
-			String countArguments = sqlArgument + (bindings.isEmpty() ? "" : ", " + valueArguments);
+			// 分页查询的计数语句：与主语句同一 WHERE；集合参数同样要按个数展开 IN 占位符
+			String countSqlArgument = query.kind() == Kind.PAGE
+					? (collection == null ? countConstName
+							: SQL_HELPER + ".inClause(" + countConstName + ", " + collection.expression() + ".size())")
+					: sqlArgument;
+			String countArguments = countSqlArgument + (bindings.isEmpty() ? "" : ", " + valueArguments);
 			long limit = query.limit();
 			if (limit > 0 && (query.kind() == Kind.LIST || query.kind() == Kind.OPTIONAL)) {
 				// First/Top：行数上限作为字面量传给带 limit 的重载，由方言拼 LIMIT（不污染编译期 SQL 常量）
@@ -288,7 +301,40 @@ final class ImplementationSource {
 						+ "java.util.List<" + this.entity + "> rows = this.autumn.query(" + queryArguments + ");\n"
 						+ "if (!rows.isEmpty()) {\n\tthis.autumn.update(" + countArguments + ");\n}\n"
 						+ "return rows;";
+				case PAGE -> prelude + pagedBody(selectArgument + ", " + countSqlArgument + ", ROW_MAPPER, pageable"
+						+ (bindings.isEmpty() ? "" : ", " + valueArguments));
 			};
+		}
+
+		/**
+		 * 分页派生查询：末位 {@code Pageable} 提供页码与页大小，排序来自编译期映射好的 {@code ORDER BY}
+		 * （方法名的 {@code OrderBy}），因此「分页 + 排序」组合无需运行期拼串。
+		 * 关联装配与 {@code findAll(Pageable)} 一样受 {@code AssociationMode} 三态控制。
+		 */
+		private String pagedBody(String pageArguments) {
+			String select = "this.autumn.page(" + pageArguments + ")";
+			if (eagerAssociations().isEmpty()) {
+				return "return " + select + ";";
+			}
+			StringBuilder sb = new StringBuilder(PAGE + "<" + this.entity + "> page = " + select + ";\n")
+				.append("java.util.List<")
+				.append(this.entity)
+				.append("> rows = page.content();\n")
+				.append(AUTUMN_DATA_CONTEXT + " __ctx = " + CONTEXT_HOLDER + ".get();\n")
+				.append("boolean __cascade;\n")
+				.append("switch (__ctx.mode()) {\n")
+				.append("\tcase " + ASSOCIATION_MODE + ".CASCADE: __cascade = true; break;\n")
+				.append("\tcase " + ASSOCIATION_MODE + ".DISABLED: __cascade = false; break;\n")
+				.append("\tdefault: __cascade = pageable.size() <= __ctx.largePageThreshold();\n")
+				.append("}\n")
+				.append("if (__cascade) {\n");
+			for (Association association : eagerAssociations()) {
+				sb.append("\t").append(association.attachMethod()).append("(rows);\n");
+			}
+			sb.append("}\n")
+				// 一次性上下文被「最近一次」查询消费后自动清除，无需手动 clear
+				.append(CONTEXT_HOLDER + ".consumePending();\n");
+			return sb.append("return page;").toString();
 		}
 
 		/** 取数实参：{@code Containing/StartingWith/EndingWith} 这类按关键词把实参包成模式串；其余原样。 */

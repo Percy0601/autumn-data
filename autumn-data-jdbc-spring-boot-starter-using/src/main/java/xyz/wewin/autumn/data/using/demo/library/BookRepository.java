@@ -6,6 +6,8 @@ import java.util.List;
 import java.util.Optional;
 
 import xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository;
+import xyz.wewin.autumn.data.jdbc.page.Page;
+import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.jdbc.repository.CrudRepository;
 import xyz.wewin.autumn.data.jdbc.repository.PagingRepository;
 
@@ -68,6 +70,19 @@ public interface BookRepository extends CrudRepository<Book, Long>, PagingReposi
 	List<Book> findAllOrderByPriceDesc();
 
 	List<Book> findByPublishedIsTrueOrderByPriceAscTitleDesc();
+
+	// ======================================================================
+	// 分页 + 排序：Pageable 给页码与页大小，OrderBy 给编译期映射好的排序列
+	// ======================================================================
+
+	Page<Book> findAllOrderByPriceDesc(Pageable pageable);
+
+	Page<Book> findByPublishedIsTrueOrderByPriceDesc(Pageable pageable);
+
+	Page<Book> findByAuthorIdOrderBySoldCountDesc(Long authorId, Pageable pageable);
+
+	/** 多对一关联路径 + 分页排序：按作者名过滤、按价格倒序翻页。 */
+	Page<Book> findByAuthorNameOrderByPriceDesc(String name, Pageable pageable);
 
 	long countByPublishedIsTrue();
 

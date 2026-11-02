@@ -90,6 +90,18 @@ public class AutumnJdbc {
 		return Page.of(content, pageable, total);
 	}
 
+	/**
+	 * 带谓词参数的分页：{@code selectSql} 已含编译期映射好的 {@code ORDER BY}（列名安全），
+	 * {@code countSql} 是同一 WHERE 的计数语句（不带排序），两者共用同一组 {@code args}。
+	 */
+	public <T> Page<T> page(String selectSql, String countSql, RowMapper<T> mapper, Pageable pageable,
+			Object... args) {
+		String paged = selectSql + this.dialect.limitOffset(pageable.limit(), pageable.offset());
+		List<T> content = query(paged, mapper, args);
+		long total = count(countSql, args);
+		return Page.of(content, pageable, total);
+	}
+
 	public long count(String sql, Object... args) {
 		try (PreparedStatement ps = prepare(sql, args); ResultSet rs = ps.executeQuery()) {
 			if (rs.next()) {

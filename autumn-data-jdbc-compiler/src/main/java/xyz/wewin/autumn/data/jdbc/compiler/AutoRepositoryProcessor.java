@@ -76,6 +76,8 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 
 	private static final String PAGEABLE_FQN = "xyz.wewin.autumn.data.jdbc.page.Pageable";
 
+	private static final String PAGE_FQN = "xyz.wewin.autumn.data.jdbc.page.Page";
+
 	private static final String COLLECTION_FQN = "java.util.Collection";
 
 	/**
@@ -207,9 +209,25 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 				}
 				continue;
 			}
+			String name = member.getSimpleName().toString();
+			// 返回 Page<T> 且末位形参是 Pageable → 分页派生查询（排序仍由方法名的 OrderBy 编译期映射）
+			boolean pageReturn = returnType.startsWith(PAGE_FQN + "<");
+			boolean paged = pageReturn && !parameters.isEmpty()
+					&& parameters.get(parameters.size() - 1).typeSource().contentEquals(PAGEABLE_FQN);
+			if (pageReturn && !paged) {
+				error("derived query '" + name + "' returns " + returnType + " but its last parameter is not "
+						+ PAGEABLE_FQN + "; a paged query must declare Pageable last", method);
+				failed = true;
+				continue;
+			}
+			if (paged && !returnType.equals(PAGE_FQN + "<" + metadata.qualifiedName() + ">")) {
+				error("derived query '" + name + "' must return " + PAGE_FQN + "<" + metadata.qualifiedName()
+						+ "> but declares " + returnType, method);
+				failed = true;
+				continue;
+			}
 			try {
-				queries.add(DerivedQueryParser.parse(member.getSimpleName().toString(), returnType, parameters,
-						metadata));
+				queries.add(DerivedQueryParser.parse(name, returnType, parameters, metadata, paged));
 			}
 			catch (DerivedQueryException ex) {
 				error(ex.getMessage(), method);

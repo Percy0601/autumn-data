@@ -107,13 +107,31 @@ final class DerivedQueryParser {
 	 */
 	static DerivedQuery parse(String methodName, String returnTypeSource, List<Parameter> parameters,
 			EntityMetadata meta) {
+		return parse(methodName, returnTypeSource, parameters, meta, false);
+	}
+
+	/**
+	 * 分页派生查询：末位形参是 {@code Pageable}，返回 {@code Page<T>}。
+	 *
+	 * <p>排序依然来自方法名的 {@code OrderBy}，在编译期映射成列名后内联进 SQL 常量 —— 因此「分页 + 排序」
+	 * 组合依然是编译期安全的，不会把用户输入拼进 {@code ORDER BY}。{@code Pageable} 只提供页码与页大小，
+	 * 不参与谓词绑定（{@link #bind} 收到的是去掉它的形参表）。</p>
+	 */
+	static DerivedQuery parse(String methodName, String returnTypeSource, List<Parameter> parameters,
+			EntityMetadata meta, boolean paged) {
 		Subject subject = readSubject(methodName);
+		if (paged && subject.limit() > 0) {
+			throw fail(methodName, "First/Top and Pageable are mutually exclusive - Pageable already bounds"
+					+ " the page size");
+		}
 		Ordering ordering = readOrdering(subject.predicateText(), meta, methodName);
 		List<List<Atom>> branches = ordering.predicateText().isEmpty() ? List.of()
 				: splitBranches(ordering.predicateText(), meta, methodName);
 		List<Atom> atoms = branches.stream().flatMap(List::stream).toList();
-		Kind kind = kindOf(subject, returnTypeSource, meta, methodName);
-		List<Binding> bindings = bind(atoms, parameters, methodName);
+		Kind kind = paged ? Kind.PAGE : kindOf(subject, returnTypeSource, meta, methodName);
+		// 分页时末位 Pageable 只是翻页参数，不参与 ? 绑定
+		List<Parameter> bindable = paged ? parameters.subList(0, parameters.size() - 1) : parameters;
+		List<Binding> bindings = bind(atoms, bindable, methodName);
 		boolean isCountOrExists = kind == Kind.COUNT || kind == Kind.EXISTS;
 		boolean isDelete = kind == Kind.DELETE || kind == Kind.DELETE_LIST;
 		// 计数/存在性判断与删除没有行序概念（前者在 PostgreSQL 还会因非聚合列报错），带上 ORDER BY 无意义
@@ -133,8 +151,10 @@ final class DerivedQueryParser {
 			mainSql = "SELECT " + projection + " FROM " + meta.table() + where + orderSql;
 			selectSql = "";
 		}
-		return new DerivedQuery(methodName, kind, returnTypeSource, parameters, bindings, mainSql, selectSql,
-				subject.distinct(), subject.limit(), false);
+		// 分页要回查总行数：同一 WHERE、不带 ORDER BY 的计数语句
+		String countSql = paged ? "SELECT COUNT(*) FROM " + meta.table() + where : "";
+		return new DerivedQuery(methodName, kind, returnTypeSource, parameters, bindings, mainSql, countSql,
+				selectSql, subject.distinct(), subject.limit(), false);
 	}
 
 	/**

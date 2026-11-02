@@ -88,6 +88,14 @@
 
 - `OrderBy<Prop>Asc|Desc` 后缀，多属性依次追加：`findByAgeOrderByLastNameAscFirstNameDesc`
 - `Sort` / `Pageable` 参数参与运行时排序；`OrderBy` 与方法参数同时存在时，约定为**参数追加在方法名之后**（不同 spring-data 模块历史行为略有差异，autumn 需在文档里锁死一种）。
+- **分页 + 排序**：返回 `Page<T>` 且**末位形参是 `Pageable`** 即触发，例如
+  `Page<Book> findByAuthorIdOrderBySoldCountDesc(Long authorId, Pageable pageable)`。
+  排序列依旧来自方法名的 `OrderBy`（编译期映射成列名后内联进 SQL 常量），`Pageable` 只提供页码与页大小，
+  因此「分页 + 排序」组合**仍然没有运行期拼串**——这正是 autumn 不提供运行时 `Sort` 的原因
+  （排序字段必须编译期映射，见 `PagingRepository` 注释）。
+  生成形态：主语句 `SELECT … WHERE … ORDER BY <列> DESC`，另生成同 `WHERE`、不带 `ORDER BY` 的
+  `SELECT COUNT(*)` 用于回查总行数，两者共用同一组参数；关联装配同样受第 8 节三态模式控制。
+- `First/Top` 与 `Pageable` 互斥（页大小已由 `Pageable` 决定），同时出现时在编译期报错。
 
 ## 7. 保留的标准 CRUD 方法（`CrudRepository`）
 
@@ -162,6 +170,7 @@ boolean existsById(ID id);
 | `Distinct` | `findDistinctByName` | `SELECT DISTINCT <列> …`（投影里加 `DISTINCT`，不是运行期去重） |
 | `First` / `Top N` | `findFirstByName` / `findTop3ByName` | 行数上限在编译期解析成字面量，运行期由方言拼 `LIMIT` |
 | `deleteBy` / `removeBy` | `deleteByName(long)`、`deleteByNameAndAge(List)` | 返回 `long` 走 `update` 拿受影响行数；返回 `List<T>` 先 `SELECT` 取回再 `DELETE` |
+| `Page<T>` + 末位 `Pageable` | `findAllOrderByPriceDesc(Pageable)` / `findByAuthorIdOrderBySoldCountDesc(Long, Pageable)` | 分页 + 排序：主语句带编译期 `ORDER BY`，另生成同 `WHERE` 的 `COUNT(*)` 常量回查总行数 |
 | `IgnoreCase` / `IgnoringCase` | `findByNameIgnoreCase` | 列与参数一起包 `LOWER()` |
 | `Like` 家族 | `Containing` / `StartingWith` / `EndingWith` | 运行期把实参包成 `%?%` / `?%` / `%?`，不依赖方言的字符串拼接 |
 | 返回形态 | `List<T>` / `Optional<T>` | 命中关联时结果仍走装配（两条语句，无 N+1） |
