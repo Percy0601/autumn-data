@@ -91,18 +91,58 @@ Spring 事务只绑定默认池那一个实例，额外池不参与外层 `@Tran
 
 ## 运行示例（using 模块）
 
+### 第 1 步（新环境必做）：把处理器装进本地仓库
+
 ```bash
 ./mvnw -B install -DskipTests                     # reactor 快照进本地仓库
-export H2_PASSWORD='<不写入仓库的本地库密码>'       # 凭据只走环境变量
+```
+
+`using` 模块的 `annotationProcessorPaths` 是按 `groupId:artifactId:version` 解析的，单模块构建
+（`spring-boot:run -pl …`、IDE 从仓库取依赖）拿的是 `~/.m2` 里的 jar，不是 reactor 的 `target/classes`。
+这一步不能省：漏装会直接报处理器解析不到；装了旧版则生成的实现类缺新方法、
+`META-INF/autumn-data/repositories` 清单缺行，启动时表现为
+`required a bean of type 'XRepository' that could not be found`（类在，只是没被注册）。
+改过 `autumn-data-jdbc-compiler` 之后同样要重新 install，IDE 侧再 Rebuild 一次。
+
+### 第 2 步：建表与种子数据
+
+应用启动会自己执行脚本（`spring.sql.init.mode=always` + `schema-locations=classpath:main-schema.sql`），
+脚本是 `CREATE TABLE IF NOT EXISTS` + `INSERT IGNORE` + 固定主键，可以反复跑。
+要在启动前手工初始化，就对同一个库跑同一份脚本：
+
+```bash
+export H2_PASSWORD='<不写入仓库的本地库密码>'        # 凭据只走环境变量
+java -cp "$H2_HOME/lib/h2.jar" org.h2.tools.RunScript \
+    -url "jdbc:h2:tcp://localhost:9092/autumn_security;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE" \
+    -user sa -password "$H2_PASSWORD" \
+    -script autumn-data-jdbc-spring-boot-starter-using/src/main/resources/main-schema.sql
+```
+
+初始化后各表行数：`lib_author` 3、`lib_book` 6、`lib_category` 4、`lib_book_category` 9、`demo_order` 3；
+`basic_user` 沿用该库既有数据（演示只读，不插不改）。
+
+### 第 3 步：启动与验证
+
+```bash
 ./mvnw spring-boot:run -pl autumn-data-jdbc-spring-boot-starter-using \
     -Dspring-boot.run.profiles=demo               # demo profile → H2 TCP 服务库
 curl http://localhost:8080/training/user          # 单表 + 一对多装配
 curl "http://localhost:8080/training/user/page?page=0&size=1"   # 分页（方言 limit/offset + 总行数）
 curl -X POST "http://localhost:8080/training/order/batch?count=3&userId=1"  # 批量插入 + 生成键回填
+
+curl http://localhost:8080/library/summary        # 四张表行数概览
+curl http://localhost:8080/library/authors        # 1:n：作者连同书籍（两条语句，无 N+1）
+curl http://localhost:8080/library/books          # n:1 + 1:n 同时装配
+curl -G "http://localhost:8080/library/books/by-category" --data-urlencode "categoryName=武侠"   # n:1:n 两层关联路径：编译成两层 EXISTS，父行不重复
+curl -G "http://localhost:8080/library/books/by-author" --data-urlencode "authorName=金庸"  # n:1 关联路径
+curl "http://localhost:8080/library/books/page-sorted?page=0&size=2"   # 分页 + OrderBy
+curl "http://localhost:8080/library/derived/first-top"                 # First/Top + Distinct 见 /library/derived/*
 ```
 
+> 中文查询参数交给 `curl -G --data-urlencode` 编码，别手写百分号串。
+
 配置约定（全项目只用 `.properties`，不用 yaml）：
-- `application.properties`：连 `jdbc:h2:tcp://localhost:9092/autumn_security;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE`。该库是安全项目在用的真实库，`basic_user` 是它的既有表（17 列），演示只读它、不往里插数据；脚本 `main-schema.sql` 只创建自有表 `demo_order` 并用 `INSERT IGNORE` + 固定主键补种子，重启不重复插数据。
+- `application.properties`：连 `jdbc:h2:tcp://localhost:9092/autumn_security;MODE=MySQL;DATABASE_TO_LOWER=TRUE;CASE_INSENSITIVE_IDENTIFIERS=TRUE`。该库是安全项目在用的真实库，`basic_user` 是它的既有表（17 列），演示只读它、不往里插数据。`main-schema.sql` 只建示例自有表并用 `INSERT IGNORE` + 固定主键补种子：`demo_order`（1:n 子表）与图书馆四张表 `lib_author` / `lib_book` / `lib_category` / `lib_book_category`（覆盖 1:n、n:1、n:1:n 三种关联与 `int/long/String/Boolean/BigDecimal/Date/Timestamp` 全量字段类型）。
 - 注意：demo 实体表名 `basic_user` 与该库的真实表同名，列名恰好重合才读得通；一旦要写用户数据，请改用自有库或改表名，否则会落到安全项目的表里。
 - `src/test/resources/application.properties`：自动化测试用内存库 `jdbc:h2:mem:autumn-using-test`，与 TCP 服务库完全隔离。
 - 改动资源或处理器产物后请用 `./mvnw -B clean test`（旧 `target/classes` 残留会让改动看起来无效）。

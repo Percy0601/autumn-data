@@ -32,7 +32,8 @@ import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
  *
  * <p>注册表资源可能出现在多个模块（每个用了编译期处理器的模块各写一份），所以用
  * {@link ClassLoader#getResources(String)} 读取全部，避免漏注册别的 jar 里的仓储。
- * 清单里指向不存在实现类的残留行（仓储改名/删除后增量编译留下的）会被跳过并告警。</p>
+ * 清单里指向不存在实现类的残留行（仓储改名/删除后增量编译留下的）会被跳过并告警；
+ * 清单一条都没有时给一条 INFO，把「bean 找不到」和「编译期处理器没跑」联系起来。</p>
  */
 public class RepositoryRegistrar implements BeanDefinitionRegistryPostProcessor {
 
@@ -43,7 +44,21 @@ public class RepositoryRegistrar implements BeanDefinitionRegistryPostProcessor 
 	@Override
 	public void postProcessBeanDefinitionRegistry(BeanDefinitionRegistry registry) throws BeansException {
 		ClassLoader classLoader = classLoader();
-		for (String repositoryFqn : readRegistry(classLoader)) {
+		Set<String> repositories = readRegistry(classLoader);
+		if (repositories.isEmpty()) {
+			/*
+			 * 清单一条都没有：要么这个应用确实没有 @AutumnRepository 仓储（正常），
+			 * 要么编译期处理器根本没跑（IDE 增量编译 / 处理器 jar 是仓库里的旧版本）。
+			 * 后者原本只会在业务 Bean 创建时报 "required a bean of type 'XRepository'
+			 * that could not be found"，看不出和编译期有关系，所以这里把结论先说清楚。
+			 */
+			LOGGER.info("No {} resource on the classpath, so no compile-time generated repository will be "
+					+ "registered. Fine if this app has no @AutumnRepository interface; otherwise annotation "
+					+ "processing did not run - build the reactor once with 'mvnw install' so that "
+					+ "autumn-data-jdbc-compiler resolves from the local repository, then rebuild.", REGISTRY);
+			return;
+		}
+		for (String repositoryFqn : repositories) {
 			String implName = repositoryFqn + "Impl";
 			String beanName = implName;
 			if (registry.containsBeanDefinition(beanName)) {

@@ -15,8 +15,13 @@
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 		<project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
 		<java.version>25</java.version>
-		<!-- 开发期模块：暂不发布（随 M2 稳定后开放） -->
-		<maven.install.skip>true</maven.install.skip>
+		<!--
+			不发布到远端仓库，但必须装进本地仓库：示例模块的 annotationProcessorPaths 是按
+			GAV 解析的，单模块构建（mvn spring-boot:run -pl ...-using / IDE 从仓库取依赖）拿不到
+			 reactor 里的 target/classes。不 install 就只能命中本地仓库里那份旧 jar，
+			表现为生成的实现类缺新方法，或整个 META-INF/autumn-data/repositories 清单为空 →
+			启动时 "required a bean of type 'XRepository' that could not be found"。
+		-->
 		<maven.deploy.skip>true</maven.deploy.skip>
 	</properties>
 
