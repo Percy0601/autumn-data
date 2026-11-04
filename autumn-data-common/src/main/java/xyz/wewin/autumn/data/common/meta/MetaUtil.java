@@ -7,8 +7,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 import com.jayway.jsonpath.Configuration;
@@ -181,6 +183,109 @@ public class MetaUtil {
             }
         }
         return (List<Map<String, Object>>) raw;
+    }
+
+    // ------------------------------------------------------------------
+    // 反向序列化：元类对象树 -> Map / JSON（回显 / 写库）
+    // ------------------------------------------------------------------
+
+    /**
+     * 将元类对象树转换为 {@link Map}（含全部已声明属性，null 值保留）。
+     *
+     * <p>与 {@link #metaClass(String, String)} 互为逆操作：嵌套 {@link MetaClass} 递归为 Map，
+     * {@link List}&lt;{@link MetaClass}&gt; 递归为 List&lt;Map&gt;，标量原值透传。</p>
+     *
+     * @param metaClass 元类实例（来自 {@link #metaClass} 或 {@link #metaCollection} 的元素）
+     * @return 有序 Map（LinkedHashMap），键为属性名
+     */
+    public static Map<String, Object> toMap(MetaClass metaClass) {
+        return toMap(metaClass, true);
+    }
+
+    /**
+     * 同 {@link #toMap(MetaClass)}，可控制是否保留 null 值属性。
+     *
+     * @param includeNull true 保留 null 值属性（写库需完整列集）；false 忽略 null（回显更贴近原始入参形状）
+     */
+    public static Map<String, Object> toMap(MetaClass metaClass, boolean includeNull) {
+        Objects.requireNonNull(metaClass, "metaClass 不能为 null");
+        Map<String, Object> map = new LinkedHashMap<>();
+        List<MetaProperty> properties = metaClass.getProperties();
+        if (properties == null) {
+            return map;
+        }
+        for (MetaProperty property : properties) {
+            Object value = property.getValue();
+            if (value == null) {
+                if (includeNull) {
+                    map.put(property.getName(), null);
+                }
+                continue;
+            }
+            if (value instanceof MetaClass) {
+                map.put(property.getName(), toMap((MetaClass) value, includeNull));
+                continue;
+            }
+            if (value instanceof List) {
+                map.put(property.getName(), toMaps((List<?>) value, includeNull));
+                continue;
+            }
+            // 标量（含宽容策略透传的原始值）：原样放入
+            map.put(property.getName(), value);
+        }
+        return map;
+    }
+
+    /**
+     * 将元集合转换为 {@code List<Map>}（每个元素与 {@link #toMap(MetaClass)} 同规则，null 保留）。
+     */
+    public static List<Map<String, Object>> toMaps(MetaCollection collection) {
+        Objects.requireNonNull(collection, "collection 不能为 null");
+        List<MetaClass> metas = collection.getMetas();
+        List<Map<String, Object>> maps = new ArrayList<>(metas == null ? 0 : metas.size());
+        if (metas != null) {
+            for (MetaClass metaClass : metas) {
+                maps.add(toMap(metaClass, true));
+            }
+        }
+        return maps;
+    }
+
+    /**
+     * 将元类对象树序列化为 JSON 字符串（含 null 值属性）。
+     *
+     * <p>复用默认 provider 的 {@code toJson} 能力，无新增依赖；与 {@link #metaClass(String, String)}
+     * 组合即可完成 对象 → JSON → 元类 → 对象 的完整往返。</p>
+     */
+    public static String toJson(MetaClass metaClass) {
+        return toJson(metaClass, true);
+    }
+
+    /**
+     * 同 {@link #toJson(MetaClass)}，可控制是否保留 null 值属性。
+     */
+    public static String toJson(MetaClass metaClass, boolean includeNull) {
+        return Configuration.defaultConfiguration().jsonProvider().toJson(toMap(metaClass, includeNull));
+    }
+
+    /**
+     * 将元集合序列化为 JSON 数组字符串（含 null 值属性）。
+     */
+    public static String toJson(MetaCollection collection) {
+        return Configuration.defaultConfiguration().jsonProvider().toJson(toMaps(collection));
+    }
+
+    private static List<Object> toMaps(List<?> values, boolean includeNull) {
+        List<Object> list = new ArrayList<>(values.size());
+        for (Object item : values) {
+            if (item instanceof MetaClass) {
+                list.add(toMap((MetaClass) item, includeNull));
+            } else {
+                // 宽容策略透传的原始数组元素：原样保留
+                list.add(item);
+            }
+        }
+        return list;
     }
 
     // ------------------------------------------------------------------
