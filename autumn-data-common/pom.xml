@@ -9,7 +9,7 @@
 	</parent>
 	<artifactId>autumn-data-common</artifactId>
 	<name>autumn-data-common</name>
-	<description>JDBC 公共底座：数据库方言抽象（Dialect / DialectResolver / 各库实现）、MetaDataSource 多数据源管理（懒加载注册表 + 空闲池轮询回收）与通用 JDBC 基础设施。核心零 Spring，供 autumn-data-jdbc 与 autumn-data-meta-jdbc 复用。</description>
+	<description>JDBC 公共底座：数据库方言抽象（Dialect / DialectResolver / 各库实现）、MetaDataSource 多数据源管理（懒加载注册表 + 空闲池轮询回收）、Meta 元数据模型（元模型驱动的 JSON 转换器，供基于元数据的数据库操作使用）与通用 JDBC 基础设施。核心零 Spring，供 autumn-data-jdbc 与 autumn-data-meta-jdbc 复用。</description>
 
 	<properties>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -24,6 +24,12 @@
 			<groupId>com.zaxxer</groupId>
 			<artifactId>HikariCP</artifactId>
 			<optional>true</optional>
+		</dependency>
+		<!-- JSONPath：MetaUtil 元模型 JSON 解析（meta-model.json 加载与 JSON 数据转换），版本与源项目 meta-converter 对齐 -->
+		<dependency>
+			<groupId>com.jayway.jsonpath</groupId>
+			<artifactId>json-path</artifactId>
+			<version>3.0.0</version>
 		</dependency>
 		<!-- 测试：H2 内存库（验证 MetaDataSource 多池注册/懒加载/回收） -->
 		<dependency>
