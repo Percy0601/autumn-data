@@ -9,7 +9,7 @@
 	</parent>
 	<artifactId>autumn-data-meta-jdbc</artifactId>
 	<name>autumn-data-meta-jdbc</name>
-	<description>轻量动态 SQL 引擎：对标 MyBatis，使用 FreeMarker(.ftl) 替代 XML，支持运行时动态加载。数据源 HikariCP；方言复用 autumn-data-common。</description>
+	<description>轻量动态 SQL 引擎：对标 MyBatis Mapper XML，编译期解析 + 代码生成，运行期零模板引擎依赖。方言复用 autumn-data-common，执行层复用 autumn-data-jdbc。</description>
 
 	<properties>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -23,21 +23,26 @@
 			<groupId>xyz.wewin.autumn</groupId>
 			<artifactId>autumn-data-common</artifactId>
 		</dependency>
-		<!-- HikariCP 连接池 + JdbcClient / JdbcTemplate -->
+		<!-- 执行层：AutumnJdbc / ConnectionSource / RowMapper -->
 		<dependency>
-			<groupId>org.springframework.boot</groupId>
-			<artifactId>spring-boot-starter-jdbc</artifactId>
-		</dependency>
-		<!-- FreeMarker：用 .ftl 模板代替 MyBatis 的 XML SQL -->
-		<dependency>
-			<groupId>org.freemarker</groupId>
-			<artifactId>freemarker</artifactId>
+			<groupId>xyz.wewin.autumn</groupId>
+			<artifactId>autumn-data-jdbc</artifactId>
 		</dependency>
 
 		<!-- 测试：H2 内存库 -->
 		<dependency>
 			<groupId>com.h2database</groupId>
 			<artifactId>h2</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.assertj</groupId>
+			<artifactId>assertj-core</artifactId>
 			<scope>test</scope>
 		</dependency>
 	</dependencies>

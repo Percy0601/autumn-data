@@ -1,48 +1,71 @@
 package xyz.wewin.autumn.data.meta.jdbc;
 
-import freemarker.template.Configuration;
-import freemarker.template.Template;
-import freemarker.template.TemplateExceptionHandler;
-import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Function;
 
 /**
- * FreeMarker 配置中心（meta 模块核心组件之一）。
+ * Meta 引擎配置中心：注册编译期生成的 Mapper SQL 类，运行期按 namespace + id 查找。
  *
- * <p>职责：</p>
- * <ul>
- *   <li>从类路径 {@code META-INF/mappers} 下加载 {@code .ftl} 模板（替代 MyBatis 的 XML SQL）；</li>
- *   <li>提供 {@link #refresh()} 方法清空模板缓存，实现 <b>运行时动态加载 / 热更新</b> SQL；</li>
- *   <li>对模板解析异常直接抛出（开发期更直观）。</li>
- * </ul>
+ * <p>替代原 FreeMarker 版 {@code MetaConfiguration}：不再加载 .ftl 模板，
+ * 而是持有编译期生成的 SQL 构建方法引用。零模板引擎依赖，零反射。</p>
  *
- * <p>后续步骤将在此基础上实现 {@link MetaSqlSession}：把 Mapper 接口方法映射到
- * {@code namespace + id} 的模板，渲染出 SQL 后通过 JdbcClient 执行。</p>
+ * <p>使用方式：</p>
+ * <pre>{@code
+ * MetaConfiguration config = new MetaConfiguration();
+ * config.registerMapper("com.example.UserMapper", UserMapperSql::class);
+ * // 或者注册单个方法：
+ * config.registerStatement("com.example.UserMapper", "findByName", UserMapperSql::findByName);
+ * }</pre>
  */
 public class MetaConfiguration {
 
-	private final Configuration freemarkerConfig;
+	/**
+	 * namespace → (statementId → SqlBuild 构建函数)。
+	 * 构建函数接收 {@code Map<String, Object>} 参数，返回 {@link SqlBuild}。
+	 */
+	private final Map<String, Map<String, Function<Map<String, Object>, SqlBuild>>> mappers = new HashMap<>();
 
-	public MetaConfiguration() {
-		this.freemarkerConfig = new Configuration(Configuration.DEFAULT_INCOMPATIBLE_IMPROVEMENTS);
-		this.freemarkerConfig.setClassLoaderForTemplateLoading(
-				Thread.currentThread().getContextClassLoader(), "META-INF/mappers");
-		this.freemarkerConfig.setDefaultEncoding("UTF-8");
-		this.freemarkerConfig.setTemplateExceptionHandler(TemplateExceptionHandler.RETHROW_HANDLER);
-		this.freemarkerConfig.setLogTemplateExceptions(false);
-		this.freemarkerConfig.setWrapUncheckedExceptions(true);
+	/**
+	 * 注册一个编译期生成的 Mapper SQL 类。
+	 *
+	 * <p>通过反射扫描类上的静态方法自动注册。但为了零反射目标，
+	 * 推荐用 {@link #registerStatement} 逐个注册。</p>
+	 */
+	public void registerMapper(String namespace, Map<String, Function<Map<String, Object>, SqlBuild>> statements) {
+		mappers.computeIfAbsent(namespace, k -> new HashMap<>()).putAll(statements);
 	}
 
-	/** 按名称获取模板（名称相对于 {@code META-INF/mappers}，例如 {@code person/selectById.ftl}）。 */
-	public Template getTemplate(String name) throws IOException {
-		return freemarkerConfig.getTemplate(name);
+	/**
+	 * 注册单条语句的 SQL 构建函数。
+	 *
+	 * @param namespace Mapper 命名空间（对应 XML 的 namespace 属性）
+	 * @param statementId 语句 ID（对应 XML 的 id 属性）
+	 * @param builder 构建函数：接收参数 Map，返回 SqlBuild
+	 */
+	public void registerStatement(String namespace, String statementId,
+			Function<Map<String, Object>, SqlBuild> builder) {
+		mappers.computeIfAbsent(namespace, k -> new HashMap<>()).put(statementId, builder);
 	}
 
-	/** 动态加载：清空模板缓存，下次获取时从类路径重新读取最新 {@code .ftl}。 */
+	/**
+	 * 查找已注册的 SQL 构建函数。
+	 *
+	 * @return 构建函数；未找到返回 null
+	 */
+	public Function<Map<String, Object>, SqlBuild> findStatement(String namespace, String statementId) {
+		Map<String, Function<Map<String, Object>, SqlBuild>> statements = mappers.get(namespace);
+		if (statements == null) {
+			return null;
+		}
+		return statements.get(statementId);
+	}
+
+	/**
+	 * 清空所有注册的 Mapper（用于测试或热重载场景）。
+	 */
 	public void refresh() {
-		freemarkerConfig.clearTemplateCache();
+		mappers.clear();
 	}
 
-	public Configuration getFreemarkerConfig() {
-		return freemarkerConfig;
-	}
 }
