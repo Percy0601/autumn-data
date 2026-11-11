@@ -27,6 +27,15 @@ public class AutumnDataMetaMapperProperties {
 	private Set<String> logicDeleteColumns = new LinkedHashSet<>(
 			Set.of("deleted_flag", "del_flag", "is_deleted"));
 
+	/**
+	 * 动态 Mapper XML 目录；首次访问某张表且文件不存在时按元数据生成。
+	 * 空串表示只生成到内存、不落盘。
+	 */
+	private String xmlDirectory = "meta-mappers";
+
+	/** 文件不存在时是否自动生成 Mapper XML；false 时缺失直接报错。 */
+	private boolean generateXml = true;
+
 	public boolean isEnabled() {
 		return this.enabled;
 	}
@@ -57,5 +66,21 @@ public class AutumnDataMetaMapperProperties {
 
 	public void setLogicDeleteColumns(Set<String> logicDeleteColumns) {
 		this.logicDeleteColumns = logicDeleteColumns;
+	}
+
+	public String getXmlDirectory() {
+		return this.xmlDirectory;
+	}
+
+	public void setXmlDirectory(String xmlDirectory) {
+		this.xmlDirectory = xmlDirectory;
+	}
+
+	public boolean isGenerateXml() {
+		return this.generateXml;
+	}
+
+	public void setGenerateXml(boolean generateXml) {
+		this.generateXml = generateXml;
 	}
 }

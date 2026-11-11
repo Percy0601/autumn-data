@@ -35,7 +35,7 @@ public class AutumnDataMetaMapperAutoConfiguration {
 	public MetaMapperEngine metaMapperEngine(DataSource dataSource, FetchPolicy fetchPolicy,
 			AutumnDataMetaMapperProperties properties) {
 		MetaMapperOptions options = new MetaMapperOptions(properties.getDefaultListLimit(), fetchPolicy,
-				properties.getLogicDeleteColumns());
+				properties.getLogicDeleteColumns(), properties.getXmlDirectory(), properties.isGenerateXml());
 		MetaMapperEngine engine = MetaMapperEngine.forDataSource(properties.getDefaultPoolName(), dataSource, options);
 		MetaMapper.install(engine);
 		return engine;

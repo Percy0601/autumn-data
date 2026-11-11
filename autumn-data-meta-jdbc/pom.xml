@@ -9,7 +9,7 @@
 	</parent>
 	<artifactId>autumn-data-meta-jdbc</artifactId>
 	<name>autumn-data-meta-jdbc</name>
-	<description>轻量动态 SQL 引擎：对标 MyBatis Mapper XML，编译期解析 + 代码生成，运行期零模板引擎依赖。方言复用 autumn-data-common，执行层复用 autumn-data-jdbc。</description>
+	<description>轻量动态 SQL 引擎：对标 MyBatis Mapper XML，编译期解析/代码生成，运行期用 FreeMarker 渲染动态 Mapper XML（缺失时按表元数据生成、已有则复用）。方言复用 autumn-data-common，执行层复用 autumn-data-jdbc。</description>
 
 	<properties>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -27,6 +27,11 @@
 		<dependency>
 			<groupId>xyz.wewin.autumn</groupId>
 			<artifactId>autumn-data-jdbc</artifactId>
+		</dependency>
+		<!-- 动态 Mapper XML：按表元数据生成 / 加载 Mapper 文件 -->
+		<dependency>
+			<groupId>org.freemarker</groupId>
+			<artifactId>freemarker</artifactId>
 		</dependency>
 
 		<!-- 测试：H2 内存库 -->

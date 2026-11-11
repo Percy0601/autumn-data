@@ -11,7 +11,7 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 | `autumn-data-jdbc-spring-boot-starter` | Spring Boot 集成层（唯一使用方入口） | 约定大于配置：只引这一个依赖 + `spring.datasource.*` 即可用。仿 MyBatis 分层（引擎零 Spring / 集成层依赖 Boot），自动配置 `Dialect` Bean，支持 `autumn.data.jdbc.dialect` 显式指定或按 `DataSource` 元数据自动识别。多库场景可用 `autumn.data.meta.enabled=true` 让 `SpringMetaDataSource`（继承 Spring `AbstractDataSource`）接管数据源，底层交给 `MetaDataSource`。 |
 | `autumn-data-jdbc-compiler` | JSR-269 注解处理器 | 编译期为 `@AutumnRepository` 接口生成 `<名称>Impl`；仅 `annotationProcessorPaths` 使用，**运行时不依赖**。已实现：实体元数据提取（`@Entity`/`@Table`/`@Id`/`@Column`/`@GeneratedValue`/`@OneToMany`）、CRUD + 分页 + 一对多 + 方法名派生查询 SQL **编译期内联为生成类常量**、`RowMapper` 与批量读写/装配代码生成。解析不了的方法在**接口方法声明处**报错，不静默生成半成品。 |
 | `autumn-data-jdbc-spring-boot-starter-using` | 使用方示例（不发布） | **使用驱动开发的主战场**：只引 starter + 挂 compiler 处理器，在这里写后续所有用法（单表、一对多、多对一、派生查询），以用法倒逼核心实现。 |
-| `autumn-data-meta-jdbc` | 轻量动态 SQL 引擎 + 动态表 CRUD | 对标 **MyBatis** 但更轻量，支持**运行时动态加载**；用 **FreeMarker（.ftl）** 语法替代 MyBatis 的 XML SQL。数据源连接池同样使用 **HikariCP**；方言复用 `autumn-data-common`。另含 `dynamic` 包：运行期建表后无需重启即可按表名/列名查询、保存、更新（`MetaMapper`，见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)）。 |
+| `autumn-data-meta-jdbc` | 轻量动态 SQL 引擎 + 动态表 CRUD | 对标 **MyBatis** 但更轻量，支持**运行时动态加载**；用 **FreeMarker（.ftl）** 语法替代 MyBatis 的 XML SQL。数据源连接池同样使用 **HikariCP**；方言复用 `autumn-data-common`。另含 `dynamic` 包：运行期建表后无需重启即可按表名/列名查询、保存、更新（`MetaMapper`，见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)）；动态表复用了 common 的 `MetaClass` / `MetaProperty` 元模型，Mapper XML 首次缺失时按元数据生成、之后直接复用。 |
 
 各数据访问模块共享 `autumn-data-common` 的多数据库方言（`Dialect`）抽象，至少支持 **MySQL** 与 **PostgreSQL**，并可通过 `DialectResolver` 根据 `DataSource` 的元数据自动识别。
 
@@ -39,11 +39,11 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 - [x] compiler：解析不了的接口方法（未知属性/关键词、参数或返回类型不符、`Distinct`/`First`/`deleteBy`/两层以上关联）在**方法声明处**报错，不再静默跳过后由 javac 报「实现类未覆盖…」
 - [x] 一次性取数上下文（`AutumnDataContextHolder`，按线程保存 + `wrap` 线程池透传）：分页关联加载三态（`DEFAULT` 阈值级联 / `CASCADE` 强制级联 / `DISABLED` 强制关闭）与**字段投影**（`selectFields` / `excludeFields` 运行期真裁剪 `SELECT` 列清单，主键与多对一外键编译期判定为不可省略，级联不被裁剪打断）；被最近一次取实体行的查询消费后自动清除，无需手动 `clear`
 - [x] starter 多数据源接管（`autumn.data.meta.enabled=true`，默认关闭）：`SpringMetaDataSource` 继承 Spring 的 `AbstractDataSource` 成为应用唯一的 `DataSource`（配置排在 `DataSourceAutoConfiguration` 之前，Boot 建池自动退让），底层就是 `MetaDataSource` 注册表；默认池参数仍来自 `spring.datasource.*`（含 `spring.datasource.hikari.*` 调优项），额外池 `autumn.data.meta.pools.<名称>.*` 懒建 + 空闲回收，运行期 `register(name, supplier)` 可继续追加；Spring 事务只绑默认池，`@Transactional` 提交/回滚实测不变（using 模块有示例与集成测试）
-- [x] `autumn-data-meta-jdbc` 新增 `dynamic` 包：运行期动态表 CRUD（`MetaMapper` 静态门面 + 按 pool 绑定的 `MetaMapperClient` + `DatabaseMetaData` 元数据快照 + `refresh` 热更新 + 条件/排序/分页/批量保存/部分更新/类型转换）；**不提供物理删除**，逻辑删除列可自动过滤；10 个 H2 用例覆盖“建表 → 不重启读写 → 加列 refresh → 复合主键”
+- [x] `autumn-data-meta-jdbc` 新增 `dynamic` 包：运行期动态表 CRUD（`MetaMapper` 静态门面 + 按 pool 绑定的 `MetaMapperClient` + `DatabaseMetaData` 元数据快照 + `refresh` 热更新 + 条件/排序/分页/批量保存/部分更新/类型转换）；元模型直接复用 `autumn-data-common` 的 `MetaClass` / `MetaProperty`，`MetaTable` 只是它的物理表视图；**不提供物理删除**，逻辑删除列可自动过滤；12 个 H2 用例覆盖“建表 → 不重启读写 → 加列 refresh → 复合主键 → Mapper XML 生成/复用”
 - [ ] 动态表 CRUD 接入 Spring 事务（当前单方法内自提交，跨方法 `@Transactional` 暂不生效）
 - [ ] `OrderBy` 之外的排序入参（`findAllBy(Sort)`）与 `Pageable` 排序
 - [ ] `autumn-data-meta-jdbc` 同步去 Spring 依赖（同样挪到各自 starter）
-- [ ] `autumn-data-meta-jdbc`：FreeMarker 动态 Mapper 执行引擎
+- [x] `autumn-data-meta-jdbc`：FreeMarker 动态 Mapper XML 执行引擎（首次访问按元数据生成，已存在则直接复用；SQL 骨架放在 `<xml-directory>/<表名>.xml`，运行期由 FreeMarker 用表/列/条件片段渲染）
 
 ## 依赖策略
 
@@ -96,10 +96,20 @@ MetaMapper.updateById("form_order", 1L, Map.of("status", 2));   // 部分更新�
 MetaMapper.of("tenant-a").findList("form_order", MetaQuery.by("status", 1));
 ```
 
-- 元数据从 `DatabaseMetaData` 读取；建表/加列**提交后**调 `MetaMapper.refresh("form_order")` 换快照，不重启；
+- 元数据从 `DatabaseMetaData` 读取，直接填入 `MetaClass` / `MetaProperty`（表名 = `MetaClass.name`、schema = `namespace`、列 = properties）；建表/加列**提交后**调 `MetaMapper.refresh("form_order")` 换快照，不重启；
+- **Mapper XML 按需生成**：首次访问某张表时，若 `autumn.data.meta.mapper.xml-directory`（默认 `meta-mappers`）下没有 `<表名>.xml`，用 FreeMarker 模板按元数据生成一份并落盘；已存在则直接读取，不重复生成。文件里是 SQL 骨架（`${table}` / `${columnsSql}` / `${whereSql}` / `${setSql}` 等），运行期仍由 FreeMarker 用当前元数据片段渲染；
+- 自动生成的文件带 `generated-by` 标记与表结构 fingerprint（仅用于识别）；**文件存在就直接复用，不再生成**。加列后 `refresh` 仍可用，因为 `${columnsSql}` / `${setSql}` 等片段是运行期按新元数据重算的；确实要按新结构重写生成文件时，删掉文件即可；
+- 手工改过的文件（无 `generated-by` 标记）同样原样使用，不会被覆盖；
 - **没有 delete**：应用侧不提供物理删除，作废用一次状态列更新；`deleted_flag` / `del_flag` / `is_deleted` 可自动过滤；
 - `findList` 默认最多 1000 行，多数据源按 pool 绑定句柄而不是 ThreadLocal；
 - 当前版本**不接入 Spring 事务**：单方法内自提交，跨方法 `@Transactional` 待下一版接入（替换连接源即可，门面/SQL 层不动）。
+
+Mapper XML 相关配置：
+
+```properties
+autumn.data.meta.mapper.xml-directory=meta-mappers   # 空串表示只生成到内存、不落盘
+autumn.data.meta.mapper.generate-xml=true            # false 时缺失 XML 直接报错
+```
 
 完整设计与语义见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)。
 

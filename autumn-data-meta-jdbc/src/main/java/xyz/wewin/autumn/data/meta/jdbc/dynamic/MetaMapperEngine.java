@@ -91,8 +91,9 @@ public final class MetaMapperEngine {
 				() -> new JdbcConnectionSource(dataSource));
 		AutumnJdbc jdbc = new AutumnJdbc(connectionSource, dialect, options.fetchPolicy());
 		MetaTableRegistry registry = new MetaTableRegistry(dataSource, dialect, options.logicDeleteColumns());
+		MetaMapperXmlStore xmlStore = new MetaMapperXmlStore(options.xmlDirectory(), options.generateXml());
 		return new MetaMapperClient(poolName, jdbc, connectionSource, registry, new MetaSqlBuilder(dialect),
-				options.defaultListLimit());
+				xmlStore, options.defaultListLimit());
 	}
 
 	/** 默认池名。 */

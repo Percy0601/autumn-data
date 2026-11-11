@@ -12,11 +12,25 @@ MetaMapper（静态门面，只持有 volatile engine）
        └─ MetaMapperClient（绑定一个 pool）
             ├─ MetaTableRegistry（表名 → MetaTable 快照，refresh 原子换新）
             ├─ MetaSqlBuilder（按 MetaTable 生成 SQL，标识符只来自快照）
+            ├─ MetaMapperXmlStore（表名 → Mapper XML；已有则读、缺失则用 FreeMarker 生成）
             └─ AutumnJdbc（复用现有执行层：query / page / count / update / 生成键）
 ```
 
 核心模块不依赖 Spring；Spring Boot 集成在 `autumn-data-jdbc-spring-boot-starter` 的
 `AutumnDataMetaMapperAutoConfiguration` 里，只负责把引擎装进静态门面。
+
+## 为什么复用 MetaClass / MetaProperty
+
+`autumn-data-common` 已经有一套 JSON 元模型：`MetaClass`（name / namespace / metaType /
+properties）、`MetaProperty`（name / type / typeName / value）。动态表的物理列信息（JDBC 类型、
+可空、主键、自增、默认值）直接扩到 `MetaProperty` 上，不再另建 `MetaColumn`：
+
+- `MetaTable` 是 `MetaClass` 的物理表视图：`name()` = `MetaClass.name`，`schema()` = `namespace`；
+- `MetaRow` 携带 `MetaClass` 实例，`toMap()` / `toJson()` 直接走 `MetaUtil`；
+- 表名/列名/类型/主键只有一份来源，避免 JSON 元模型与 JDBC 元模型各说一套。
+
+JSON 侧原有字段（`type` / `typeName` / `value`）保持不变，物理字段是新增，不影响
+`meta-model.json` 的校验与序列化。
 
 ## API
 
@@ -48,10 +62,67 @@ MetaMapper.of("tenant-a").findPage("form_order", MetaQuery.all(), Pageable.of(0,
 
 ## 元数据快照
 
-- 首次访问某张表时从 `DatabaseMetaData` 读取列、主键、自增、可空、默认值；
+- 首次访问某张表时从 `DatabaseMetaData` 读取列、主键、自增、可空、默认值，直接构造
+  `MetaClass`（`name` = 表名、`namespace` = schema、`metaType = ENTITY`、`properties` = 列）；
 - `MetaTable` 不可变，缓存键大小写不敏感；
 - 建表/加列/删列**提交后**调 `client.refresh(table)` 或 `MetaMapper.refresh(table)`；
 - 旧快照上正在执行的语句不受刷新影响，刷新只影响下一次解析。
+
+## Mapper XML（FreeMarker）
+
+规则只有一条：**XML 存在就不生成，不存在才生成**。
+
+1. 查找顺序：`<xml-directory>/<表名>.xml` → classpath `meta-mappers/<表名>.xml`；
+2. 都没有且 `generate-xml=true`：用 `meta-mapper.xml.ftl` 按 `MetaTable` 生成，写到
+   `xml-directory` 后使用；目录不可写时退化为只放内存；
+3. 生成文件带 `generated-by: autumn-data-meta-jdbc` 和表结构 `fingerprint`（仅用于识别）；
+   **文件存在就直接使用，不再生成**。加列后 `refresh` 依然可用，因为列清单/SET/WHERE 都是
+   运行期按新元数据重算的片段；要按新结构重写生成文件，删除文件即可。手工文件（无该标记）
+   不会被覆盖。
+
+生成的文件是 SQL 骨架，语句 id 固定：
+
+```xml
+<mapper namespace="dynamic.form_order">
+    <select id="findList"><![CDATA[
+SELECT ${columnsSql} FROM ${table}${whereSql}${orderSql}
+]]></select>
+    <select id="count"><![CDATA[
+SELECT COUNT(*) FROM ${table}${whereSql}
+]]></select>
+    <insert id="insert"><![CDATA[
+INSERT INTO ${table} (${insertColumnsSql}) VALUES (${insertValuesSql})
+]]></insert>
+    <update id="update"><![CDATA[
+UPDATE ${table} SET ${setSql} WHERE ${keyWhereSql}
+]]></update>
+</mapper>
+```
+
+运行期由 FreeMarker 渲染 `${...}`；变量值由 `MetaSqlBuilder` 的片段方法提供：
+`table`、`columnsSql` 已按方言加引号，`whereSql` / `orderSql` / `setSql` / `keyWhereSql`
+只含元数据里的真实列名和 `?`，值不在 SQL 文本里。这样 XML 可以改 SQL 外形（如加
+`RETURNING`、改投影），但列/条件/值仍由元数据与参数绑定兜底。
+
+XML 体就是 FreeMarker 模板，需要条件拼装时可直接用 FreeMarker 指令（`<#if>` / `<#list>`），
+对应 MyBatis 的动态 SQL 标签：
+
+```xml
+<select id="findList"><![CDATA[
+SELECT ${columnsSql} FROM ${table}
+<#if whereSql?has_content>${whereSql}</#if>${orderSql}
+]]></select>
+```
+
+自定义 XML 只允许引用上述片段变量；不要在这里拼用户输入，值一律走 `?`。
+
+```properties
+autumn.data.meta.mapper.xml-directory=meta-mappers
+autumn.data.meta.mapper.generate-xml=true
+```
+
+`xml-directory` 为空串时只生成到内存；`generate-xml=false` 时缺失 XML 直接抛
+`MetaSqlException`，适合生产环境要求 Mapper 必须预置的场景。
 
 ## 写入语义
 
@@ -97,4 +168,7 @@ ThreadLocal 最多作为“请求级默认池”的便利糖，不能作为唯�
 ## 代码与测试
 
 - 实现：`autumn-data-meta-jdbc/src/main/java/xyz/wewin/autumn/data/meta/jdbc/dynamic`
-- 用例：`MetaMapperDynamicTest`（建表 → 不重启 CRUD → 加列 refresh → 逻辑删除 → 复合主键）
+- FreeMarker 生成模板：`autumn-data-meta-jdbc/src/main/resources/xyz/wewin/autumn/data/meta/jdbc/dynamic/meta-mapper.xml.ftl`
+- 用例：`MetaMapperDynamicTest`（建表 → 不重启 CRUD → 加列 refresh → 逻辑删除 → 复合主键 →
+  XML 首次生成/复用 → 手工 XML 不被覆盖），共 12 个；starter 装配 2 个；using 模块端到端 1 个。
+- 全 reactor：`mvn -B test`，starter / using / compiler / common 全绿。

@@ -6,10 +6,15 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
+import xyz.wewin.autumn.data.common.meta.MetaClass;
+import xyz.wewin.autumn.data.common.meta.MetaProperty;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
 
 /**
- * 动态表的元数据快照：列清单、主键、自增列，以及可选的逻辑删除列。
+ * 动态表的元数据快照：{@link MetaClass} 的物理表视图。
+ *
+ * <p>不另建列模型：表名 = {@link MetaClass#getName()}，schema = {@link MetaClass#getNamespace()}，
+ * 列 = {@link MetaProperty}（JDBC 类型、可空、主键、自增都在属性上）。</p>
  *
  * <p>实例不可变，由 {@link MetaTableRegistry} 缓存在 {@link java.util.concurrent.ConcurrentHashMap} 里；
  * 表结构变化后调用 {@link MetaTableRegistry#refresh(String)} 移除旧快照、下次访问重建，
@@ -17,39 +22,39 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
  */
 public final class MetaTable {
 
-	private final String name;
+	private final MetaClass metaClass;
 
-	private final String schema;
+	private final List<MetaProperty> columns;
 
-	private final List<MetaColumn> columns;
+	private final List<MetaProperty> primaryKeys;
 
-	private final List<MetaColumn> primaryKeys;
-
-	private final Map<String, MetaColumn> lookup;
+	private final Map<String, MetaProperty> lookup;
 
 	private final String logicDeleteColumn;
 
-	public MetaTable(String name, String schema, List<MetaColumn> columns) {
-		this(name, schema, columns, null);
-	}
-
-	public MetaTable(String name, String schema, List<MetaColumn> columns, String logicDeleteColumn) {
-		if (name == null || name.isBlank()) {
-			throw new IllegalArgumentException("table name must not be blank");
+	public MetaTable(MetaClass metaClass, String logicDeleteColumn) {
+		if (metaClass == null || metaClass.getName() == null || metaClass.getName().isBlank()) {
+			throw new IllegalArgumentException("metaClass name must not be blank");
 		}
-		this.name = name;
-		this.schema = schema;
-		this.columns = List.copyOf(columns);
+		if (metaClass.getProperties() == null) {
+			throw new IllegalArgumentException("metaClass properties must not be null");
+		}
+		this.metaClass = metaClass;
+		this.columns = List.copyOf(metaClass.getProperties());
 		this.lookup = new LinkedHashMap<>();
-		for (MetaColumn column : this.columns) {
-			MetaColumn previous = this.lookup.putIfAbsent(normalize(column.name()), column);
+		for (MetaProperty column : this.columns) {
+			if (column.getName() == null || column.getName().isBlank()) {
+				throw new IllegalArgumentException("column name must not be blank on table '" + metaClass.getName() + "'");
+			}
+			MetaProperty previous = this.lookup.putIfAbsent(normalize(column.getName()), column);
 			if (previous != null) {
-				throw new IllegalArgumentException("duplicate column '" + column.name() + "' on table '" + name + "'");
+				throw new IllegalArgumentException(
+						"duplicate column '" + column.getName() + "' on table '" + metaClass.getName() + "'");
 			}
 		}
-		List<MetaColumn> keys = new ArrayList<>();
-		for (MetaColumn column : this.columns) {
-			if (column.primaryKey()) {
+		List<MetaProperty> keys = new ArrayList<>();
+		for (MetaProperty column : this.columns) {
+			if (column.isPrimaryKey()) {
 				keys.add(column);
 			}
 		}
@@ -57,35 +62,40 @@ public final class MetaTable {
 		this.logicDeleteColumn = logicDeleteColumn;
 	}
 
+	/** 底层的 {@link MetaClass}；列即其 properties。 */
+	public MetaClass metaClass() {
+		return this.metaClass;
+	}
+
 	/** 物理表名（与数据库元数据一致）。 */
 	public String name() {
-		return this.name;
+		return this.metaClass.getName();
 	}
 
 	/** 表所在 schema（诊断用；SQL 只引用表名，依赖连接的默认 schema）。 */
 	public String schema() {
-		return this.schema;
+		return this.metaClass.getNamespace();
 	}
 
 	/** 全部列，按数据库的 ordinal position 排序。 */
-	public List<MetaColumn> columns() {
+	public List<MetaProperty> columns() {
 		return this.columns;
 	}
 
 	/** 主键列（按列顺序）。 */
-	public List<MetaColumn> primaryKeys() {
+	public List<MetaProperty> primaryKeys() {
 		return this.primaryKeys;
 	}
 
 	/** 单主键；复合主键或无主键返回 {@code null}。 */
-	public MetaColumn singlePrimaryKey() {
+	public MetaProperty singlePrimaryKey() {
 		return this.primaryKeys.size() == 1 ? this.primaryKeys.get(0) : null;
 	}
 
 	/** 自增列；没有返回 {@code null}。 */
-	public MetaColumn autoIncrementColumn() {
-		for (MetaColumn column : this.columns) {
-			if (column.autoIncrement()) {
+	public MetaProperty autoIncrementColumn() {
+		for (MetaProperty column : this.columns) {
+			if (column.isAutoIncrement()) {
 				return column;
 			}
 		}
@@ -98,7 +108,7 @@ public final class MetaTable {
 	}
 
 	/** 按列名查列（大小写不敏感）；不存在返回 {@code null}。 */
-	public MetaColumn findColumn(String column) {
+	public MetaProperty findColumn(String column) {
 		if (column == null) {
 			return null;
 		}
@@ -106,10 +116,10 @@ public final class MetaTable {
 	}
 
 	/** 按列名查列（大小写不敏感）；不存在抛 {@link MetaSqlException}。 */
-	public MetaColumn requireColumn(String column) {
-		MetaColumn found = findColumn(column);
+	public MetaProperty requireColumn(String column) {
+		MetaProperty found = findColumn(column);
 		if (found == null) {
-			throw new MetaSqlException("unknown column '" + column + "' on table '" + this.name + "'");
+			throw new MetaSqlException("unknown column '" + column + "' on table '" + this.metaClass.getName() + "'");
 		}
 		return found;
 	}

@@ -486,6 +486,12 @@ public class MetaUtil {
             np.setName(p.getName());
             np.setType(p.getType());
             np.setTypeName(p.getTypeName());
+            np.setJdbcType(p.getJdbcType());
+            np.setSqlTypeName(p.getSqlTypeName());
+            np.setNullable(p.isNullable());
+            np.setPrimaryKey(p.isPrimaryKey());
+            np.setAutoIncrement(p.isAutoIncrement());
+            np.setDefaultValue(p.getDefaultValue());
             copied.add(np);
         }
         copy.setProperties(copied);

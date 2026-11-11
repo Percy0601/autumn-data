@@ -10,6 +10,7 @@ import java.time.OffsetDateTime;
 import java.time.format.DateTimeParseException;
 import java.util.Date;
 
+import xyz.wewin.autumn.data.common.meta.MetaProperty;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
 
 /**
@@ -25,11 +26,11 @@ public final class MetaTypeCoercion {
 	}
 
 	/** 按列类型转换写入值；{@link MetaValue#NULL} 与 {@code null} 都返回 {@code null}。 */
-	public static Object toJdbc(MetaColumn column, Object value) {
+	public static Object toJdbc(MetaProperty column, Object value) {
 		if (value == null || value == MetaValue.NULL) {
 			return null;
 		}
-		return switch (column.jdbcType()) {
+		return switch (column.getJdbcType()) {
 			case Types.BOOLEAN, Types.BIT -> toBoolean(column, value);
 			case Types.TINYINT, Types.SMALLINT, Types.INTEGER -> toInt(column, value);
 			case Types.BIGINT -> toLong(column, value);
@@ -47,7 +48,7 @@ public final class MetaTypeCoercion {
 	}
 
 	/** 转 {@code Long}（读取结果与主键参数共用）。 */
-	public static Long toLong(MetaColumn column, Object value) {
+	public static Long toLong(MetaProperty column, Object value) {
 		if (value == null) {
 			return null;
 		}
@@ -65,7 +66,7 @@ public final class MetaTypeCoercion {
 		}
 	}
 
-	public static Integer toInt(MetaColumn column, Object value) {
+	public static Integer toInt(MetaProperty column, Object value) {
 		if (value == null) {
 			return null;
 		}
@@ -83,7 +84,7 @@ public final class MetaTypeCoercion {
 		}
 	}
 
-	public static BigDecimal toBigDecimal(MetaColumn column, Object value) {
+	public static BigDecimal toBigDecimal(MetaProperty column, Object value) {
 		if (value == null) {
 			return null;
 		}
@@ -98,7 +99,7 @@ public final class MetaTypeCoercion {
 		}
 	}
 
-	public static Boolean toBoolean(MetaColumn column, Object value) {
+	public static Boolean toBoolean(MetaProperty column, Object value) {
 		if (value == null) {
 			return null;
 		}
@@ -116,7 +117,7 @@ public final class MetaTypeCoercion {
 		};
 	}
 
-	public static Double toDouble(MetaColumn column, Object value) {
+	public static Double toDouble(MetaProperty column, Object value) {
 		if (value == null) {
 			return null;
 		}
@@ -131,7 +132,7 @@ public final class MetaTypeCoercion {
 		}
 	}
 
-	public static LocalDate toLocalDate(MetaColumn column, Object value) {
+	public static LocalDate toLocalDate(MetaProperty column, Object value) {
 		if (value == null) {
 			return null;
 		}
@@ -152,7 +153,7 @@ public final class MetaTypeCoercion {
 		}
 	}
 
-	public static LocalDateTime toLocalDateTime(MetaColumn column, Object value) {
+	public static LocalDateTime toLocalDateTime(MetaProperty column, Object value) {
 		if (value == null) {
 			return null;
 		}
@@ -182,14 +183,14 @@ public final class MetaTypeCoercion {
 		}
 	}
 
-	private static java.sql.Date toSqlDate(MetaColumn column, Object value) {
+	private static java.sql.Date toSqlDate(MetaProperty column, Object value) {
 		if (value instanceof java.sql.Date date) {
 			return date;
 		}
 		return java.sql.Date.valueOf(toLocalDate(column, value));
 	}
 
-	private static java.sql.Time toSqlTime(MetaColumn column, Object value) {
+	private static java.sql.Time toSqlTime(MetaProperty column, Object value) {
 		if (value instanceof java.sql.Time time) {
 			return time;
 		}
@@ -207,16 +208,16 @@ public final class MetaTypeCoercion {
 		}
 	}
 
-	private static Timestamp toSqlTimestamp(MetaColumn column, Object value) {
+	private static Timestamp toSqlTimestamp(MetaProperty column, Object value) {
 		if (value instanceof Timestamp timestamp) {
 			return timestamp;
 		}
 		return Timestamp.valueOf(toLocalDateTime(column, value));
 	}
 
-	private static MetaSqlException mismatch(MetaColumn column, Object value, String expected) {
+	private static MetaSqlException mismatch(MetaProperty column, Object value, String expected) {
 		return new MetaSqlException("cannot convert value '" + value + "' (" + value.getClass().getSimpleName()
-				+ ") to " + expected + " for column '" + column.name() + "' (jdbcType=" + column.jdbcType()
-				+ ", " + column.typeName() + ")");
+				+ ") to " + expected + " for column '" + column.getName() + "' (jdbcType=" + column.getJdbcType()
+				+ ", " + column.getSqlTypeName() + ")");
 	}
 }

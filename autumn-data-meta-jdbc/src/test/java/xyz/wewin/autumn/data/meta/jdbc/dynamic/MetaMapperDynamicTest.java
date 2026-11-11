@@ -1,5 +1,7 @@
 package xyz.wewin.autumn.data.meta.jdbc.dynamic;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.time.LocalDateTime;
@@ -13,6 +15,7 @@ import javax.sql.DataSource;
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import xyz.wewin.autumn.data.common.dialect.H2Dialect;
 import xyz.wewin.autumn.data.jdbc.page.Page;
@@ -39,6 +42,11 @@ class MetaMapperDynamicTest {
 
 	private ConnectionSource connectionSource;
 
+	private MetaTableRegistry registry;
+
+	@TempDir
+	Path xmlDirectory;
+
 	@BeforeEach
 	void setUp() throws Exception {
 		this.dataSource = new JdbcDataSource();
@@ -56,9 +64,10 @@ class MetaMapperDynamicTest {
 		}
 		this.connectionSource = new PerThreadConnectionSource(() -> new JdbcConnectionSource(this.dataSource));
 		AutumnJdbc jdbc = new AutumnJdbc(this.connectionSource, new H2Dialect(), FetchPolicy.defaults());
-		MetaTableRegistry registry = new MetaTableRegistry(this.dataSource, new H2Dialect(), Set.of("deleted_flag"));
-		this.client = new MetaMapperClient("test", jdbc, this.connectionSource, registry,
-				new MetaSqlBuilder(new H2Dialect()), 1000);
+		this.registry = new MetaTableRegistry(this.dataSource, new H2Dialect(), Set.of("deleted_flag"));
+		MetaMapperXmlStore xmlStore = new MetaMapperXmlStore(this.xmlDirectory.toString(), true);
+		this.client = new MetaMapperClient("test", jdbc, this.connectionSource, this.registry,
+				new MetaSqlBuilder(new H2Dialect()), xmlStore, 1000);
 	}
 
 	@Test
@@ -175,7 +184,9 @@ class MetaMapperDynamicTest {
 
 	@Test
 	void staticFacadeUsesDefaultPoolAndBoundHandle() {
-		MetaMapper.install(MetaMapperEngine.forDataSource("default", this.dataSource));
+		MetaMapperOptions options = new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of("deleted_flag"),
+				this.xmlDirectory.toString(), true);
+		MetaMapper.install(MetaMapperEngine.forDataSource("default", this.dataSource, options));
 
 		Object key = MetaMapper.save("form_order", Map.of("order_no", "S001", "status", 1));
 		assertThat(MetaMapper.findById("form_order", key)).isPresent();
@@ -202,5 +213,44 @@ class MetaMapperDynamicTest {
 				Map.of("label", "second"))).isEqualTo(1);
 		assertThat(this.client.findByKey("form_link", Map.of("a", 1, "b", 2))
 				.orElseThrow().getString("label")).isEqualTo("second");
+	}
+
+	@Test
+	void generatesMapperXmlOnceAndReusesExistingFile() throws Exception {
+		this.client.save("form_order", Map.of("order_no", "X001", "status", 1));
+
+		Path file = this.xmlDirectory.resolve("form_order.xml");
+		assertThat(file).exists();
+		String content = Files.readString(file);
+		assertThat(content).contains("generated-by: autumn-data-meta-jdbc");
+		assertThat(content).contains("id=\"findList\"");
+		assertThat(content).contains("id=\"insert\"");
+
+		Path before = this.xmlDirectory.resolve("form_order.xml");
+		MetaMapperXmlStore secondStore = new MetaMapperXmlStore(this.xmlDirectory.toString(), true);
+		MetaMapperXml xml = secondStore.load(this.registry.require("form_order"));
+		assertThat(xml.generated()).isTrue();
+		assertThat(Files.readString(before)).isEqualTo(content);
+	}
+
+	@Test
+	void usesExistingCustomMapperXmlWithoutRegenerating() throws Exception {
+		String custom = """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<mapper namespace="custom.form_order">
+				    <select id="findList"><![CDATA[SELECT ${columnsSql} FROM ${table}${whereSql}${orderSql}]]></select>
+				    <select id="count"><![CDATA[SELECT COUNT(*) FROM ${table}<#if whereSql?has_content>${whereSql}</#if>]]></select>
+				    <insert id="insert"><![CDATA[INSERT INTO ${table} (${insertColumnsSql}) VALUES (${insertValuesSql})]]></insert>
+				    <update id="update"><![CDATA[UPDATE ${table} SET ${setSql} WHERE ${keyWhereSql}]]></update>
+				</mapper>
+				""";
+		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), custom);
+
+		Object key = this.client.save("form_order", Map.of("order_no", "C001", "status", 1));
+		assertThat(this.client.findById("form_order", key).orElseThrow().getString("order_no")).isEqualTo("C001");
+
+		String content = Files.readString(this.xmlDirectory.resolve("form_order.xml"));
+		assertThat(content).contains("namespace=\"custom.form_order\"");
+		assertThat(content).doesNotContain("generated-by: autumn-data-meta-jdbc");
 	}
 }
