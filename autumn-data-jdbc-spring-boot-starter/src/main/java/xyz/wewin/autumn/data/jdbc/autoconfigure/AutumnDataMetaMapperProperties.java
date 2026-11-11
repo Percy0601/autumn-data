@@ -36,6 +36,12 @@ public class AutumnDataMetaMapperProperties {
 	/** 文件不存在时是否自动生成 Mapper XML；false 时缺失直接报错。 */
 	private boolean generateXml = true;
 
+	/**
+	 * 生成的动态实体 {@code .java} 源码落盘目录（便于查看、排错、固化成静态类）。
+	 * 空串表示只在临时目录编译，不额外留存。
+	 */
+	private String entitySourceDirectory = "";
+
 	public boolean isEnabled() {
 		return this.enabled;
 	}
@@ -82,5 +88,13 @@ public class AutumnDataMetaMapperProperties {
 
 	public void setGenerateXml(boolean generateXml) {
 		this.generateXml = generateXml;
+	}
+
+	public String getEntitySourceDirectory() {
+		return this.entitySourceDirectory;
+	}
+
+	public void setEntitySourceDirectory(String entitySourceDirectory) {
+		this.entitySourceDirectory = entitySourceDirectory;
 	}
 }

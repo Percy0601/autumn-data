@@ -23,7 +23,7 @@ import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaMapperClient;
 import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaQuery;
 import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaQuery.Direction;
 import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaQuery.Op;
-import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaRow;
+import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaValue;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -82,7 +82,7 @@ class MetaMapperXmlUsingTest {
 		Object id = MetaMapper.save(DYN, Map.of("order_no", "SO-1", "amount", "12.50", "status", 1));
 		assertThat(id).isNotNull();
 
-		MetaRow saved = MetaMapper.findById(DYN, id).orElseThrow();
+		MetaClass saved = MetaMapper.findById(DYN, id).orElseThrow();
 		assertThat(saved.getString("order_no")).isEqualTo("SO-1");
 		assertThat(saved.getBigDecimal("amount")).isEqualByComparingTo("12.50");
 		// 动态行就是「运行期实体」，直接能序列化给前端
@@ -112,7 +112,7 @@ class MetaMapperXmlUsingTest {
 		assertThat(MetaMapper.findList(DYN, MetaQuery.by("id", Op.IN, id, ids.get(0)))).hasSize(2);
 
 		// 分页：select 与 count 两条语句同一次调用
-		Page<MetaRow> page = MetaMapper.findPage(DYN, MetaQuery.by("status", 1), Pageable.of(0, 1));
+		Page<MetaClass> page = MetaMapper.findPage(DYN, MetaQuery.by("status", 1), Pageable.of(0, 1));
 		assertThat(page.total()).isEqualTo(2);
 		assertThat(page.content()).hasSize(1);
 		assertThat(MetaMapper.exists(DYN, MetaQuery.by("order_no", "SO-2"))).isTrue();
@@ -291,7 +291,7 @@ class MetaMapperXmlUsingTest {
 		assertThat(MetaMapper.findList(ORDER, MetaQuery.by("order_no", "SO-1001"))).hasSize(1);
 	}
 
-	private static List<String> orderNos(List<MetaRow> rows) {
+	private static List<String> orderNos(List<MetaClass> rows) {
 		return rows.stream().map(row -> row.getString("order_no")).toList();
 	}
 

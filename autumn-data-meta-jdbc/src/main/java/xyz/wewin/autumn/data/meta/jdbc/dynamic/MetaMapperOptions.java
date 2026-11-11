@@ -9,14 +9,15 @@ import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 /**
  * 动态查询层的运行期策略。
  *
- * @param defaultListLimit   {@code findList} 未显式限行时的默认上限（防止全表拉取）
- * @param fetchPolicy        批量分块与关联取数上限（复用 autumn-data-jdbc 的策略对象）
- * @param logicDeleteColumns 逻辑删除列名（大小写不敏感）；命中后查询自动追加 {@code = 0}，未命中不追加
- * @param xmlDirectory       Mapper 文件目录；空串表示语句只在内存里生成、不落盘
- * @param generateXml        文件不存在时是否按表结构生成一份 Mapper 文件；false 时缺失直接报错
+ * @param defaultListLimit      {@code findList} 未显式限行时的默认上限（防止全表拉取）
+ * @param fetchPolicy           批量分块与关联取数上限（复用 autumn-data-jdbc 的策略对象）
+ * @param logicDeleteColumns    逻辑删除列名（大小写不敏感）；命中后查询自动追加 {@code = 0}，未命中不追加
+ * @param xmlDirectory          Mapper 文件目录；空串表示语句只在内存里生成、不落盘
+ * @param generateXml           文件不存在时是否按表结构生成一份 Mapper 文件；false 时缺失直接报错
+ * @param entitySourceDirectory 生成的实体 {@code .java} 源码落盘目录；空串表示只在临时目录编译、不额外留存
  */
 public record MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,
-		String xmlDirectory, boolean generateXml) {
+		String xmlDirectory, boolean generateXml, String entitySourceDirectory) {
 
 	public MetaMapperOptions {
 		if (defaultListLimit <= 0) {
@@ -33,14 +34,21 @@ public record MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, S
 		}
 		logicDeleteColumns = Set.copyOf(normalized);
 		xmlDirectory = xmlDirectory == null ? "" : xmlDirectory.trim();
+		entitySourceDirectory = entitySourceDirectory == null ? "" : entitySourceDirectory.trim();
+	}
+
+	/** 兼容原有五参构造：不额外留存生成的实体源码。 */
+	public MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,
+			String xmlDirectory, boolean generateXml) {
+		this(defaultListLimit, fetchPolicy, logicDeleteColumns, xmlDirectory, generateXml, "");
 	}
 
 	public MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns) {
-		this(defaultListLimit, fetchPolicy, logicDeleteColumns, "meta-mappers", true);
+		this(defaultListLimit, fetchPolicy, logicDeleteColumns, "meta-mappers", true, "");
 	}
 
 	/** 默认：列表上限 1000、批量 100 一批、不自动识别逻辑删除列、XML 落盘到 ./meta-mappers。 */
 	public static MetaMapperOptions defaults() {
-		return new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), "meta-mappers", true);
+		return new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), "meta-mappers", true, "");
 	}
 }

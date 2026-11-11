@@ -7,8 +7,9 @@ import java.util.function.Function;
 /**
  * Meta 引擎配置中心：注册编译期生成的 Mapper SQL 类，运行期按 namespace + id 查找。
  *
- * <p>替代原 FreeMarker 版 {@code MetaConfiguration}：不再加载 .ftl 模板，
- * 而是持有编译期生成的 SQL 构建方法引用。零模板引擎依赖，零反射。</p>
+ * <p>替代原 FreeMarker 版 {@code MetaConfiguration}：<b>SQL 这条路</b>不再加载 .ftl 模板，
+ * 而是持有编译期生成的 SQL 构建方法引用，零反射。FreeMarker 在本模块只用于
+ * {@code dynamic.MetaEntityTemplate} 生成实体类源码，与 SQL 语句注册是两条独立的路。</p>
  *
  * <p>使用方式：</p>
  * <pre>{@code

@@ -10,7 +10,7 @@ import org.springframework.jdbc.core.JdbcOperations;
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
 import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaQuery;
-import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaRow;
+import xyz.wewin.autumn.data.common.meta.MetaClass;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -35,7 +35,7 @@ class MetaMapperUsingTest {
 		try {
 			Object id = MetaMapper.save(TABLE, Map.of("form_no", "D001", "amount", "12.50", "status", 1));
 
-			MetaRow saved = MetaMapper.findById(TABLE, id).orElseThrow();
+			MetaClass saved = MetaMapper.findById(TABLE, id).orElseThrow();
 			assertThat(saved.getString("form_no")).isEqualTo("D001");
 			assertThat(saved.getBigDecimal("amount")).isEqualByComparingTo("12.50");
 

@@ -1,9 +1,12 @@
 package xyz.wewin.autumn.data.meta.jdbc.dynamic;
 
+import java.lang.reflect.Method;
+import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.Statement;
+import java.sql.Types;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +19,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import xyz.wewin.autumn.data.common.dialect.H2Dialect;
+import xyz.wewin.autumn.data.common.meta.MetaClass;
+import xyz.wewin.autumn.data.common.meta.MetaProperty;
 import xyz.wewin.autumn.data.jdbc.page.Page;
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
@@ -35,6 +40,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class MetaMapperDynamicTest {
 
 	private static final AtomicInteger DB_SEQ = new AtomicInteger();
+
+	/** 同构的表只编译一次：所有用例共享注册表，避免每个用例都跑一遍 javac。 */
+	private static final MetaEntityRegistry ENTITIES = new MetaEntityRegistry();
 
 	private JdbcDataSource dataSource;
 
@@ -68,7 +76,7 @@ class MetaMapperDynamicTest {
 		MetaStatementStore statementStore = new MetaStatementStore(this.xmlDirectory.toString(), true,
 				new H2Dialect());
 		this.client = new MetaMapperClient("test", jdbc, this.connectionSource, this.registry,
-				new MetaSqlBuilder(new H2Dialect()), statementStore, 1000);
+				new MetaSqlBuilder(new H2Dialect()), statementStore, ENTITIES, 1000);
 	}
 
 	@Test
@@ -80,7 +88,7 @@ class MetaMapperDynamicTest {
 				"create_time", "2026-11-11 10:00:00"));
 
 		assertThat(key).isInstanceOf(Number.class);
-		MetaRow row = this.client.findById("form_order", key).orElseThrow();
+		MetaClass row = this.client.findById("form_order", key).orElseThrow();
 		assertThat(row.getString("order_no")).isEqualTo("A001");
 		assertThat(row.getBigDecimal("amount")).isEqualByComparingTo("12.50");
 		assertThat(row.getInt("status")).isEqualTo(1);
@@ -94,7 +102,7 @@ class MetaMapperDynamicTest {
 				"order_no", "A002", "amount", "3.40", "status", 1, "create_time", "2026-11-11 11:00:00"));
 
 		assertThat(this.client.updateById("form_order", key, Map.of("status", 2))).isEqualTo(1);
-		MetaRow row = this.client.findById("form_order", key).orElseThrow();
+		MetaClass row = this.client.findById("form_order", key).orElseThrow();
 		assertThat(row.getInt("status")).isEqualTo(2);
 		assertThat(row.getString("order_no")).isEqualTo("A002");
 		assertThat(row.getBigDecimal("amount")).isEqualByComparingTo("3.40");
@@ -109,14 +117,14 @@ class MetaMapperDynamicTest {
 		this.client.save("form_order", Map.of("order_no", "B002", "amount", "15.00", "status", 1));
 		this.client.save("form_order", Map.of("order_no", "B003", "amount", "25.00", "status", 2));
 
-		List<MetaRow> rows = this.client.findList("form_order",
+		List<MetaClass> rows = this.client.findList("form_order",
 				MetaQuery.by("status", 1).and("amount", MetaQuery.Op.GE, "10")
 						.orderBy("id", MetaQuery.Direction.DESC));
 
 		assertThat(rows).hasSize(1);
 		assertThat(rows.get(0).getString("order_no")).isEqualTo("B002");
 
-		List<MetaRow> limited = this.client.findList("form_order", MetaQuery.all(), 2);
+		List<MetaClass> limited = this.client.findList("form_order", MetaQuery.all(), 2);
 		assertThat(limited).hasSize(2);
 	}
 
@@ -146,7 +154,7 @@ class MetaMapperDynamicTest {
 			this.client.save("form_order", Map.of("order_no", "P00" + i, "status", 1, "amount", i * 10));
 		}
 
-		Page<MetaRow> page = this.client.findPage("form_order", MetaQuery.by("status", 1), Pageable.of(0, 2));
+		Page<MetaClass> page = this.client.findPage("form_order", MetaQuery.by("status", 1), Pageable.of(0, 2));
 
 		assertThat(page.content()).hasSize(2);
 		assertThat(page.total()).isEqualTo(3);
@@ -227,7 +235,7 @@ class MetaMapperDynamicTest {
 				.hasMessageContaining("non-generated primary key 'b'");
 
 		this.client.save("form_link", Map.of("a", 1, "b", 2, "label", "first"));
-		MetaRow row = this.client.findByKey("form_link", Map.of("a", 1, "b", 2)).orElseThrow();
+		MetaClass row = this.client.findByKey("form_link", Map.of("a", 1, "b", 2)).orElseThrow();
 		assertThat(row.getString("label")).isEqualTo("first");
 
 		assertThat(this.client.updateByKey("form_link", Map.of("a", 1, "b", 2),
@@ -271,7 +279,7 @@ class MetaMapperDynamicTest {
 		assertThat(this.client.selectList("form_order", "selectList", Map.of("order_no", "N' OR '1'='1")))
 				.isEmpty();
 
-		MetaRow matched = this.client.selectOne("form_order", "selectList", Map.of("status", 1, "id", key))
+		MetaClass matched = this.client.selectOne("form_order", "selectList", Map.of("status", 1, "id", key))
 				.orElseThrow();
 		assertThat(matched.getString("order_no")).isEqualTo("N001");
 
@@ -284,7 +292,7 @@ class MetaMapperDynamicTest {
 		// 只给两个列：trim 把没传值的列整段剥掉，交给数据库默认值
 		assertThat(this.client.execute("form_order", "insert", Map.of("order_no", "I001", "status", 1))).isEqualTo(1);
 
-		MetaRow row = this.client.selectOne("form_order", "selectList", Map.of("order_no", "I001")).orElseThrow();
+		MetaClass row = this.client.selectOne("form_order", "selectList", Map.of("order_no", "I001")).orElseThrow();
 		assertThat(row.getInt("status")).isEqualTo(1);
 		assertThat(row.getInt("deleted_flag")).isZero();
 		assertThat(row.get("amount")).isNull();
@@ -385,5 +393,116 @@ class MetaMapperDynamicTest {
 				.isInstanceOf(MetaSqlException.class)
 				.hasMessageContaining("noSuchStatement")
 				.hasMessageContaining("selectList");
+	}
+
+	// ------------------------------------------------------------------
+	// 动态生成的 MetaClass：真实字段类型 / 零反射映射 / 结构变化后重新生成
+	// ------------------------------------------------------------------
+
+	@Test
+	void queryReturnsACompiledMetaClassWithRealFieldTypes() throws Exception {
+		Object key = this.client.save("form_order", Map.of(
+				"order_no", "T001", "amount", "12.50", "status", 1,
+				"create_time", "2026-11-11 10:00:00"));
+
+		Class<? extends MetaClass> type = this.client.entityType("form_order");
+		assertThat(type).isNotSameAs(MetaClass.class);
+		assertThat(type.getSuperclass()).isEqualTo(MetaClass.class);
+		assertThat(type.getSimpleName()).isEqualTo("FormOrder");
+		assertThat(type.getMethod("getId").getReturnType()).isEqualTo(Long.class);
+		assertThat(type.getMethod("getOrderNo").getReturnType()).isEqualTo(String.class);
+		assertThat(type.getMethod("getAmount").getReturnType()).isEqualTo(BigDecimal.class);
+		assertThat(type.getMethod("getStatus").getReturnType()).isEqualTo(Integer.class);
+		assertThat(type.getMethod("getCreateTime").getReturnType()).isEqualTo(LocalDateTime.class);
+
+		MetaClass row = this.client.findById("form_order", key).orElseThrow();
+		assertThat(row.getClass()).isEqualTo(type);
+		assertThat(row.getName()).isEqualTo(this.registry.require("form_order").name());
+		assertThat(row.get("amount")).isInstanceOf(BigDecimal.class);
+		assertThat(row.getBigDecimal("amount")).isEqualByComparingTo("12.50");
+		assertThat(row.getLocalDateTime("create_time")).isEqualTo(LocalDateTime.of(2026, 11, 11, 10, 0));
+		assertThat(row.toMap()).containsKeys("id", "order_no", "amount", "status", "create_time", "deleted_flag");
+		assertThat(row.toJson()).contains("T001");
+
+		// 类型信息留在元模型里：后续校验/转换/序列化不用面对一个没类型的 Map
+		MetaProperty amount = row.property("amount");
+		assertThat(amount).isNotNull();
+		assertThat(amount.getType()).isEqualTo(BigDecimal.class.getName());
+		assertThat(amount.getJdbcType()).isEqualTo(Types.DECIMAL);
+		MetaProperty primaryKey = row.property("ID");
+		assertThat(primaryKey).isNotNull();
+		assertThat(primaryKey.isPrimaryKey()).isTrue();
+		assertThat(primaryKey.isAutoIncrement()).isTrue();
+
+		// 按列名写入走生成类的 switch，大小写不敏感
+		row.set("STATUS", 9);
+		assertThat(row.getInt("status")).isEqualTo(9);
+	}
+
+	@Test
+	void refreshGeneratesANewEntityClassForTheNewStructure() throws Exception {
+		Object key = this.client.save("form_order", Map.of("order_no", "V001", "status", 1));
+		Class<? extends MetaClass> before = this.client.entityType("form_order");
+		MetaClass oldRow = this.client.findById("form_order", key).orElseThrow();
+		assertThat(oldRow.getClass()).isEqualTo(before);
+		assertThat(before.getMethods()).extracting(Method::getName).doesNotContain("getRemark");
+
+		try (Connection connection = this.dataSource.getConnection();
+				Statement statement = connection.createStatement()) {
+			statement.execute("ALTER TABLE form_order ADD COLUMN remark VARCHAR(64)");
+		}
+		this.client.refresh("form_order");
+
+		Class<? extends MetaClass> after = this.client.entityType("form_order");
+		assertThat(after).isNotEqualTo(before);
+		assertThat(after.getSimpleName()).isEqualTo(before.getSimpleName());
+		assertThat(after.getMethod("getRemark").getReturnType()).isEqualTo(String.class);
+		// 旧类没被重定义，已取到的旧实例仍然可用
+		assertThat(before.getMethods()).extracting(Method::getName).doesNotContain("getRemark");
+		assertThat(oldRow.getString("order_no")).isEqualTo("V001");
+
+		assertThat(this.client.updateById("form_order", key, Map.of("remark", "加急"))).isEqualTo(1);
+		MetaClass newRow = this.client.findById("form_order", key).orElseThrow();
+		assertThat(newRow.getClass()).isEqualTo(after);
+		assertThat(newRow.getString("remark")).isEqualTo("加急");
+	}
+
+	@Test
+	void generatedSourceIsReadableJavaWithoutReflectionAndCanBePersisted() throws Exception {
+		Path sources = this.xmlDirectory.resolve("entities");
+		MetaEntityRegistry registry = new MetaEntityRegistry(sources.toString());
+		MetaEntityModel model = registry.model(this.registry.require("form_order"));
+
+		assertThat(model.entityType().getSimpleName()).isEqualTo("FormOrder");
+		assertThat(model.reader()).isNotNull();
+		assertThat(model.source()).contains("public final class FormOrder extends MetaClass")
+				.contains("private java.lang.Long id;")
+				.contains("private java.math.BigDecimal amount;")
+				.contains("MetaValueReader.asBigDecimal(raw)")
+				.contains("MetaEntityColumns.index(rs)")
+				.doesNotContain("java.lang.reflect", "getDeclaredField", "Method.invoke");
+
+		MetaEntityTemplate.Source generated = MetaEntityTemplate.render(this.registry.require("form_order"));
+		Path file = sources.resolve(generated.packageName().replace('.', '/'))
+				.resolve(generated.className() + ".java");
+		assertThat(file).isRegularFile();
+		assertThat(Files.readString(file)).contains("generated-by: autumn-data-meta-jdbc");
+	}
+
+	@Test
+	void projectionQuerySkipsMissingColumnsInsteadOfFailing() throws Exception {
+		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<mapper namespace="projection.form_order">
+				    <select id="onlyOrderNo">SELECT order_no FROM ${table} WHERE deleted_flag = 0</select>
+				</mapper>
+				""");
+		this.client.save("form_order", Map.of("order_no", "PRJ-1", "status", 1));
+
+		MetaClass row = this.client.selectOne("form_order", "onlyOrderNo", Map.of()).orElseThrow();
+		assertThat(row.getString("order_no")).isEqualTo("PRJ-1");
+		// 未投影的列是 null，而不是 SQLException / 错位取值
+		assertThat(row.get("amount")).isNull();
+		assertThat(row.get("id")).isNull();
 	}
 }

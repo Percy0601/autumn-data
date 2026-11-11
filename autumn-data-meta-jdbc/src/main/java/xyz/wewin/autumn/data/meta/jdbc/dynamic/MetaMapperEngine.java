@@ -20,6 +20,9 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
  * <p>引擎本身是实例对象（静态门面只持有一个 {@code volatile} 引用），因此多数据源、测试时的
  * 多实例、Spring 容器关闭后的替换都不会互相串。默认池由构造参数固定，其余池名按需创建。</p>
  *
+ * <p>所有池<b>共享一个 {@link MetaEntityRegistry}</b>：生成的实体类只由表结构决定，与连的是哪个库
+ * 无关，同构的表只编译一次。</p>
+ *
  * <p>核心模块不依赖 Spring：{@link #standalone(String)} 用 {@link MetaDataSource} 注册表 +
  * JDBC 连接源；Spring 集成层可以传入自己的 client 工厂（例如把连接交给
  * {@code SpringConnectionSource} 以加入事务）。</p>
@@ -30,9 +33,16 @@ public final class MetaMapperEngine {
 
 	private final Function<String, MetaMapperClient> clientFactory;
 
+	private final MetaEntityRegistry entityRegistry;
+
 	private final ConcurrentHashMap<String, MetaMapperClient> clients = new ConcurrentHashMap<>();
 
 	public MetaMapperEngine(String defaultPoolName, Function<String, MetaMapperClient> clientFactory) {
+		this(defaultPoolName, clientFactory, new MetaEntityRegistry());
+	}
+
+	public MetaMapperEngine(String defaultPoolName, Function<String, MetaMapperClient> clientFactory,
+			MetaEntityRegistry entityRegistry) {
 		if (defaultPoolName == null || defaultPoolName.isBlank()) {
 			throw new IllegalArgumentException("defaultPoolName must not be blank");
 		}
@@ -41,6 +51,7 @@ public final class MetaMapperEngine {
 		}
 		this.defaultPoolName = defaultPoolName;
 		this.clientFactory = clientFactory;
+		this.entityRegistry = entityRegistry == null ? new MetaEntityRegistry() : entityRegistry;
 	}
 
 	/**
@@ -51,6 +62,7 @@ public final class MetaMapperEngine {
 	}
 
 	public static MetaMapperEngine standalone(String defaultPoolName, MetaMapperOptions options) {
+		MetaEntityRegistry entities = new MetaEntityRegistry(options.entitySourceDirectory());
 		return new MetaMapperEngine(defaultPoolName, poolName -> {
 			DataSource dataSource;
 			try {
@@ -59,8 +71,8 @@ public final class MetaMapperEngine {
 			catch (IllegalArgumentException ex) {
 				throw new MetaSqlException("no data source registered under pool name '" + poolName + "'", ex);
 			}
-			return createClient(poolName, dataSource, options);
-		});
+			return createClient(poolName, dataSource, options, entities);
+		}, entities);
 	}
 
 	/**
@@ -79,13 +91,15 @@ public final class MetaMapperEngine {
 		if (dataSource == null) {
 			throw new IllegalArgumentException("dataSource must not be null");
 		}
+		MetaEntityRegistry entities = new MetaEntityRegistry(options.entitySourceDirectory());
 		return new MetaMapperEngine(defaultPoolName, poolName -> {
 			DataSource target = poolName.equals(defaultPoolName) ? dataSource : MetaDataSource.get(poolName);
-			return createClient(poolName, target, options);
-		});
+			return createClient(poolName, target, options, entities);
+		}, entities);
 	}
 
-	private static MetaMapperClient createClient(String poolName, DataSource dataSource, MetaMapperOptions options) {
+	private static MetaMapperClient createClient(String poolName, DataSource dataSource, MetaMapperOptions options,
+			MetaEntityRegistry entities) {
 		Dialect dialect = DialectResolver.resolve(dataSource);
 		ConnectionSource connectionSource = new PerThreadConnectionSource(
 				() -> new JdbcConnectionSource(dataSource));
@@ -94,12 +108,17 @@ public final class MetaMapperEngine {
 		MetaStatementStore statementStore = new MetaStatementStore(options.xmlDirectory(), options.generateXml(),
 				dialect);
 		return new MetaMapperClient(poolName, jdbc, connectionSource, registry, new MetaSqlBuilder(dialect),
-				statementStore, options.defaultListLimit());
+				statementStore, entities, options.defaultListLimit());
 	}
 
 	/** 默认池名。 */
 	public String defaultPoolName() {
 		return this.defaultPoolName;
+	}
+
+	/** 动态实体类注册表（诊断 / 整体刷新用）。 */
+	public MetaEntityRegistry entityRegistry() {
+		return this.entityRegistry;
 	}
 
 	/** 默认池客户端。 */

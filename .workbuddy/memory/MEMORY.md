@@ -1,8 +1,9 @@
 # autumn-data 项目长期笔记
 
 ## 定位
-`autumn-data`：零反射 JDBC 仓储（编译期 APT 生成实现）+ FreeMarker 动态 SQL 引擎（`autumn-data-meta`）。
+`autumn-data`：零反射 JDBC 仓储（编译期 APT 生成实现）+ 动态表 CRUD / 运行期实体类生成（`autumn-data-meta-jdbc`）。
 对标 Spring Data 的接口写法 + Micronaut Data 的编译期生成。核心模块零 Spring 运行期依赖，Spring 只在 starter。
+动态 SQL 用 XML AST 解释执行（不引模板引擎）；FreeMarker 只用于运行期生成实体类源码。
 
 ## 架构要点（方案 B：完全去 Spring，MyBatis 式事务分层）
 - 编译期：`AutoRepositoryProcessor`（JSR-269）→ 生成 `<Repo>Impl.java`（SQL 内联为 `private static final String` 常量）+ 写入 `META-INF/autumn-data/repositories`（每行一个仓储接口 FQN）。
@@ -49,5 +50,29 @@
 
 **代码生成方式建议（用户 2026-11-01 建议，非强制）**：compiler 当前用 `StringBuilder` 拼装生成源码；若拼装变复杂、难维护，可引入 **FreeMarker 模板引擎**做代码生成（项目 `autumn-data-meta` 已用 FreeMarker 做动态 SQL，属既有的同族能力）。当前为保持 compiler 零额外依赖仍用 StringBuilder，待生成体膨胀再评估切模板。
 
+## autumn-data-meta-jdbc：运行期生成 MetaClass（2026-11-11 完成）
+**定位（用户明确）**：介于「完全动态」与「完全静态」之间。编译期写死的实体类应付不了运行期建表，
+全 Map/反射又丢光类型（"MetaClass 知道每个字段类型，后续处理起来更稳妥，完全都是 Map 没有类型到时候问题太多"）。
+做法：运行期按表结构生成实体类，生成后就是静态类型、零反射。
+
+- **门面 API 已改**：`MetaMapper` / `MetaMapperClient` 查询统一返回 `xyz.wewin.autumn.data.common.meta.MetaClass`；
+  `MetaRow` 已删除。新增 `entityType(table)` 返回 `Class<? extends MetaClass>`。
+- **common 的 `MetaClass` 升级为公共契约**：新增 `get/set/property/has`、类型化 getter
+  （`getString/getInt/getLong/getBigDecimal/getBoolean/getLocalDate/getLocalDateTime/getLocalTime/getDouble`）、
+  `toMap/toJson`；基类走属性列表，生成子类覆写走真实字段。新增 `MetaValueReader`（读方向 JDK-only 转换，
+  与写方向 `MetaTypeCoercion` 分开）。注意 `property()` 必须调 `getProperties()` 虚方法，不能直读字段。
+- **生成链**：`MetaEntityTemplate`（FreeMarker 模板 `meta-class.ftl`，结构指纹 SHA-256 前 12 位 hex 进包名
+  `...generated.v<指纹>`）→ `MetaEntityCompiler`（`javax.tools` 编译 + `URLClassLoader`；classpath 展开
+  Surefire manifest-only jar 的 Class-Path + 关键类 CodeSource）→ `MetaEntityRegistry`（按表名+指纹缓存，
+  引擎级共享，refresh 丢条目）。生成类 `extends MetaClass`，含真实类型字段/getter/setter、
+  `READER`（逐列 `rs.getObject(index)` + 直接 setter，逐行零反射）、按列名 switch 的 get/set、
+  带 `type/jdbcType/主键/自增` 的 `getProperties()`。
+- **投影兼容**：`MetaEntityColumns.index(rs)` 建小写列标签索引，缺列跳过、字段保持 null。
+- 选项 `MetaMapperOptions.entitySourceDirectory` / 配置 `autumn.data.meta.mapper.entity-source-directory`
+  可把生成的 `.java` 落盘。运行期需完整 JDK（JRE 无 `javax.tools`，会明确报错）。
+- 测试：`MetaMapperDynamicTest` 22 个（新增真实字段类型/零反射源码/加列生成新类/源码落盘/投影缺列）；
+  全 reactor `mvn -B test` 7 模块全绿。
+
 ## 协作归属（用户陈述）
-方向/创意=用户；实现落地部分功劳=阿里千问。
+方向/创意=用户；既有实现的落地部分由豆包、通义千问产出，用户对其中很多地方不满意，
+正在逐步重构；**上层 API 用户后续还要自己调整**，改动时优先把底层能力做扎实、别替他把上层形态定死。

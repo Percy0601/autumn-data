@@ -11,11 +11,13 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementType;
+import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.common.meta.MetaProperty;
 import xyz.wewin.autumn.data.jdbc.page.Page;
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.ConnectionSource;
+import xyz.wewin.autumn.data.jdbc.runtime.RowMapper;
 import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
 import xyz.wewin.autumn.data.meta.jdbc.SqlBuild;
@@ -37,6 +39,11 @@ import xyz.wewin.autumn.data.meta.jdbc.SqlBuild;
  *       之后归使用方编辑。</li>
  * </ul>
  *
+ * <p><b>查询结果一律是 {@link MetaClass}</b>：实例是按当前表结构用 FreeMarker 生成源码、
+ * 运行期编译加载的 {@code MetaClass} 子类，有真实类型化字段和 getter；
+ * 类型可以通过 {@link #entityType(String)} 取到。完全静态的实体类在运行期建表时做不到，
+ * 完全动态的 Map 又没有类型，这一层就是要落在两者之间。</p>
+ *
  * <p>只提供查询、保存、更新；<b>不提供物理删除</b>。业务上的作废用一次
  * {@code updateById(..., Map.of("status", "VOID"))}。</p>
  */
@@ -56,16 +63,29 @@ public final class MetaMapperClient {
 
 	private final MetaStatementStore statementStore;
 
+	private final MetaEntityRegistry entityRegistry;
+
 	private final int defaultListLimit;
 
+	/** 兼容构造：自带一个实体注册表（不额外留存生成的 .java 源码）。 */
 	public MetaMapperClient(String poolName, AutumnJdbc jdbc, ConnectionSource connectionSource,
 			MetaTableRegistry registry, MetaSqlBuilder sqlBuilder, MetaStatementStore statementStore,
 			int defaultListLimit) {
+		this(poolName, jdbc, connectionSource, registry, sqlBuilder, statementStore,
+				new MetaEntityRegistry(), defaultListLimit);
+	}
+
+	public MetaMapperClient(String poolName, AutumnJdbc jdbc, ConnectionSource connectionSource,
+			MetaTableRegistry registry, MetaSqlBuilder sqlBuilder, MetaStatementStore statementStore,
+			MetaEntityRegistry entityRegistry, int defaultListLimit) {
 		if (defaultListLimit <= 0) {
 			throw new IllegalArgumentException("defaultListLimit must be > 0");
 		}
 		if (statementStore == null) {
 			throw new IllegalArgumentException("statementStore must not be null");
+		}
+		if (entityRegistry == null) {
+			throw new IllegalArgumentException("entityRegistry must not be null");
 		}
 		this.poolName = poolName;
 		this.jdbc = jdbc;
@@ -73,6 +93,7 @@ public final class MetaMapperClient {
 		this.registry = registry;
 		this.sqlBuilder = sqlBuilder;
 		this.statementStore = statementStore;
+		this.entityRegistry = entityRegistry;
 		this.defaultListLimit = defaultListLimit;
 	}
 
@@ -85,7 +106,7 @@ public final class MetaMapperClient {
 	// 查询（MetaQuery 驱动）
 	// ------------------------------------------------------------------
 
-	public Optional<MetaRow> findById(String tableName, Object id) {
+	public Optional<MetaClass> findById(String tableName, Object id) {
 		MetaTable table = this.registry.require(tableName);
 		MetaProperty pk = table.singlePrimaryKey();
 		if (pk == null) {
@@ -94,7 +115,7 @@ public final class MetaMapperClient {
 		return findOne(tableName, MetaQuery.by(pk.getName(), id));
 	}
 
-	public Optional<MetaRow> findByKey(String tableName, Map<String, ?> key) {
+	public Optional<MetaClass> findByKey(String tableName, Map<String, ?> key) {
 		MetaTable table = this.registry.require(tableName);
 		if (table.primaryKeys().isEmpty()) {
 			throw new MetaSqlException("table '" + tableName + "' has no primary key");
@@ -102,35 +123,35 @@ public final class MetaMapperClient {
 		return findOne(tableName, queryOfKey(table, key));
 	}
 
-	public Optional<MetaRow> findOne(String tableName, MetaQuery query) {
-		List<MetaRow> rows = findList(tableName, query, 1);
+	public Optional<MetaClass> findOne(String tableName, MetaQuery query) {
+		List<MetaClass> rows = findList(tableName, query, 1);
 		return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
 	}
 
-	public List<MetaRow> findList(String tableName, MetaQuery query) {
+	public List<MetaClass> findList(String tableName, MetaQuery query) {
 		return findList(tableName, query, this.defaultListLimit);
 	}
 
 	/**
 	 * 查询列表并限制返回行数（防止动态查询一次拉全表）。
 	 */
-	public List<MetaRow> findList(String tableName, MetaQuery query, long limit) {
+	public List<MetaClass> findList(String tableName, MetaQuery query, long limit) {
 		if (limit <= 0) {
 			throw new IllegalArgumentException("limit must be > 0");
 		}
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
 			SqlBuild sql = this.sqlBuilder.select(table, query);
-			return this.jdbc.query(limit, sql.sql(), MetaRow.mapper(table), sql.args());
+			return this.jdbc.query(limit, sql.sql(), mapper(table), sql.args());
 		});
 	}
 
-	public Page<MetaRow> findPage(String tableName, MetaQuery query, Pageable pageable) {
+	public Page<MetaClass> findPage(String tableName, MetaQuery query, Pageable pageable) {
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
 			SqlBuild select = this.sqlBuilder.select(table, query);
 			SqlBuild count = this.sqlBuilder.count(table, query);
-			return this.jdbc.page(select.sql(), count.sql(), MetaRow.mapper(table), pageable, select.args());
+			return this.jdbc.page(select.sql(), count.sql(), mapper(table), pageable, select.args());
 		});
 	}
 
@@ -246,23 +267,23 @@ public final class MetaMapperClient {
 	}
 
 	/** 执行 {@code <select>} 语句取列表，行数上限用默认值。 */
-	public List<MetaRow> selectList(String tableName, String statementId, Map<String, ?> params) {
+	public List<MetaClass> selectList(String tableName, String statementId, Map<String, ?> params) {
 		return selectList(tableName, statementId, params, this.defaultListLimit);
 	}
 
-	public List<MetaRow> selectList(String tableName, String statementId, Map<String, ?> params, long limit) {
+	public List<MetaClass> selectList(String tableName, String statementId, Map<String, ?> params, long limit) {
 		if (limit <= 0) {
 			throw new IllegalArgumentException("limit must be > 0");
 		}
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
 			SqlBuild sql = render(table, selectStatement(table, statementId), params);
-			return this.jdbc.query(limit, sql.sql(), MetaRow.mapper(table), sql.args());
+			return this.jdbc.query(limit, sql.sql(), mapper(table), sql.args());
 		});
 	}
 
-	public Optional<MetaRow> selectOne(String tableName, String statementId, Map<String, ?> params) {
-		List<MetaRow> rows = selectList(tableName, statementId, params, 1);
+	public Optional<MetaClass> selectOne(String tableName, String statementId, Map<String, ?> params) {
+		List<MetaClass> rows = selectList(tableName, statementId, params, 1);
 		return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
 	}
 
@@ -293,16 +314,34 @@ public final class MetaMapperClient {
 		});
 	}
 
-	/** 表结构变化后刷新元数据快照与 Mapper 语句缓存；只重读文件，不重写文件。 */
+	/**
+	 * 当前表结构对应的动态实体类。
+	 *
+	 * <p>这是 FreeMarker 生成 + javac 编译出来的 {@link MetaClass} 子类：每个列都有真实类型的字段、
+	 * getter/setter 和 {@code getProperties()} 里的类型描述。调用方可以据此检查字段类型、
+	 * 做校验或走框架集成，而不必面对一个没有类型的 Map。</p>
+	 */
+	public Class<? extends MetaClass> entityType(String tableName) {
+		return this.entityRegistry.entityType(this.registry.require(tableName));
+	}
+
+	/** 表结构变化后刷新元数据快照、实体类与 Mapper 语句缓存；只重读文件，不重写文件。 */
 	public void refresh(String tableName) {
 		this.registry.refresh(tableName);
+		this.entityRegistry.refresh(tableName);
 		this.statementStore.refresh(tableName);
 	}
 
 	/** 刷新当前客户端可见的全部表快照。 */
 	public void refreshAll() {
 		this.registry.refreshAll();
+		this.entityRegistry.refreshAll();
 		this.statementStore.refreshAll();
+	}
+
+	/** 结果集映射器：来自已编译实体类的 READER，逐行是写死的 setter 调用（零反射）。 */
+	private RowMapper<MetaClass> mapper(MetaTable table) {
+		return this.entityRegistry.model(table).mapper();
 	}
 
 	// ------------------------------------------------------------------
