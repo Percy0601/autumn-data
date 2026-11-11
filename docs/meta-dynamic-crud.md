@@ -10,13 +10,15 @@
 MetaMapper（静态门面，只持有 volatile engine；查询返回 MetaClass）
   └─ MetaMapperEngine（实例，按 pool 懒建/缓存 client，共享一个 MetaEntityRegistry）
        └─ MetaMapperClient（绑定一个 pool）
-            ├─ MetaTableRegistry（表名 → MetaTable 快照，refresh 原子换新）
+            ├─ MetaTableRegistry（表名 → MetaTable 快照，refresh 换新）        [有界 LRU]
             ├─ MetaSqlBuilder（按 MetaTable 生成 SQL，标识符只来自快照）
-            ├─ MetaStatementStore（表名 → Mapper 文件；已有则读、缺失则按表结构生成一次）
-            ├─ MetaEntityRegistry（表结构指纹 → 已编译的 MetaClass 子类 + 零反射 RowMapper）
+            ├─ MetaStatementStore（表名 → Mapper AST；已有则读、缺失生成一次） [有界 LRU]
+            ├─ MetaEntityRegistry（结构指纹 → 已编译 MetaClass 子类 + READER） [有界 LRU]
             │    ├─ MetaEntityTemplate（FreeMarker 生成 .java 源码）
             │    └─ MetaEntityCompiler（javax.tools 编译 + URLClassLoader 加载）
             └─ AutumnJdbc（复用现有执行层：query / page / count / update / 生成键）
+
+三处 [有界 LRU] 都走同一个 BoundedCache 接口 / BoundedCaches 工厂，上限由 table-cache-size 统一配置。
 ```
 
 核心模块不依赖 Spring；Spring Boot 集成在 `autumn-data-jdbc-spring-boot-starter` 的
@@ -113,6 +115,41 @@ SqlBuild sql = client.sqlFor("form_order", "selectList", Map.of("status", 1)); /
   元数据快照、该表已编译的实体类、Mapper 文件 AST 缓存一起换新；
 - 旧快照与旧生成类上正在执行的语句不受刷新影响，刷新只影响下一次解析。
 
+## 有界缓存（表数量无上限）
+
+表单设计器能建出成千上万张表，而进程内有三类东西都按「表」增长：
+
+| 缓存 | key | 条目重量 | 淘汰后再访问的代价 |
+| --- | --- | --- | --- |
+| `MetaTableRegistry` | 表名（大小写不敏感） | 一份不可变列快照 | 重读一次 `DatabaseMetaData` |
+| `MetaEntityRegistry` | 表名 + 结构指纹 | 一个编译出的 `Class` + 独立 ClassLoader | 重新生成/编译一份同类名的类（新 ClassLoader） |
+| `MetaStatementStore` | 表名 | 一棵 Mapper XML AST | 重读已有的 XML 文件（**不会重写**） |
+
+其中实体类缓存最重，只堵表结构快照没有意义。三处统一走 `BoundedCache`，默认上限
+**10_000 张表**，触顶淘汰最久未访问的条目；淘汰是同步的，`size()` 恒不超过上限。
+因为丢掉的都只是可重建的派生数据，LRU 淘汰不影响正确性，也不影响已取到旧快照/旧类实例的执行中查询。
+
+```properties
+autumn.data.meta.mapper.table-cache-size=10000
+```
+
+设计上的两点：
+
+- **API 对齐 Caffeine，方便将来换实现**。`BoundedCache` 的 `getIfPresent` / `get(key, mappingFunction)` /
+  `put` / `invalidate` / `invalidateAll` / `estimatedSize` / `cleanUp` 与
+  `com.github.benmanes.caffeine.cache.Cache` 同名同义；`invalidateIf` / `maximumSize` 两个扩展方法在
+  Caffeine 下也各有一行等价写法（`asMap().keySet().removeIf(...)`、
+  `policy().eviction().get().getMaximum()`）。当前实现 `LruCache` 是 JDK-only：
+  `LinkedHashMap(accessOrder=true)` 记顺序 + 一把 `ReentrantLock` 保护顺序与淘汰，
+  加载函数在锁外执行（读元数据 / javac 编译不阻塞别的 key 命中），并用 pending 表保证
+  「同一个 key 并发未命中只加载一次」。换成 Caffeine 时只需新增一个适配器实现该接口、
+  改 `BoundedCaches` 工厂的一行返回值，三个 Registry 不用动。
+- **没有直接在 `ConcurrentHashMap` 上加淘汰**：CHM 不维护访问顺序，靠外部链表记顺序时，
+  「读命中」与「淘汰」之间必然有竞态，容易短暂超上限或误删刚被访问的条目。这里把顺序和
+  淘汰收进同一把锁，语义简单、可验证（`BoundedCacheTest` 里有并发单飞与上限断言）。
+  手工 `MetaTableRegistry.register(...)` 的业务覆盖单独存放、**不参与淘汰**，
+  但 `refresh(table)` 仍按原语义清掉它。
+
 ## Mapper 文件与命名语句
 
 规则只有一条：**文件存在就用文件，不存在才按表结构生成一次**。
@@ -207,9 +244,11 @@ SqlBuild sql = client.sqlFor("form_order", "selectList", Map.of("status", 1)); /
 autumn.data.meta.mapper.xml-directory=meta-mappers
 autumn.data.meta.mapper.generate-xml=true
 autumn.data.meta.mapper.entity-source-directory=generated-entities
+autumn.data.meta.mapper.table-cache-size=10000
 ```
 
 `entity-source-directory` 是生成的实体 `.java` 落盘目录，留空表示只在临时目录编译、不额外留存。
+`table-cache-size` 是三处按表缓存各自的条目上限（默认 10000），详见「有界缓存」一节。
 `xml-directory` 为空串时只生成到内存；`generate-xml=false` 时缺失文件直接抛
 `MetaSqlException`，适合生产环境要求 Mapper 必须预置的场景。
 
@@ -279,10 +318,13 @@ ThreadLocal 最多作为“请求级默认池”的便利糖，不能作为唯�
 - 实现：`autumn-data-meta-jdbc/src/main/java/xyz/wewin/autumn/data/meta/jdbc/dynamic`
   （`MetaStatementStore` 管文件生命周期，`SqlTemplate` 是运行期解释器，方言与编译期生成器
   共用 `autumn-data-common` 的 `TemplateParser` / `TemplateNode`；
-  `MetaEntityTemplate` / `MetaEntityCompiler` / `MetaEntityRegistry` 管 FreeMarker 生成实体类）
+  `MetaEntityTemplate` / `MetaEntityCompiler` / `MetaEntityRegistry` 管 FreeMarker 生成实体类；
+  `BoundedCache` / `LruCache` / `BoundedCaches` 管三处有界缓存）
 - 用例：`MetaMapperDynamicTest`（建表 → 不重启 CRUD → 加列 refresh → 逻辑删除 → 复合主键 →
   Mapper 文件生成一次/改表不重写 → 手工文件优先 → 名字忽略大小写对齐 → 空值判断方法 →
   `#{}` 绑定与注入拒绝 → `${}` 白名单 → `<foreach>` / `<trim>` / `<delete>` 拒绝，
-  以及生成类的真实字段类型 / 零反射源码 / 加列后生成新类 / 源码落盘 / 投影缺列），共 22 个；
+  以及生成类的真实字段类型 / 零反射源码 / 加列后生成新类 / 源码落盘 / 投影缺列 /
+  三处缓存淘汰后可重建 / 手工登记不被淘汰 / 默认上限 10000），共 26 个；
+  `BoundedCacheTest` 9 个（LRU 顺序、上限、并发单飞、加载在锁外、失败不缓存、失效语义）；
   starter 装配 2 个；using 模块端到端 1 个 + 上层用法示例 5 个。
 - 全 reactor：`mvn -B test`，starter / using / compiler / common 全绿。

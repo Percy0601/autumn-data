@@ -15,13 +15,17 @@ import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
  * @param xmlDirectory          Mapper 文件目录；空串表示语句只在内存里生成、不落盘
  * @param generateXml           文件不存在时是否按表结构生成一份 Mapper 文件；false 时缺失直接报错
  * @param entitySourceDirectory 生成的实体 {@code .java} 源码落盘目录；空串表示只在临时目录编译、不额外留存
+ * @param tableCacheSize        按表缓存（表结构 / 动态实体类 / Mapper AST）各自的条目上限，默认一万张表
  */
 public record MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,
-		String xmlDirectory, boolean generateXml, String entitySourceDirectory) {
+		String xmlDirectory, boolean generateXml, String entitySourceDirectory, int tableCacheSize) {
 
 	public MetaMapperOptions {
 		if (defaultListLimit <= 0) {
 			throw new IllegalArgumentException("defaultListLimit must be > 0 but was " + defaultListLimit);
+		}
+		if (tableCacheSize <= 0) {
+			throw new IllegalArgumentException("tableCacheSize must be > 0 but was " + tableCacheSize);
 		}
 		fetchPolicy = fetchPolicy == null ? FetchPolicy.defaults() : fetchPolicy;
 		Set<String> normalized = new LinkedHashSet<>();
@@ -35,6 +39,13 @@ public record MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, S
 		logicDeleteColumns = Set.copyOf(normalized);
 		xmlDirectory = xmlDirectory == null ? "" : xmlDirectory.trim();
 		entitySourceDirectory = entitySourceDirectory == null ? "" : entitySourceDirectory.trim();
+	}
+
+	/** 兼容原有六参构造：按表缓存沿用 {@value BoundedCache#DEFAULT_MAXIMUM_SIZE} 上限。 */
+	public MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,
+			String xmlDirectory, boolean generateXml, String entitySourceDirectory) {
+		this(defaultListLimit, fetchPolicy, logicDeleteColumns, xmlDirectory, generateXml, entitySourceDirectory,
+				BoundedCache.DEFAULT_MAXIMUM_SIZE);
 	}
 
 	/** 兼容原有五参构造：不额外留存生成的实体源码。 */

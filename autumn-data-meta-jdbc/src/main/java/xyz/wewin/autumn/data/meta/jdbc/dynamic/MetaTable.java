@@ -16,7 +16,7 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
  * <p>不另建列模型：表名 = {@link MetaClass#getName()}，schema = {@link MetaClass#getNamespace()}，
  * 列 = {@link MetaProperty}（JDBC 类型、可空、主键、自增都在属性上）。</p>
  *
- * <p>实例不可变，由 {@link MetaTableRegistry} 缓存在 {@link java.util.concurrent.ConcurrentHashMap} 里；
+ * <p>实例不可变，由 {@link MetaTableRegistry} 缓存在有界 LRU {@link BoundedCache} 里；
  * 表结构变化后调用 {@link MetaTableRegistry#refresh(String)} 移除旧快照、下次访问重建，
  * 不影响已经拿到旧快照的执行中查询。</p>
  */

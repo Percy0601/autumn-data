@@ -105,6 +105,7 @@ MetaMapper.of("tenant-a").findList("form_order", MetaQuery.by("status", 1));
 - 结构指纹参与包名：加列/改类型后 `MetaMapper.refresh("form_order")` 会生成新类，已取到的旧实例仍可用，不会同名重定义；
 - `autumn.data.meta.mapper.entity-source-directory=generated-entities` 可把生成的 `.java` 落盘查看或固化；默认只在临时目录编译；运行期需要完整 JDK（`javax.tools`），JRE 上会明确报错；
 - 元数据从 `DatabaseMetaData` 读取，直接填入 `MetaClass` / `MetaProperty`（表名 = `MetaClass.name`、schema = `namespace`、列 = properties）；建表/加列**提交后**调 `MetaMapper.refresh("form_order")` 换快照，不重启；
+- **按表缓存全部有界**：表结构快照、动态实体类、Mapper AST 三处各有独立上限（默认 10_000 张表），触顶按 LRU 淘汰最久未访问的冷表，下次访问自动重建，表再多内存也不线性增长。实现是 JDK 自带的 `LinkedHashMap(accessOrder)` + 锁（`BoundedCache` 接口刻意对齐 Caffeine `Cache` 的方法名与语义，将来换实现只改 `BoundedCaches` 工厂），**不引入任何缓存库、不引入 Spring**；
 - **Mapper 文件按需生成**：命名语句（`selectList/selectOne/selectCount/execute/sqlFor`）的 SQL 来自 `<xml-directory>/<表名>.xml`；文件不存在时按表结构生成一份（逐列 `<if>` + `<where>` + `<trim>`）并落盘，**已存在就直接使用，改表也不会回头覆盖**——文件归使用方所有。`MetaQuery` 驱动的 CRUD 不读文件，SQL 由 `MetaSqlBuilder` 按元数据现拼（条件运算符是开集，固定文件表达不了）；
 - 自动生成的文件带 `generated-by` 标记；`refresh` 只丢缓存重读文件，要按新结构重来就删文件；手工文件同样原样使用，不会被覆盖；
 - 文件名与列名按**忽略大小写**对齐：H2/Oracle 元数据给的是大写名，手写文件多按 MySQL 习惯写小写，`demo_order.xml` 配 `DEMO_ORDER` 这张表、`#{order_no}` 配 `ORDER_NO` 这一列都能对上；
@@ -118,6 +119,7 @@ Mapper 文件相关配置：
 autumn.data.meta.mapper.xml-directory=meta-mappers            # 空串表示只生成到内存、不落盘
 autumn.data.meta.mapper.generate-xml=true                     # false 时缺失 XML 直接报错
 autumn.data.meta.mapper.entity-source-directory=generated-entities  # 生成实体 .java 落盘；留空不留存
+autumn.data.meta.mapper.table-cache-size=10000                     # 每类按表缓存的条目上限，默认 10000
 ```
 
 完整设计与语义见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)；上层怎么调有两个能直接跑的例子：
@@ -130,7 +132,7 @@ autumn.data.meta.mapper.entity-source-directory=generated-entities  # 生成实�
 | `autumn-data-common` | 纯 JDK（`java.sql` / `javax.sql`）+ `com.zaxxer:HikariCP`（optional，仅 `MetaDataSource` 回收检测用，不传递） | — | H2、JUnit 5、Mockito |
 | `autumn-data-jdbc` | `autumn-data-common`、`com.zaxxer:HikariCP`、`org.slf4j:slf4j-api`、`javax.sql.DataSource`（JDK） | `jakarta.persistence:jakarta.persistence-api`（实体注解）、APT（待加） | H2 |
 | `autumn-data-jdbc-spring-boot-starter` | `autumn-data-jdbc`、`autumn-data-common`、`autumn-data-meta-jdbc`、`spring-boot-starter-jdbc`、`spring-boot-autoconfigure` | `spring-boot-configuration-processor`（构建期，不入依赖树） | H2、spring-boot-test |
-| `autumn-data-meta-jdbc` | `autumn-data-common`、`autumn-data-jdbc`、`org.freemarker:freemarker`（实体源码生成）、`com.zaxxer:HikariCP` | — | H2 |
+| `autumn-data-meta-jdbc` | `autumn-data-common`、`autumn-data-jdbc`、`org.freemarker:freemarker`（实体源码生成）、`com.zaxxer:HikariCP`；有界 LRU 缓存是 JDK 自带实现，无缓存库依赖 | — | H2 |
 
 说明：
 - `spring-boot-starter-jdbc` 传递引入 `spring-boot-starter` → `spring-boot` + `snakeyaml` + `logback` + `jsp` 等，以及 `spring-jdbc`/`spring-tx`，对「编译期生成 SQL、运行时零反射」的核心库属于额外负担。

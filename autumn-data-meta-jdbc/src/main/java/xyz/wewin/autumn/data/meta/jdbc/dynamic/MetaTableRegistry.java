@@ -33,8 +33,12 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
  * 元数据默认直接从数据库读取，因此“运行期建表 → 不改代码/不重启服务”即可查询；
  * 建表/加列/删列提交后调用 {@link #refresh(String)} 换新快照。</p>
  *
- * <p>缓存键大小写不敏感，值是不可变 {@link MetaTable}；{@link ConcurrentHashMap} 只保证“同一个 key
- * 只加载一次”，刷新用 remove + 下次按需加载实现，不做全局锁。</p>
+ * <p>缓存键大小写不敏感，值是不可变 {@link MetaTable}。快照走 {@link BoundedCache} 的有界 LRU：
+ * 上限默认一万张表，触顶后淘汰最久未访问的表（下次访问重新读元数据即可，不影响正确性），
+ * 因此表数量再大也不会把元数据常驻内存。同一个 key 并发未命中时只加载一次、加载不持有全局锁。</p>
+ *
+ * <p>{@link #register(MetaTable)} 的手工登记单独存放、<b>不参与淘汰</b>：那是使用方显式给出的
+ * 业务覆盖，不能因为访问了别的表就被静默丢掉；{@link #refresh(String)} 仍会按原语义清掉它。</p>
  */
 public final class MetaTableRegistry {
 
@@ -44,20 +48,32 @@ public final class MetaTableRegistry {
 
 	private final Set<String> logicDeleteColumns;
 
-	private final ConcurrentHashMap<String, MetaTable> cache = new ConcurrentHashMap<>();
+	private final BoundedCache<String, MetaTable> cache;
+
+	/** 手工登记的表：不受 LRU 上限影响。 */
+	private final ConcurrentHashMap<String, MetaTable> overrides = new ConcurrentHashMap<>();
 
 	public MetaTableRegistry(DataSource dataSource, Dialect dialect) {
-		this(dataSource, dialect, Set.of());
+		this(dataSource, dialect, Set.of(), BoundedCache.DEFAULT_MAXIMUM_SIZE);
 	}
 
 	/**
 	 * @param logicDeleteColumns 逻辑删除列名（大小写不敏感）；查询未显式引用时自动追加 {@code = 0}
 	 */
 	public MetaTableRegistry(DataSource dataSource, Dialect dialect, Set<String> logicDeleteColumns) {
+		this(dataSource, dialect, logicDeleteColumns, BoundedCache.DEFAULT_MAXIMUM_SIZE);
+	}
+
+	/**
+	 * @param maximumSize 表结构快照的缓存上限（默认 {@value BoundedCache#DEFAULT_MAXIMUM_SIZE}）
+	 */
+	public MetaTableRegistry(DataSource dataSource, Dialect dialect, Set<String> logicDeleteColumns,
+			int maximumSize) {
 		this.dataSource = dataSource;
 		this.dialect = dialect;
 		this.logicDeleteColumns = Set.copyOf(logicDeleteColumns.stream()
 				.map(name -> name.toLowerCase(Locale.ROOT)).toList());
+		this.cache = BoundedCaches.lru(maximumSize);
 	}
 
 	/** 取表描述；首次访问从数据库元数据加载。 */
@@ -66,23 +82,39 @@ public final class MetaTableRegistry {
 			throw new MetaSqlException("table name must not be blank");
 		}
 		String key = normalize(tableName);
-		return this.cache.computeIfAbsent(key, ignored -> introspect(tableName));
+		MetaTable override = this.overrides.get(key);
+		if (override != null) {
+			return override;
+		}
+		return this.cache.get(key, ignored -> introspect(tableName));
 	}
 
 	/** 手工登记/覆盖一张表的描述（业务元数据覆盖、测试或非标准数据源用）。 */
 	public MetaTable register(MetaTable table) {
-		this.cache.put(normalize(table.name()), table);
+		this.overrides.put(normalize(table.name()), table);
 		return table;
 	}
 
 	/** 表结构变化后刷新；下次访问重新读取元数据。 */
 	public void refresh(String tableName) {
-		this.cache.remove(normalize(tableName));
+		this.cache.invalidate(normalize(tableName));
+		this.overrides.remove(normalize(tableName));
 	}
 
-	/** 清空全部快照。 */
+	/** 清空全部快照（含手工登记）。 */
 	public void refreshAll() {
-		this.cache.clear();
+		this.cache.invalidateAll();
+		this.overrides.clear();
+	}
+
+	/** 已缓存的表数（诊断用）。 */
+	public long size() {
+		return this.cache.estimatedSize();
+	}
+
+	/** 缓存上限（诊断用）。 */
+	public int maximumSize() {
+		return this.cache.maximumSize();
 	}
 
 	private MetaTable introspect(String requested) {

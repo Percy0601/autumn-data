@@ -505,4 +505,94 @@ class MetaMapperDynamicTest {
 		assertThat(row.get("amount")).isNull();
 		assertThat(row.get("id")).isNull();
 	}
+
+	@Test
+	void tableCacheEvictsColdTablesAndReloadsOnDemand() throws Exception {
+		createTable("cache_a");
+		createTable("cache_b");
+		createTable("cache_c");
+		MetaTableRegistry bounded = new MetaTableRegistry(this.dataSource, new H2Dialect(), Set.of(), 2);
+
+		assertThat(bounded.require("cache_a").name()).isEqualTo("cache_a");
+		assertThat(bounded.require("cache_b").name()).isEqualTo("cache_b");
+		assertThat(bounded.require("cache_a").name()).isEqualTo("cache_a"); // a 变成最近使用
+		assertThat(bounded.require("cache_c").name()).isEqualTo("cache_c");
+
+		assertThat(bounded.maximumSize()).isEqualTo(2);
+		assertThat(bounded.size()).isEqualTo(2);
+		// 淘汰只是丢快照：冷表再次访问会重读 DatabaseMetaData，结果不变
+		assertThat(bounded.require("cache_b").columns()).hasSize(2);
+		assertThat(bounded.size()).isEqualTo(2);
+	}
+
+	@Test
+	void manuallyRegisteredTableSurvivesCacheEviction() {
+		MetaTableRegistry bounded = new MetaTableRegistry(this.dataSource, new H2Dialect(), Set.of(), 1);
+		MetaProperty id = new MetaProperty();
+		id.setName("id");
+		id.setType(Long.class.getName());
+		id.setJdbcType(Types.BIGINT);
+		id.setPrimaryKey(true);
+		MetaClass meta = new MetaClass();
+		meta.setName("manual_table");
+		meta.setProperties(List.of(id));
+		MetaTable manual = new MetaTable(meta, null);
+		bounded.register(manual);
+
+		assertThat(bounded.require("form_order").name()).isEqualTo("form_order");
+		assertThat(bounded.require("manual_table")).isSameAs(manual);
+		assertThat(bounded.size()).isEqualTo(1);
+
+		// refresh 仍按原语义清掉手工覆盖，回到数据库元数据
+		bounded.refresh("manual_table");
+		assertThatThrownBy(() -> bounded.require("manual_table"))
+				.isInstanceOf(MetaSqlException.class).hasMessageContaining("table not found");
+	}
+
+	@Test
+	void entityAndStatementCachesAreBoundedToo() throws Exception {
+		createTable("cache_x");
+		createTable("cache_y");
+		MetaTableRegistry tables = new MetaTableRegistry(this.dataSource, new H2Dialect());
+		MetaTable x = tables.require("cache_x");
+		MetaTable y = tables.require("cache_y");
+
+		MetaEntityRegistry entities = new MetaEntityRegistry(null, 1);
+		Class<? extends MetaClass> first = entities.entityType(x);
+		assertThat(entities.size()).isEqualTo(1);
+		entities.entityType(y);
+		assertThat(entities.size()).isEqualTo(1);
+		// 淘汰后重新生成：同名类、不同 ClassLoader，旧类仍可用
+		Class<? extends MetaClass> reloaded = entities.entityType(x);
+		assertThat(reloaded).isNotSameAs(first);
+		assertThat(reloaded.getName()).isEqualTo(first.getName());
+		assertThat(entities.size()).isEqualTo(1);
+
+		MetaStatementStore statements = new MetaStatementStore("", true, new H2Dialect(), 1);
+		assertThat(statements.statements(x)).containsKey("selectList");
+		statements.statements(y);
+		assertThat(statements.size()).isEqualTo(1);
+		// XML 文件归使用方所有：淘汰后重读/重新在内存生成，不会重写文件
+		assertThat(statements.statements(x)).containsKey("selectList");
+		assertThat(statements.size()).isEqualTo(1);
+	}
+
+	@Test
+	void tableCacheSizeDefaultsToTenThousandAndIsConfigurable() {
+		assertThat(MetaMapperOptions.defaults().tableCacheSize()).isEqualTo(10_000);
+		assertThat(this.registry.maximumSize()).isEqualTo(10_000);
+		assertThat(new MetaEntityRegistry().maximumSize()).isEqualTo(10_000);
+		assertThat(new MetaStatementStore("", true, new H2Dialect()).maximumSize()).isEqualTo(10_000);
+		assertThat(new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), "", true, "", 7)
+				.tableCacheSize()).isEqualTo(7);
+		assertThatThrownBy(() -> new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), "", true, "", 0))
+				.isInstanceOf(IllegalArgumentException.class).hasMessageContaining("tableCacheSize");
+	}
+
+	private void createTable(String name) throws Exception {
+		try (Connection connection = this.dataSource.getConnection();
+				Statement statement = connection.createStatement()) {
+			statement.execute("CREATE TABLE " + name + " (id BIGINT AUTO_INCREMENT PRIMARY KEY, label VARCHAR(32))");
+		}
+	}
 }

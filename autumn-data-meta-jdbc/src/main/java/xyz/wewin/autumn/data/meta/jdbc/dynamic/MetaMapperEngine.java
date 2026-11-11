@@ -62,7 +62,8 @@ public final class MetaMapperEngine {
 	}
 
 	public static MetaMapperEngine standalone(String defaultPoolName, MetaMapperOptions options) {
-		MetaEntityRegistry entities = new MetaEntityRegistry(options.entitySourceDirectory());
+		MetaEntityRegistry entities = new MetaEntityRegistry(options.entitySourceDirectory(),
+				options.tableCacheSize());
 		return new MetaMapperEngine(defaultPoolName, poolName -> {
 			DataSource dataSource;
 			try {
@@ -91,7 +92,8 @@ public final class MetaMapperEngine {
 		if (dataSource == null) {
 			throw new IllegalArgumentException("dataSource must not be null");
 		}
-		MetaEntityRegistry entities = new MetaEntityRegistry(options.entitySourceDirectory());
+		MetaEntityRegistry entities = new MetaEntityRegistry(options.entitySourceDirectory(),
+				options.tableCacheSize());
 		return new MetaMapperEngine(defaultPoolName, poolName -> {
 			DataSource target = poolName.equals(defaultPoolName) ? dataSource : MetaDataSource.get(poolName);
 			return createClient(poolName, target, options, entities);
@@ -104,9 +106,10 @@ public final class MetaMapperEngine {
 		ConnectionSource connectionSource = new PerThreadConnectionSource(
 				() -> new JdbcConnectionSource(dataSource));
 		AutumnJdbc jdbc = new AutumnJdbc(connectionSource, dialect, options.fetchPolicy());
-		MetaTableRegistry registry = new MetaTableRegistry(dataSource, dialect, options.logicDeleteColumns());
+		MetaTableRegistry registry = new MetaTableRegistry(dataSource, dialect, options.logicDeleteColumns(),
+				options.tableCacheSize());
 		MetaStatementStore statementStore = new MetaStatementStore(options.xmlDirectory(), options.generateXml(),
-				dialect);
+				dialect, options.tableCacheSize());
 		return new MetaMapperClient(poolName, jdbc, connectionSource, registry, new MetaSqlBuilder(dialect),
 				statementStore, entities, options.defaultListLimit());
 	}

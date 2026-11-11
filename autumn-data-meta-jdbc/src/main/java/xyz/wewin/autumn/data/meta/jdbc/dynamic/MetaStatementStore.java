@@ -14,7 +14,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -46,6 +45,9 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
  * <p>文件内容是 {@code autumn-data-common} 的那套 XML 方言（{@code #{}} 绑定、{@code ${}} 标识符、
  * {@code <if>/<choose>/<foreach>/<where>/<trim>}），和静态实体的编译期 Mapper 完全同源；
  * 这一层只是把同一棵 AST 解释执行，不引入模板引擎。</p>
+ *
+ * <p>每张表一份 AST，同样走有界 LRU：触顶淘汰冷表，下次访问重新读已有的 XML 文件（文件归使用方所有，
+ * 不会被重写），内存占用不随表数量线性增长。</p>
  */
 public final class MetaStatementStore {
 
@@ -63,13 +65,25 @@ public final class MetaStatementStore {
 
 	private final Dialect dialect;
 
-	private final ConcurrentHashMap<String, Map<String, SqlTemplate>> cache = new ConcurrentHashMap<>();
+	private final BoundedCache<String, Map<String, SqlTemplate>> cache;
 
 	public MetaStatementStore(String xmlDirectory, boolean generateXml, Dialect dialect) {
-		this(xmlDirectory, generateXml, dialect, defaultClassLoader());
+		this(xmlDirectory, generateXml, dialect, defaultClassLoader(), BoundedCache.DEFAULT_MAXIMUM_SIZE);
 	}
 
 	public MetaStatementStore(String xmlDirectory, boolean generateXml, Dialect dialect, ClassLoader classLoader) {
+		this(xmlDirectory, generateXml, dialect, classLoader, BoundedCache.DEFAULT_MAXIMUM_SIZE);
+	}
+
+	/**
+	 * @param maximumSize 表级语句缓存上限（默认 {@value BoundedCache#DEFAULT_MAXIMUM_SIZE}）
+	 */
+	public MetaStatementStore(String xmlDirectory, boolean generateXml, Dialect dialect, int maximumSize) {
+		this(xmlDirectory, generateXml, dialect, defaultClassLoader(), maximumSize);
+	}
+
+	public MetaStatementStore(String xmlDirectory, boolean generateXml, Dialect dialect, ClassLoader classLoader,
+			int maximumSize) {
 		if (dialect == null) {
 			throw new IllegalArgumentException("dialect must not be null");
 		}
@@ -77,6 +91,7 @@ public final class MetaStatementStore {
 		this.generateXml = generateXml;
 		this.dialect = dialect;
 		this.classLoader = classLoader == null ? defaultClassLoader() : classLoader;
+		this.cache = BoundedCaches.lru(maximumSize);
 	}
 
 	/** 按语句 id 取模板；不存在时给出该文件里可用的 id。 */
@@ -92,16 +107,26 @@ public final class MetaStatementStore {
 
 	/** 该表可见的全部语句（首次访问时读盘或生成）。 */
 	public Map<String, SqlTemplate> statements(MetaTable table) {
-		return this.cache.computeIfAbsent(normalize(table.name()), ignored -> load(table));
+		return this.cache.get(normalize(table.name()), ignored -> load(table));
 	}
 
 	/** 丢掉某张表的 AST 缓存，下次访问重新读文件；不重写文件。 */
 	public void refresh(String tableName) {
-		this.cache.remove(normalize(tableName));
+		this.cache.invalidate(normalize(tableName));
 	}
 
 	public void refreshAll() {
-		this.cache.clear();
+		this.cache.invalidateAll();
+	}
+
+	/** 已缓存的表数（诊断用）。 */
+	public long size() {
+		return this.cache.estimatedSize();
+	}
+
+	/** 缓存上限（诊断用）。 */
+	public int maximumSize() {
+		return this.cache.maximumSize();
 	}
 
 	private Map<String, SqlTemplate> load(MetaTable table) {

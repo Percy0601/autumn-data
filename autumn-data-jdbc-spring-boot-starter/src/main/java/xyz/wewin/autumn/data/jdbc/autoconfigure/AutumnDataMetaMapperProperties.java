@@ -5,6 +5,8 @@ import java.util.Set;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
+import xyz.wewin.autumn.data.meta.jdbc.dynamic.BoundedCache;
+
 /**
  * 动态表 CRUD 配置（前缀 {@code autumn.data.meta.mapper}）。
  */
@@ -41,6 +43,12 @@ public class AutumnDataMetaMapperProperties {
 	 * 空串表示只在临时目录编译，不额外留存。
 	 */
 	private String entitySourceDirectory = "";
+
+	/**
+	 * 按表缓存（表结构快照 / 动态实体类 / Mapper AST）各自的条目上限，默认一万张表。
+	 * 触顶按 LRU 淘汰冷表，下次访问自动重建，内存不随表数量无限增长。
+	 */
+	private int tableCacheSize = BoundedCache.DEFAULT_MAXIMUM_SIZE;
 
 	public boolean isEnabled() {
 		return this.enabled;
@@ -96,5 +104,13 @@ public class AutumnDataMetaMapperProperties {
 
 	public void setEntitySourceDirectory(String entitySourceDirectory) {
 		this.entitySourceDirectory = entitySourceDirectory;
+	}
+
+	public int getTableCacheSize() {
+		return this.tableCacheSize;
+	}
+
+	public void setTableCacheSize(int tableCacheSize) {
+		this.tableCacheSize = tableCacheSize;
 	}
 }
