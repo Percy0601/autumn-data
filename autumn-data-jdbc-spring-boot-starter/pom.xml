@@ -28,6 +28,11 @@
 			<groupId>xyz.wewin.autumn</groupId>
 			<artifactId>autumn-data-common</artifactId>
 		</dependency>
+		<!-- 动态表 CRUD（MetaMapper / MetaTableRegistry），核心零 Spring -->
+		<dependency>
+			<groupId>xyz.wewin.autumn</groupId>
+			<artifactId>autumn-data-meta-jdbc</artifactId>
+		</dependency>
 		<!-- Spring Boot JDBC 基础设施：DataSource 绑定、HikariCP、spring-jdbc/spring-tx、logging starter -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
