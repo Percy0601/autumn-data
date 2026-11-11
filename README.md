@@ -11,9 +11,11 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 | `autumn-data-jdbc-spring-boot-starter` | Spring Boot 集成层（唯一使用方入口） | 约定大于配置：只引这一个依赖 + `spring.datasource.*` 即可用。仿 MyBatis 分层（引擎零 Spring / 集成层依赖 Boot），自动配置 `Dialect` Bean，支持 `autumn.data.jdbc.dialect` 显式指定或按 `DataSource` 元数据自动识别。多库场景可用 `autumn.data.meta.enabled=true` 让 `SpringMetaDataSource`（继承 Spring `AbstractDataSource`）接管数据源，底层交给 `MetaDataSource`。 |
 | `autumn-data-jdbc-compiler` | JSR-269 注解处理器 | 编译期为 `@AutumnRepository` 接口生成 `<名称>Impl`；仅 `annotationProcessorPaths` 使用，**运行时不依赖**。已实现：实体元数据提取（`@Entity`/`@Table`/`@Id`/`@Column`/`@GeneratedValue`/`@OneToMany`）、CRUD + 分页 + 一对多 + 方法名派生查询 SQL **编译期内联为生成类常量**、`RowMapper` 与批量读写/装配代码生成。解析不了的方法在**接口方法声明处**报错，不静默生成半成品。 |
 | `autumn-data-jdbc-spring-boot-starter-using` | 使用方示例（不发布） | **使用驱动开发的主战场**：只引 starter + 挂 compiler 处理器，在这里写后续所有用法（单表、一对多、多对一、派生查询），以用法倒逼核心实现。 |
-| `autumn-data-meta-jdbc` | 轻量动态 SQL 引擎 + 动态表 CRUD + 运行期实体类生成 | 对标 **MyBatis** 但更轻量，支持**运行时动态加载**：XML 方言与静态实体的编译期 Mapper **同一套**（`#{}` 绑定、`${}` 标识符、`<if>/<choose>/<foreach>/<where>/<trim>`），动态 SQL 运行期解释执行。数据源连接池同样使用 **HikariCP**；方言与解析器复用 `autumn-data-common`。另含 `dynamic` 包：运行期建表后无需重启即可按表名/列名查询、保存、更新（`MetaMapper`，见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)）；**`MetaMapper` 返回 `MetaClass`，其实例是按表结构用 FreeMarker 生成 Java 源码、`javax.tools` 编译加载的实体子类**——有真实类型化字段与 getter，逐行映射零反射；Mapper 文件首次缺失时按表结构生成一份、之后归使用方编辑。 |
+| `autumn-data-meta-jdbc` | **完全动态**的轻量基座（低代码平台：表单 / 基础资料的表都是运行期设计出来的） | 与 `autumn-data-jdbc` 的「编译期完全静态」职责分明：本模块**不做编译期 Mapper 注册、不预加载、不用反射代理**，元数据 / SQL / 实体类全部按表名懒加载，缓存一律有界 LRU 弹性伸缩。对标 **MyBatis** 但更轻量，支持**运行时动态加载**：XML 方言与静态实体的编译期 Mapper **同一套**（`#{}` 绑定、`${}` 标识符、`<if>/<choose>/<foreach>/<where>/<trim>`），动态 SQL 运行期解释执行。数据源连接池同样使用 **HikariCP**；方言与解析器复用 `autumn-data-common`。另含 `dynamic` 包：运行期建表后无需重启即可按表名/列名查询、保存、更新（`MetaMapper`，见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)）；**`MetaMapper` 返回 `MetaClass`，其实例是按表结构用 FreeMarker 生成 Java 源码、`javax.tools` 编译加载的实体子类**——有真实类型化字段与 getter，逐行映射零反射；Mapper 文件首次缺失时按表结构生成一份、之后归使用方编辑。 |
 
 各数据访问模块共享 `autumn-data-common` 的多数据库方言（`Dialect`）抽象，至少支持 **MySQL** 与 **PostgreSQL**，并可通过 `DialectResolver` 根据 `DataSource` 的元数据自动识别。
+
+**静态 / 动态两条线互不混淆**：`autumn-data-jdbc` + `autumn-data-jdbc-compiler` 是编译期 APT 生成实现、运行期零反射的**完全静态**仓储；`autumn-data-meta-jdbc` 是面向低代码平台的**完全动态**路径——表在运行期才被设计出来，所以一切都是「首次访问才生成 + 有界弹性缓存」。两条线只共用 `autumn-data-common` 的方言、XML AST 和 `SqlBuild` 值对象，运行机制不互相渗透。
 
 ## 当前进度（初始化阶段）
 
@@ -45,7 +47,8 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 - [ ] `autumn-data-meta-jdbc` 同步去 Spring 依赖（同样挪到各自 starter）
 - [x] `autumn-data-meta-jdbc`：动态 Mapper 文件 + 运行期解释器（`MetaStatementStore` 首次访问按表结构生成 `<xml-directory>/<表名>.xml`，已存在则直接用、永不回头覆盖；`SqlTemplate` 解释执行 common 的同一套 XML 方言，`#{}` 解析期就摘成 JDBC 绑定、`${}` 只放标识符白名单；命名语句走 `sqlFor/selectList/selectOne/selectCount/execute`）
 - [x] XML 方言下沉 `autumn-data-common`（`TemplateParser` / `TemplateNode` / `MapperXmlParser`），编译期生成器与动态运行期共用一棵 AST；**动态 SQL 不引模板引擎**（FreeMarker 的 `<#if>` 不是合法 XML，兼容只做在 `test` 表达式层：`name??` / `name?has_content` / `name?size`）
-- [x] `autumn-data-meta-jdbc` 运行期生成实体类：`MetaMapper` 门面统一返回 `MetaClass`，实例是按 `DatabaseMetaData` 用 FreeMarker 模板生成 `.java`、`javax.tools.JavaCompiler` 编译、`URLClassLoader` 加载的 `MetaClass` 子类（真实字段/getter/setter + 类型化 `getProperties()`，逐行映射零反射）；结构指纹决定包名，加列 `refresh` 后生成新类、旧实例不受影响；源码可配置落盘以便固化成静态类
+- [x] `autumn-data-meta-jdbc` 运行期生成实体类：`MetaMapper` 门面统一返回 `MetaClass`，实例是按 `DatabaseMetaData` 用 FreeMarker 模板生成 `.java`、`javax.tools.JavaCompiler` **内存编译**、内存 `ClassLoader` 加载的 `MetaClass` 子类（真实字段/getter/setter + 类型化 `getProperties()`，逐行映射零反射）；不建临时目录、不落 `.class`，类与 ClassLoader 可随缓存淘汰被 GC；结构指纹决定包名，加列 `refresh` 后生成新类、旧实例不受影响；源码可配置落盘以便固化成静态类
+- [x] 按动态定位收口：删除零引用的 `MetaConfiguration`（编译期静态 Mapper 注册、无界 `HashMap`）与 `MetaSqlSession`（JDK 动态代理反射、需预注册）；所有按表 / 按池增长的内存容器（表快照、手工登记覆盖、动态实体类、Mapper AST、池 client）统一走 `BoundedCache` 有界 LRU，默认上限 10_000
 
 ## 依赖策略
 
@@ -103,9 +106,9 @@ MetaMapper.of("tenant-a").findList("form_order", MetaQuery.by("status", 1));
 
 - **返回的 `MetaClass` 是动态生成的实体实例**：首次访问按 `DatabaseMetaData` 的列结构用 FreeMarker 生成 `MetaClass` 子类源码并编译加载，每列有 `Long` / `BigDecimal` / `LocalDateTime` 等真实字段和 getter，结果集映射是生成代码里的直接 setter 调用（逐行零反射）；`getProperties()` 同时保留 `type` / `jdbcType` / 主键 / 可空等描述。完全静态的实体类应付不了运行期建表，全 Map 又丢了类型，这一层就落在两者之间。`MetaMapper.entityType(table)` 可拿到生成出来的类；
 - 结构指纹参与包名：加列/改类型后 `MetaMapper.refresh("form_order")` 会生成新类，已取到的旧实例仍可用，不会同名重定义；
-- `autumn.data.meta.mapper.entity-source-directory=generated-entities` 可把生成的 `.java` 落盘查看或固化；默认只在临时目录编译；运行期需要完整 JDK（`javax.tools`），JRE 上会明确报错；
+- `autumn.data.meta.mapper.entity-source-directory=generated-entities` 可把生成的 `.java` 落盘查看或固化；**默认全程内存编译**，不建临时目录、不落 `.class`；运行期需要完整 JDK（`javax.tools`），JRE 上会明确报错；
 - 元数据从 `DatabaseMetaData` 读取，直接填入 `MetaClass` / `MetaProperty`（表名 = `MetaClass.name`、schema = `namespace`、列 = properties）；建表/加列**提交后**调 `MetaMapper.refresh("form_order")` 换快照，不重启；
-- **按表缓存全部有界**：表结构快照、动态实体类、Mapper AST 三处各有独立上限（默认 10_000 张表），触顶按 LRU 淘汰最久未访问的冷表，下次访问自动重建，表再多内存也不线性增长。实现是 JDK 自带的 `LinkedHashMap(accessOrder)` + 锁（`BoundedCache` 接口刻意对齐 Caffeine `Cache` 的方法名与语义，将来换实现只改 `BoundedCaches` 工厂），**不引入任何缓存库、不引入 Spring**；
+- **所有缓存都有界且弹性**：表结构快照、手工登记覆盖、动态实体类、Mapper AST、池 → client 五处各有独立上限（默认 10_000），触顶按 LRU 淘汰最久未访问的冷条目，下次访问自动懒加载重建——包括手工 `register` 的覆盖（淘汰后回源到 `DatabaseMetaData`）和按池名的 client。实现是 JDK 自带的 `LinkedHashMap(accessOrder)` + 锁（`BoundedCache` 接口刻意对齐 Caffeine `Cache` 的方法名与语义，将来换实现只改 `BoundedCaches` 工厂），**不引入任何缓存库、不引入 Spring**；
 - **Mapper 文件按需生成**：命名语句（`selectList/selectOne/selectCount/execute/sqlFor`）的 SQL 来自 `<xml-directory>/<表名>.xml`；文件不存在时按表结构生成一份（逐列 `<if>` + `<where>` + `<trim>`）并落盘，**已存在就直接使用，改表也不会回头覆盖**——文件归使用方所有。`MetaQuery` 驱动的 CRUD 不读文件，SQL 由 `MetaSqlBuilder` 按元数据现拼（条件运算符是开集，固定文件表达不了）；
 - 自动生成的文件带 `generated-by` 标记；`refresh` 只丢缓存重读文件，要按新结构重来就删文件；手工文件同样原样使用，不会被覆盖；
 - 文件名与列名按**忽略大小写**对齐：H2/Oracle 元数据给的是大写名，手写文件多按 MySQL 习惯写小写，`demo_order.xml` 配 `DEMO_ORDER` 这张表、`#{order_no}` 配 `ORDER_NO` 这一列都能对上；
@@ -119,7 +122,7 @@ Mapper 文件相关配置：
 autumn.data.meta.mapper.xml-directory=meta-mappers            # 空串表示只生成到内存、不落盘
 autumn.data.meta.mapper.generate-xml=true                     # false 时缺失 XML 直接报错
 autumn.data.meta.mapper.entity-source-directory=generated-entities  # 生成实体 .java 落盘；留空不留存
-autumn.data.meta.mapper.table-cache-size=10000                     # 每类按表缓存的条目上限，默认 10000
+autumn.data.meta.mapper.table-cache-size=10000                     # 各缓存容器的条目上限，默认 10000
 ```
 
 完整设计与语义见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)；上层怎么调有两个能直接跑的例子：

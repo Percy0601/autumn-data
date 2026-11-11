@@ -172,6 +172,17 @@ final class LruCache<K, V> implements BoundedCache<K, V> {
 	}
 
 	@Override
+	public Map<K, V> asMap() {
+		this.lock.lock();
+		try {
+			return Map.copyOf(this.entries);
+		}
+		finally {
+			this.lock.unlock();
+		}
+	}
+
+	@Override
 	public void cleanUp() {
 		// put 时 removeEldestEntry 已同步淘汰，没有待处理的维护工作。
 	}

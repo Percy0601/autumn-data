@@ -1,7 +1,7 @@
 package xyz.wewin.autumn.data.meta.jdbc;
 
 /**
- * Meta SQL 引擎运行期异常：语句未注册、参数不匹配、执行失败时抛出。
+ * 动态 SQL 层运行期异常：表元数据读取、语句解析/构建、动态实体生成与执行失败时抛出。
  */
 public class MetaSqlException extends RuntimeException {
 

@@ -1,24 +1,31 @@
 # 动态表 CRUD（autumn-data-meta-jdbc）
 
-面向“运行期设计出来的单据/基础资料”：表单设计器建出一张物理表之后，服务不重启、
-工程不需要重新编译，就能按表名 + 列名单做查询、保存和更新（实体类由框架在运行期生成并编译）。
-`autumn-data-jdbc` 的编译期仓储保持不变，本层是它的运行期补充，不是替代。
+面向“运行期设计出来的单据/基础资料”：**低代码开发平台的底层基座**——表单和基础资料的数据表
+都是用户运行期设计出来的，服务不重启、工程不需要重新编译，就能按表名 + 列名单做查询、
+保存和更新（实体类由框架在运行期生成并编译）。
+
+架构上两条线职责分明：`autumn-data-jdbc` + `autumn-data-jdbc-compiler` 是**编译期生成实现、完全静态**
+的仓储；本模块是**完全动态、轻量、弹性懒加载**的路径，不替代前者，也不引入任何编译期注册 /
+预加载 / 反射代理。三条硬约束贯穿全文：**重活一律推迟到首次访问**、**所有缓存有界且 LRU 弹性**、
+**表结构与表数量在运行期可以任意变化**。
 
 ## 分层
 
 ```text
 MetaMapper（静态门面，只持有 volatile engine；查询返回 MetaClass）
-  └─ MetaMapperEngine（实例，按 pool 懒建/缓存 client，共享一个 MetaEntityRegistry）
+  └─ MetaMapperEngine（实例，按 pool 懒建/缓存 client，共享一个 MetaEntityRegistry）[有界 LRU]
        └─ MetaMapperClient（绑定一个 pool）
-            ├─ MetaTableRegistry（表名 → MetaTable 快照，refresh 换新）        [有界 LRU]
+            ├─ MetaTableRegistry（表名 → MetaTable 快照 + 手工登记覆盖）        [有界 LRU ×2]
             ├─ MetaSqlBuilder（按 MetaTable 生成 SQL，标识符只来自快照）
             ├─ MetaStatementStore（表名 → Mapper AST；已有则读、缺失生成一次） [有界 LRU]
             ├─ MetaEntityRegistry（结构指纹 → 已编译 MetaClass 子类 + READER） [有界 LRU]
             │    ├─ MetaEntityTemplate（FreeMarker 生成 .java 源码）
-            │    └─ MetaEntityCompiler（javax.tools 编译 + URLClassLoader 加载）
+            │    └─ MetaEntityCompiler（javax.tools 内存编译 + 内存 ClassLoader，零临时目录）
             └─ AutumnJdbc（复用现有执行层：query / page / count / update / 生成键）
 
-三处 [有界 LRU] 都走同一个 BoundedCache 接口 / BoundedCaches 工厂，上限由 table-cache-size 统一配置。
+所有 [有界 LRU] 都走同一个 BoundedCache 接口 / BoundedCaches 工厂，上限由 table-cache-size 统一配置。
+本模块没有任何「编译期生成的 Mapper 注册中心」或接口动态代理：静态注册路径（MetaConfiguration /
+MetaSqlSession）已按动态定位移除，SqlBuild 只作为与静态侧共用的无状态值对象保留。
 ```
 
 核心模块不依赖 Spring；Spring Boot 集成在 `autumn-data-jdbc-spring-boot-starter` 的
@@ -44,7 +51,10 @@ properties）、`MetaProperty`（name / type / typeName / value）。动态表�
 1. 首次访问某张表，从 `DatabaseMetaData` 拿到列快照（`MetaTable`）；
 2. `MetaEntityTemplate` 用 FreeMarker 模板 `meta-class.ftl` 渲染一份 Java 源码：
    每列一个**真实类型**字段 + getter/setter，`extends MetaClass`；
-3. `MetaEntityCompiler` 用 JDK `javax.tools.JavaCompiler` 编译、`URLClassLoader` 加载；
+3. `MetaEntityCompiler` 用 JDK `javax.tools.JavaCompiler` **全程内存编译**：内存源码对象 →
+   javac 输出到 `byte[]` → 独立内存 `ClassLoader` 的 `defineClass`。不建临时目录、不落 `.class`，
+   因此 LRU 淘汰掉实体模型后，对应的 Class 与 ClassLoader 没有活引用就能被 GC，元空间可回收
+   （这一点对「表结构频繁变化」很关键：缓存有界，物理资源也必须同步有界）；
 4. 生成类里的 `READER` 是写死的 `rs.getObject(index)` + 直接 setter 调用，
    **逐行映射零反射**；反射只在「加载类时取一次静态字段」这一步发生；
 5. `getProperties()` 由生成类把真实字段摊成 `MetaProperty`（带 `type` / `jdbcType` /
@@ -117,38 +127,45 @@ SqlBuild sql = client.sqlFor("form_order", "selectList", Map.of("status", 1)); /
 
 ## 有界缓存（表数量无上限）
 
-表单设计器能建出成千上万张表，而进程内有三类东西都按「表」增长：
+低代码场景下表单设计器能建出成千上万张表，进程内**按表或按池增长的容器全部要有边界**：
 
 | 缓存 | key | 条目重量 | 淘汰后再访问的代价 |
 | --- | --- | --- | --- |
-| `MetaTableRegistry` | 表名（大小写不敏感） | 一份不可变列快照 | 重读一次 `DatabaseMetaData` |
-| `MetaEntityRegistry` | 表名 + 结构指纹 | 一个编译出的 `Class` + 独立 ClassLoader | 重新生成/编译一份同类名的类（新 ClassLoader） |
+| `MetaTableRegistry.cache` | 表名（大小写不敏感） | 一份不可变列快照 | 重读一次 `DatabaseMetaData` |
+| `MetaTableRegistry.overrides` | 表名 | 使用方手工登记的结构覆盖 | 回源到 `DatabaseMetaData`；需长期保真就调大上限或重新 `register` |
+| `MetaEntityRegistry` | 表名 + 结构指纹 | 一个编译出的 `Class` + 内存 ClassLoader | 重新生成/编译一份同类名的类（新 ClassLoader） |
 | `MetaStatementStore` | 表名 | 一棵 Mapper XML AST | 重读已有的 XML 文件（**不会重写**） |
+| `MetaMapperEngine.clients` | 池名 | 一套 Registry + 连接源 | 按需重建 client（旧 client 上执行中的操作持有引用，不受影响） |
 
-其中实体类缓存最重，只堵表结构快照没有意义。三处统一走 `BoundedCache`，默认上限
-**10_000 张表**，触顶淘汰最久未访问的条目；淘汰是同步的，`size()` 恒不超过上限。
-因为丢掉的都只是可重建的派生数据，LRU 淘汰不影响正确性，也不影响已取到旧快照/旧类实例的执行中查询。
+其中实体类缓存最重，只堵表结构快照没有意义。以上统一走 `BoundedCache`，默认上限
+**10_000**，触顶淘汰最久未访问的条目；淘汰是同步的，`size()` 恒不超过上限。
+丢掉的都是可重建的派生数据，LRU 淘汰不影响正确性，也不影响已取到旧快照/旧类实例的执行中查询。
+运行期编译改为全内存后不再产生临时目录与 `.class`，缓存淘汰能真正回收元空间，
+不会出现「内存有界、物理资源无界」。
 
 ```properties
 autumn.data.meta.mapper.table-cache-size=10000
 ```
 
-设计上的两点：
+设计上的三点：
 
 - **API 对齐 Caffeine，方便将来换实现**。`BoundedCache` 的 `getIfPresent` / `get(key, mappingFunction)` /
-  `put` / `invalidate` / `invalidateAll` / `estimatedSize` / `cleanUp` 与
+  `put` / `invalidate` / `invalidateAll` / `estimatedSize` / `cleanUp` / `asMap` 与
   `com.github.benmanes.caffeine.cache.Cache` 同名同义；`invalidateIf` / `maximumSize` 两个扩展方法在
   Caffeine 下也各有一行等价写法（`asMap().keySet().removeIf(...)`、
-  `policy().eviction().get().getMaximum()`）。当前实现 `LruCache` 是 JDK-only：
+  `policy().eviction().get().getMaximum()`）。`asMap()` 的差别是 LRU 返回只读快照、Caffeine 返回
+  可写 live view，本层只做诊断遍历。当前实现 `LruCache` 是 JDK-only：
   `LinkedHashMap(accessOrder=true)` 记顺序 + 一把 `ReentrantLock` 保护顺序与淘汰，
   加载函数在锁外执行（读元数据 / javac 编译不阻塞别的 key 命中），并用 pending 表保证
   「同一个 key 并发未命中只加载一次」。换成 Caffeine 时只需新增一个适配器实现该接口、
-  改 `BoundedCaches` 工厂的一行返回值，三个 Registry 不用动。
+  改 `BoundedCaches` 工厂的一行返回值，调用方不用动。
 - **没有直接在 `ConcurrentHashMap` 上加淘汰**：CHM 不维护访问顺序，靠外部链表记顺序时，
   「读命中」与「淘汰」之间必然有竞态，容易短暂超上限或误删刚被访问的条目。这里把顺序和
   淘汰收进同一把锁，语义简单、可验证（`BoundedCacheTest` 里有并发单飞与上限断言）。
-  手工 `MetaTableRegistry.register(...)` 的业务覆盖单独存放、**不参与淘汰**，
-  但 `refresh(table)` 仍按原语义清掉它。
+- **手工登记同样不永久常驻**。低代码场景下「表」本身就是运行期产物，任何登记都不该豁免于
+  容量治理：`MetaTableRegistry.register(...)` 的覆盖也走有界 LRU，触顶淘汰后 `require` 会像
+  普通表一样懒加载回源到 `DatabaseMetaData`（若该表不存在则报「table not found」）。
+  `refresh(table)` 仍按原语义同时清掉该表的快照与覆盖。
 
 ## Mapper 文件与命名语句
 
@@ -247,8 +264,8 @@ autumn.data.meta.mapper.entity-source-directory=generated-entities
 autumn.data.meta.mapper.table-cache-size=10000
 ```
 
-`entity-source-directory` 是生成的实体 `.java` 落盘目录，留空表示只在临时目录编译、不额外留存。
-`table-cache-size` 是三处按表缓存各自的条目上限（默认 10000），详见「有界缓存」一节。
+`entity-source-directory` 是生成的实体 `.java` 落盘目录，留空表示全程内存编译、完全不落盘。
+`table-cache-size` 是各缓存容器各自的条目上限（默认 10000），详见「有界缓存」一节。
 `xml-directory` 为空串时只生成到内存；`generate-xml=false` 时缺失文件直接抛
 `MetaSqlException`，适合生产环境要求 Mapper 必须预置的场景。
 
@@ -319,12 +336,15 @@ ThreadLocal 最多作为“请求级默认池”的便利糖，不能作为唯�
   （`MetaStatementStore` 管文件生命周期，`SqlTemplate` 是运行期解释器，方言与编译期生成器
   共用 `autumn-data-common` 的 `TemplateParser` / `TemplateNode`；
   `MetaEntityTemplate` / `MetaEntityCompiler` / `MetaEntityRegistry` 管 FreeMarker 生成实体类；
-  `BoundedCache` / `LruCache` / `BoundedCaches` 管三处有界缓存）
+  `BoundedCache` / `LruCache` / `BoundedCaches` 管全部有界缓存；`MetaEntityCompiler` 全内存编译；
+  `SqlBuild` 只作为与静态侧共用的无状态值对象保留）
 - 用例：`MetaMapperDynamicTest`（建表 → 不重启 CRUD → 加列 refresh → 逻辑删除 → 复合主键 →
   Mapper 文件生成一次/改表不重写 → 手工文件优先 → 名字忽略大小写对齐 → 空值判断方法 →
   `#{}` 绑定与注入拒绝 → `${}` 白名单 → `<foreach>` / `<trim>` / `<delete>` 拒绝，
   以及生成类的真实字段类型 / 零反射源码 / 加列后生成新类 / 源码落盘 / 投影缺列 /
-  三处缓存淘汰后可重建 / 手工登记不被淘汰 / 默认上限 10000），共 26 个；
-  `BoundedCacheTest` 9 个（LRU 顺序、上限、并发单飞、加载在锁外、失败不缓存、失效语义）；
+  各缓存淘汰后可重建 / 手工登记也参与淘汰后回源 / 池 client 淘汰重建 /
+  内存编译无临时目录 / 默认上限 10000），共 28 个；
+  `BoundedCacheTest` 10 个（LRU 顺序、上限、并发单飞、加载在锁外、失败不缓存、失效语义、
+  `asMap` 只读快照）；
   starter 装配 2 个；using 模块端到端 1 个 + 上层用法示例 5 个。
 - 全 reactor：`mvn -B test`，starter / using / compiler / common 全绿。

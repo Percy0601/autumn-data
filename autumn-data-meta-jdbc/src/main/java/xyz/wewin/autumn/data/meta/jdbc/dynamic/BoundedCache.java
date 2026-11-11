@@ -1,5 +1,6 @@
 package xyz.wewin.autumn.data.meta.jdbc.dynamic;
 
+import java.util.Map;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
@@ -17,14 +18,19 @@ import java.util.function.Predicate;
  * put(key, value)                    Caffeine: put(key, value)
  * invalidate(key) / invalidateAll()  Caffeine: invalidate(key) / invalidateAll()
  * estimatedSize() / cleanUp()        Caffeine: estimatedSize() / cleanUp()
+ * asMap()                           Caffeine: asMap()
  * </pre>
  *
- * <p>两个扩展方法在 Caffeine 下也有一行等价写法：</p>
+ * <p>扩展方法在 Caffeine 下也有一行等价写法（{@code invalidateIf} 可直接走 Caffeine 的 live view）：</p>
  *
  * <pre>
  * invalidateIf(condition)   →  cache.asMap().keySet().removeIf(condition)
  * maximumSize()             →  (int) cache.policy().eviction().orElseThrow().getMaximum()
  * </pre>
+ *
+ * <p>{@code asMap()} 的差别：LRU 实现返回一份<b>不可修改快照</b>，Caffeine 的 {@code asMap()} 是
+ * 可写的 live view。本层只用它做诊断遍历，写入/失效一律走 {@code put} / {@code invalidate*}，
+ * 因此两种语义都够用。</p>
  *
  * <p>语义约定：键与值都不允许为 {@code null}；{@code get} 的加载函数返回 {@code null} 表示不缓存，
  * 抛异常则只传播不缓存；同一个 key 并发未命中时只有一次加载（单飞），加载过程不持有全局锁；
@@ -56,6 +62,9 @@ public interface BoundedCache<K, V> {
 
 	/** 当前条目数。 */
 	long estimatedSize();
+
+	/** 当前全部条目的只读快照（诊断用）。 */
+	Map<K, V> asMap();
 
 	/** 触发一次维护工作；LRU 实现是同步淘汰，因此这里无需做事。 */
 	void cleanUp();

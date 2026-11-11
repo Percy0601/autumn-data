@@ -2,6 +2,7 @@ package xyz.wewin.autumn.data.meta.jdbc.dynamic;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -147,6 +148,20 @@ class BoundedCacheTest {
 		assertThat(cache.get("k", key -> null)).isNull();
 		assertThat(cache.getIfPresent("k")).isNull();
 		assertThat(cache.estimatedSize()).isZero();
+	}
+
+	@Test
+	void asMapReturnsAnImmutableSnapshot() {
+		BoundedCache<String, String> cache = BoundedCaches.lru(4);
+		cache.put("a", "A");
+		Map<String, String> snapshot = cache.asMap();
+		assertThat(snapshot).containsEntry("a", "A");
+
+		cache.put("b", "B");
+		assertThat(snapshot).hasSize(1); // 快照，不是 live view
+		assertThat(cache.asMap()).hasSize(2);
+		assertThatThrownBy(() -> snapshot.put("c", "C"))
+				.isInstanceOf(UnsupportedOperationException.class);
 	}
 
 	@Test

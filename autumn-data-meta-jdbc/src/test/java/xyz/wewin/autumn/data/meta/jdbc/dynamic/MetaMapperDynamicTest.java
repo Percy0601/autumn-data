@@ -2,8 +2,10 @@ package xyz.wewin.autumn.data.meta.jdbc.dynamic;
 
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
+import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.sql.Types;
@@ -526,27 +528,80 @@ class MetaMapperDynamicTest {
 	}
 
 	@Test
-	void manuallyRegisteredTableSurvivesCacheEviction() {
+	void manualRegistrationsAreBoundedAndFallBackToLazyLoad() throws Exception {
+		createTable("manual_table");
 		MetaTableRegistry bounded = new MetaTableRegistry(this.dataSource, new H2Dialect(), Set.of(), 1);
+		MetaTable manual = manualTable("manual_table");
+		bounded.register(manual);
+
+		assertThat(bounded.require("manual_table")).isSameAs(manual);
+		assertThat(bounded.size()).isEqualTo(1);
+
+		// 覆盖层同样有界：再登记一张表，上一张的覆盖被 LRU 淘汰
+		bounded.register(manualTable("manual_other"));
+		MetaTable reloaded = bounded.require("manual_table");
+		assertThat(reloaded).isNotSameAs(manual);
+		assertThat(reloaded.columns()).hasSize(2); // 淘汰后像普通表一样懒加载回源到 DatabaseMetaData
+		assertThat(bounded.size()).isLessThanOrEqualTo(2);
+
+		// refresh 仍按原语义同时清掉快照与覆盖，之后仍可按需重建
+		bounded.refresh("manual_table");
+		assertThat(bounded.require("manual_table").columns()).hasSize(2);
+		bounded.refreshAll();
+		assertThat(bounded.size()).isZero();
+	}
+
+	@Test
+	void poolClientsAreBoundedAndRebuiltOnDemand() {
+		AtomicInteger created = new AtomicInteger();
+		MetaMapperEngine engine = new MetaMapperEngine("default", pool -> {
+			created.incrementAndGet();
+			return this.client;
+		}, ENTITIES, 1);
+
+		engine.client("tenant-a");
+		assertThat(engine.clients()).containsKey("tenant-a");
+		engine.client("tenant-b"); // 触顶淘汰 tenant-a
+		assertThat(engine.clients()).hasSize(1).containsKey("tenant-b");
+
+		engine.client("tenant-a"); // 冷池再次访问 → 懒重建
+		assertThat(created.get()).isEqualTo(3);
+		assertThat(engine.clients()).hasSize(1).containsKey("tenant-a");
+		assertThatThrownBy(() -> engine.clients().clear()).isInstanceOf(UnsupportedOperationException.class);
+	}
+
+	@Test
+	void runtimeCompilationIsInMemoryAndLeavesNoTempFiles() throws Exception {
+		createTable("no_temp_dir_table");
+		MetaTable table = this.registry.require("no_temp_dir_table");
+		Path tmp = Paths.get(System.getProperty("java.io.tmpdir"));
+		long before = tempEntityDirs(tmp);
+
+		Class<? extends MetaClass> type = new MetaEntityRegistry().entityType(table);
+
+		assertThat(type.getClassLoader()).isNotInstanceOf(URLClassLoader.class);
+		assertThat(type.getSuperclass()).isEqualTo(MetaClass.class);
+		assertThat(type.getDeclaredFields()).isNotEmpty(); // 真实类型字段确实编译出来了
+		assertThat(tempEntityDirs(tmp)).isEqualTo(before); // 不再产生 autumn-meta-entity-* 临时目录
+	}
+
+	private static long tempEntityDirs(Path tmp) throws Exception {
+		try (var stream = Files.list(tmp)) {
+			return stream.filter(path -> path.getFileName().toString().startsWith("autumn-meta-entity-"))
+					.count();
+		}
+	}
+
+	private static MetaTable manualTable(String name) {
 		MetaProperty id = new MetaProperty();
 		id.setName("id");
 		id.setType(Long.class.getName());
 		id.setJdbcType(Types.BIGINT);
 		id.setPrimaryKey(true);
 		MetaClass meta = new MetaClass();
-		meta.setName("manual_table");
+		meta.setName(name);
 		meta.setProperties(List.of(id));
-		MetaTable manual = new MetaTable(meta, null);
-		bounded.register(manual);
-
-		assertThat(bounded.require("form_order").name()).isEqualTo("form_order");
-		assertThat(bounded.require("manual_table")).isSameAs(manual);
-		assertThat(bounded.size()).isEqualTo(1);
-
-		// refresh 仍按原语义清掉手工覆盖，回到数据库元数据
-		bounded.refresh("manual_table");
-		assertThatThrownBy(() -> bounded.require("manual_table"))
-				.isInstanceOf(MetaSqlException.class).hasMessageContaining("table not found");
+		return new MetaTable(meta, null);
 	}
 
 	@Test

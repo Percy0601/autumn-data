@@ -15,7 +15,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 import javax.sql.DataSource;
 
@@ -37,8 +36,10 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
  * 上限默认一万张表，触顶后淘汰最久未访问的表（下次访问重新读元数据即可，不影响正确性），
  * 因此表数量再大也不会把元数据常驻内存。同一个 key 并发未命中时只加载一次、加载不持有全局锁。</p>
  *
- * <p>{@link #register(MetaTable)} 的手工登记单独存放、<b>不参与淘汰</b>：那是使用方显式给出的
- * 业务覆盖，不能因为访问了别的表就被静默丢掉；{@link #refresh(String)} 仍会按原语义清掉它。</p>
+ * <p>手工 {@link #register(MetaTable)} 的覆盖同样走有界 LRU：低代码场景下「表」本身就是运行期
+ * 设计出来的，任何登记都不该永久常驻。覆盖条目触顶淘汰后，{@code require} 会像普通表一样
+ * <b>懒加载回源</b>到 {@code DatabaseMetaData}；需要长期保真就调大 {@code maximumSize} 或重新登记。
+ * {@link #refresh(String)} 仍按原语义同时清掉该表的快照与覆盖。</p>
  */
 public final class MetaTableRegistry {
 
@@ -48,10 +49,11 @@ public final class MetaTableRegistry {
 
 	private final Set<String> logicDeleteColumns;
 
+	/** 数据库元数据读出来的表结构快照。 */
 	private final BoundedCache<String, MetaTable> cache;
 
-	/** 手工登记的表：不受 LRU 上限影响。 */
-	private final ConcurrentHashMap<String, MetaTable> overrides = new ConcurrentHashMap<>();
+	/** 使用方手工登记的结构覆盖，同样有界、可淘汰。 */
+	private final BoundedCache<String, MetaTable> overrides;
 
 	public MetaTableRegistry(DataSource dataSource, Dialect dialect) {
 		this(dataSource, dialect, Set.of(), BoundedCache.DEFAULT_MAXIMUM_SIZE);
@@ -74,6 +76,7 @@ public final class MetaTableRegistry {
 		this.logicDeleteColumns = Set.copyOf(logicDeleteColumns.stream()
 				.map(name -> name.toLowerCase(Locale.ROOT)).toList());
 		this.cache = BoundedCaches.lru(maximumSize);
+		this.overrides = BoundedCaches.lru(maximumSize);
 	}
 
 	/** 取表描述；首次访问从数据库元数据加载。 */
@@ -82,7 +85,7 @@ public final class MetaTableRegistry {
 			throw new MetaSqlException("table name must not be blank");
 		}
 		String key = normalize(tableName);
-		MetaTable override = this.overrides.get(key);
+		MetaTable override = this.overrides.getIfPresent(key);
 		if (override != null) {
 			return override;
 		}
@@ -98,18 +101,18 @@ public final class MetaTableRegistry {
 	/** 表结构变化后刷新；下次访问重新读取元数据。 */
 	public void refresh(String tableName) {
 		this.cache.invalidate(normalize(tableName));
-		this.overrides.remove(normalize(tableName));
+		this.overrides.invalidate(normalize(tableName));
 	}
 
 	/** 清空全部快照（含手工登记）。 */
 	public void refreshAll() {
 		this.cache.invalidateAll();
-		this.overrides.clear();
+		this.overrides.invalidateAll();
 	}
 
-	/** 已缓存的表数（诊断用）。 */
+	/** 已缓存的表数（元数据快照 + 手工覆盖，诊断用）。 */
 	public long size() {
-		return this.cache.estimatedSize();
+		return this.cache.estimatedSize() + this.overrides.estimatedSize();
 	}
 
 	/** 缓存上限（诊断用）。 */

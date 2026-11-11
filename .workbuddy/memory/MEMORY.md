@@ -5,6 +5,15 @@
 对标 Spring Data 的接口写法 + Micronaut Data 的编译期生成。核心模块零 Spring 运行期依赖，Spring 只在 starter。
 动态 SQL 用 XML AST 解释执行（不引模板引擎）；FreeMarker 只用于运行期生成实体类源码。
 
+**静态 / 动态职责边界（用户 2026-11-11 明确）**：
+- `autumn-data-jdbc` + `autumn-data-jdbc-compiler` = **编译期生成实现、完全静态**的仓储；
+- `autumn-data-meta-jdbc` = **完全动态、轻量、弹性懒加载**，是**低代码开发平台的底层基座**：
+  表单与基础资料的数据表都是运行期动态设计出来的，表结构与表数量随时变化。
+  硬约束：重活一律推迟到首次访问、零反射代理、不做编译期 Mapper 注册或预加载、
+  **所有按表 / 按池增长的容器必须有界且 LRU 弹性**、运行期编译产物不落盘且可随缓存淘汰被 GC。
+- 用户明确表示 `MetaConfiguration` 这类静态注册中心「后续存在意义不大」；两条线只共用
+  `autumn-data-common` 的方言 / XML AST / `SqlBuild` 值对象，运行机制不互相渗透。
+
 ## 架构要点（方案 B：完全去 Spring，MyBatis 式事务分层）
 - 编译期：`AutoRepositoryProcessor`（JSR-269）→ 生成 `<Repo>Impl.java`（SQL 内联为 `private static final String` 常量）+ 写入 `META-INF/autumn-data/repositories`（每行一个仓储接口 FQN）。
 - 生成类**不再标 `@Service`**，只有一个接收核心 `AutumnJdbc` 的构造器。

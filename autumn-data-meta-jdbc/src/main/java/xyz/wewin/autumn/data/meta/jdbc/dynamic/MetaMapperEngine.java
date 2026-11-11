@@ -1,7 +1,6 @@
 package xyz.wewin.autumn.data.meta.jdbc.dynamic;
 
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
 import javax.sql.DataSource;
@@ -21,7 +20,8 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
  * 多实例、Spring 容器关闭后的替换都不会互相串。默认池由构造参数固定，其余池名按需创建。</p>
  *
  * <p>所有池<b>共享一个 {@link MetaEntityRegistry}</b>：生成的实体类只由表结构决定，与连的是哪个库
- * 无关，同构的表只编译一次。</p>
+ * 无关，同构的表只编译一次。池名 → client 本身也是有界 LRU：低代码/多租户场景下池名可能动态增长，
+ * 触顶淘汰冷池，下次访问按需重建（旧 client 上正在执行的操作持有引用，不受影响）。</p>
  *
  * <p>核心模块不依赖 Spring：{@link #standalone(String)} 用 {@link MetaDataSource} 注册表 +
  * JDBC 连接源；Spring 集成层可以传入自己的 client 工厂（例如把连接交给
@@ -35,7 +35,7 @@ public final class MetaMapperEngine {
 
 	private final MetaEntityRegistry entityRegistry;
 
-	private final ConcurrentHashMap<String, MetaMapperClient> clients = new ConcurrentHashMap<>();
+	private final BoundedCache<String, MetaMapperClient> clients;
 
 	public MetaMapperEngine(String defaultPoolName, Function<String, MetaMapperClient> clientFactory) {
 		this(defaultPoolName, clientFactory, new MetaEntityRegistry());
@@ -43,6 +43,12 @@ public final class MetaMapperEngine {
 
 	public MetaMapperEngine(String defaultPoolName, Function<String, MetaMapperClient> clientFactory,
 			MetaEntityRegistry entityRegistry) {
+		this(defaultPoolName, clientFactory, entityRegistry, BoundedCache.DEFAULT_MAXIMUM_SIZE);
+	}
+
+	/** @param poolCacheSize 池名 → client 的缓存上限（默认 {@value BoundedCache#DEFAULT_MAXIMUM_SIZE}） */
+	public MetaMapperEngine(String defaultPoolName, Function<String, MetaMapperClient> clientFactory,
+			MetaEntityRegistry entityRegistry, int poolCacheSize) {
 		if (defaultPoolName == null || defaultPoolName.isBlank()) {
 			throw new IllegalArgumentException("defaultPoolName must not be blank");
 		}
@@ -52,6 +58,7 @@ public final class MetaMapperEngine {
 		this.defaultPoolName = defaultPoolName;
 		this.clientFactory = clientFactory;
 		this.entityRegistry = entityRegistry == null ? new MetaEntityRegistry() : entityRegistry;
+		this.clients = BoundedCaches.lru(poolCacheSize);
 	}
 
 	/**
@@ -73,7 +80,7 @@ public final class MetaMapperEngine {
 				throw new MetaSqlException("no data source registered under pool name '" + poolName + "'", ex);
 			}
 			return createClient(poolName, dataSource, options, entities);
-		}, entities);
+		}, entities, options.tableCacheSize());
 	}
 
 	/**
@@ -97,7 +104,7 @@ public final class MetaMapperEngine {
 		return new MetaMapperEngine(defaultPoolName, poolName -> {
 			DataSource target = poolName.equals(defaultPoolName) ? dataSource : MetaDataSource.get(poolName);
 			return createClient(poolName, target, options, entities);
-		}, entities);
+		}, entities, options.tableCacheSize());
 	}
 
 	private static MetaMapperClient createClient(String poolName, DataSource dataSource, MetaMapperOptions options,
@@ -134,7 +141,7 @@ public final class MetaMapperEngine {
 		if (poolName == null || poolName.isBlank()) {
 			throw new IllegalArgumentException("poolName must not be blank");
 		}
-		return this.clients.computeIfAbsent(poolName, name -> {
+		return this.clients.get(poolName, name -> {
 			MetaMapperClient client = this.clientFactory.apply(name);
 			if (client == null) {
 				throw new MetaSqlException("client factory returned null for pool '" + name + "'");
@@ -143,8 +150,8 @@ public final class MetaMapperEngine {
 		});
 	}
 
-	/** 已实例化的池名（诊断用）。 */
+	/** 已实例化的池名 → client（只读快照，诊断用）。 */
 	public Map<String, MetaMapperClient> clients() {
-		return Map.copyOf(this.clients);
+		return this.clients.asMap();
 	}
 }
