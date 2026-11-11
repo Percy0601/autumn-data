@@ -46,6 +46,18 @@ public final class MetaEntityTemplate {
 			"super", "switch", "synchronized", "this", "throw", "throws", "transient", "try", "void",
 			"volatile", "while", "true", "false", "null", "record", "sealed", "var", "yield", "permits");
 
+	/**
+	 * {@link MetaClass} 已经占用的无参方法名。列名叫 {@code name}/{@code properties}/{@code namespace}
+	 * 时，按列名直出的 {@code getName()}/{@code getProperties()} 会覆写基类契约：轻则
+	 * {@code setName(TABLE_NAME)} 被劫持、表名写进业务列，重则因返回类型不兼容直接编译失败。
+	 * 这些列名必须避让；{@code get(String)} / {@code set(String, Object)} 是刻意覆写，不在此列。
+	 */
+	private static final Set<String> BASE_CONTRACT_METHODS = Set.of(
+			"getName", "setName", "getNamespace", "setNamespace",
+			"getMetaType", "setMetaType", "getProperties", "setProperties",
+			"toMap", "toJson", "toString", "hashCode", "getClass",
+			"clone", "finalize", "notify", "notifyAll", "wait");
+
 	private static final Configuration FREEMARKER = configuration();
 
 	private MetaEntityTemplate() {
@@ -228,12 +240,22 @@ public final class MetaEntityTemplate {
 			name.insert(0, '_');
 		}
 		String base = JAVA_KEYWORDS.contains(name.toString()) ? name + "_" : name.toString();
-		String candidate = base;
+		// 撞上 MetaClass 契约的列改叫 xxxColumn：按列名读写仍走 switch，业务语义不变，
+		// 只是类型化 getter 换个名字，避免覆写基类方法。
+		String candidate = collidesWithBaseContract(base) ? base + "Column" : base;
 		int suffix = 2;
-		while (!used.add(candidate)) {
-			candidate = base + suffix++;
+		while (collidesWithBaseContract(candidate) || used.contains(candidate)) {
+			candidate = base + "Column" + suffix++;
 		}
+		used.add(candidate);
 		return candidate;
+	}
+
+	private static boolean collidesWithBaseContract(String field) {
+		String cap = capitalize(field);
+		return BASE_CONTRACT_METHODS.contains("get" + cap)
+				|| BASE_CONTRACT_METHODS.contains("set" + cap)
+				|| BASE_CONTRACT_METHODS.contains(field);
 	}
 
 	private static String capitalize(String name) {

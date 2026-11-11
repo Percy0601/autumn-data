@@ -60,6 +60,12 @@ properties）、`MetaProperty`（name / type / typeName / value）。动态表�
 5. `getProperties()` 由生成类把真实字段摊成 `MetaProperty`（带 `type` / `jdbcType` /
    主键 / 自增 / 可空），`MetaUtil.toMap/toJson` 与后续类型校验照常可用。
 
+**生成字段的命名避让**：列名若会与 `MetaClass` 自身契约撞名（`name`、`namespace`、`metaType`、
+`properties` 等），类型化 getter 改叫 `getXxxColumn()`，例如 `name` → `getNameColumn()`。
+否则 `getName()` / `getProperties()` 会覆写基类方法：轻则 `setName(TABLE_NAME)` 被劫持、
+表名写进业务列，重则因返回类型不兼容导致 javac 直接失败。按列名读写走的是 `get/set` 的
+switch，仍用原始列名，业务语义不变。
+
 因此 `MetaClass` 既是公共契约（调用方只需面向它编程），又是一个知道自己每个字段类型的实体；
 `MetaMapper.entityType(table)` 能拿到生成出来的 `Class<? extends MetaClass>`。
 
@@ -71,6 +77,13 @@ properties）、`MetaProperty`（name / type / typeName / value）。动态表�
 生成的源码可以配置落盘（`autumn.data.meta.mapper.entity-source-directory`），产出的是一份
 可读、可改、能固化成静态实体的 `.java`。运行期需要完整 JDK（JRE 上没有 `javax.tools`，
 会明确报错）。
+
+> **部署注意**：javac 编译生成源码时需要能从 `java.class.path` / `CodeSource` 找到
+> `MetaClass` 等依赖类。普通 classpath 启动（含 Maven Surefire 的 manifest-only jar）已处理；
+> Spring Boot 可执行 jar 把依赖放在 `BOOT-INF/lib` 的嵌套 jar 里，`CodeSource` 是 `jar:` URI，
+> 目前会被跳过，javac 会报「找不到依赖类」。这类部署需要把依赖展开到文件系统（例如
+> `PropertiesLauncher` 的 `loader.path`），或后续给编译器补一个从 ClassLoader 读 `.class`
+> 资源的 JavaFileManager。至少不会因为 `jar:` URI 抛 `ExceptionInInitializerError`。
 
 ### 投影查询
 
@@ -142,6 +155,11 @@ SqlBuild sql = client.sqlFor("form_order", "selectList", Map.of("status", 1)); /
 丢掉的都是可重建的派生数据，LRU 淘汰不影响正确性，也不影响已取到旧快照/旧类实例的执行中查询。
 运行期编译改为全内存后不再产生临时目录与 `.class`，缓存淘汰能真正回收元空间，
 不会出现「内存有界、物理资源无界」。
+
+`refresh` 与「在途加载」并发时（读元数据 / javac 都很慢）也保证不回写旧值：
+失效会把该 key 的加载占位一并摘掉，慢加载结束时发现自己已被取代，就只把旧结果交给那一次调用者，
+不写回缓存；之后的新请求重新读新结构。`invalidate` / `invalidateAll` / `invalidateIf` 与
+`put` 都遵循这条语义，避免「改表 → refresh」之后又被慢查询把旧表结构塞回来。
 
 ```properties
 autumn.data.meta.mapper.table-cache-size=10000
@@ -343,8 +361,9 @@ ThreadLocal 最多作为“请求级默认池”的便利糖，不能作为唯�
   `#{}` 绑定与注入拒绝 → `${}` 白名单 → `<foreach>` / `<trim>` / `<delete>` 拒绝，
   以及生成类的真实字段类型 / 零反射源码 / 加列后生成新类 / 源码落盘 / 投影缺列 /
   各缓存淘汰后可重建 / 手工登记也参与淘汰后回源 / 池 client 淘汰重建 /
-  内存编译无临时目录 / 默认上限 10000），共 28 个；
-  `BoundedCacheTest` 10 个（LRU 顺序、上限、并发单飞、加载在锁外、失败不缓存、失效语义、
-  `asMap` 只读快照）；
+  内存编译无临时目录 / 默认上限 10000 / 列名撞基类契约 / 关键字与中文列名 /
+  并发单飞 / 连续改表 / jar: CodeSource 兜底），共 33 个；
+  `BoundedCacheTest` 15 个（LRU 顺序、上限、并发单飞、加载在锁外、失败不缓存、失效语义、
+  `asMap` 只读快照、refresh 与在途加载竞态、并发读写不越界）；
   starter 装配 2 个；using 模块端到端 1 个 + 上层用法示例 5 个。
 - 全 reactor：`mvn -B test`，starter / using / compiler / common 全绿。

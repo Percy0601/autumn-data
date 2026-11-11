@@ -2,6 +2,7 @@ package xyz.wewin.autumn.data.meta.jdbc.dynamic;
 
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
+import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -10,9 +11,15 @@ import java.sql.Connection;
 import java.sql.Statement;
 import java.sql.Types;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.h2.jdbcx.JdbcDataSource;
@@ -570,6 +577,15 @@ class MetaMapperDynamicTest {
 		assertThatThrownBy(() -> engine.clients().clear()).isInstanceOf(UnsupportedOperationException.class);
 	}
 
+	/** Spring Boot 可执行 jar 的 CodeSource 是 jar: URI，绝不能让 classpath 静态初始化炸掉。 */
+	@Test
+	void nonFileCodeSourcesAreSkippedWhenBuildingCompilerClasspath() throws Exception {
+		assertThat(MetaEntityCompiler.pathFromUri(null)).isNull();
+		assertThat(MetaEntityCompiler.pathFromUri(new URL("jar:file:/app.jar!/BOOT-INF/classes!/"))).isNull();
+		assertThat(MetaEntityCompiler.pathFromUri(new URL("file:" + this.xmlDirectory.toAbsolutePath() + "/")))
+				.isNotNull();
+	}
+
 	@Test
 	void runtimeCompilationIsInMemoryAndLeavesNoTempFiles() throws Exception {
 		createTable("no_temp_dir_table");
@@ -642,6 +658,134 @@ class MetaMapperDynamicTest {
 				.tableCacheSize()).isEqualTo(7);
 		assertThatThrownBy(() -> new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), "", true, "", 0))
 				.isInstanceOf(IllegalArgumentException.class).hasMessageContaining("tableCacheSize");
+	}
+
+	// ------------------------------------------------------------------
+	// 运行期生成实体的边界：列名撞基类契约、并发单飞、反复改表、特殊标识符
+	// ------------------------------------------------------------------
+
+	/**
+	 * 表单表里 name / namespace / properties 这类列非常常见。生成类的 getter 不能意外覆写
+	 * {@link MetaClass} 的同名方法：否则要么 javac 直接编译失败（返回类型不兼容），
+	 * 要么 setName(TABLE_NAME) 被生成类劫持、把表名写进业务列，getName() 也不再返回表名。
+	 */
+	@Test
+	void columnsCollidingWithMetaClassMembersDoNotHijackBaseContract() throws Exception {
+		try (Connection connection = this.dataSource.getConnection();
+				Statement statement = connection.createStatement()) {
+			statement.execute("CREATE TABLE form_item (id BIGINT AUTO_INCREMENT PRIMARY KEY, "
+					+ "name VARCHAR(32), namespace VARCHAR(32), properties INT)");
+		}
+
+		Object key = this.client.save("form_item",
+				Map.of("name", "苹果", "namespace", "ns-1", "properties", 7));
+		MetaClass row = this.client.findById("form_item", key).orElseThrow();
+
+		assertThat(row.getName()).isEqualTo(this.registry.require("form_item").name());
+		assertThat(row.getString("name")).isEqualTo("苹果");
+		assertThat(row.getString("namespace")).isEqualTo("ns-1");
+		assertThat(row.getInt("properties")).isEqualTo(7);
+		assertThat(row.get("name")).isEqualTo("苹果");
+		assertThat(row.property("properties")).isNotNull();
+		assertThat(row.toMap()).containsEntry("name", "苹果").containsEntry("properties", 7);
+	}
+
+	@Test
+	void reservedWordAndUnicodeColumnNamesStillCompile() throws Exception {
+		MetaTable table = tableWithColumns("weird_form", "class", "名称", "order desc", "2fa_token");
+		MetaEntityModel model = new MetaEntityRegistry().model(table);
+
+		MetaClass instance = model.entityType().getConstructor().newInstance();
+		instance.set("class", "A");
+		instance.set("名称", "苹果");
+		instance.set("order desc", "B");
+		instance.set("2fa_token", "C");
+
+		assertThat(instance.getString("名称")).isEqualTo("苹果");
+		assertThat(instance.getString("class")).isEqualTo("A");
+		assertThat(instance.toMap()).containsEntry("名称", "苹果").containsEntry("class", "A");
+		assertThat(model.source()).contains("generated-by: autumn-data-meta-jdbc");
+	}
+
+	@Test
+	void concurrentEntityGenerationIsSingleFlightAndReturnsOneType() throws Exception {
+		createTable("concurrent_entity");
+		MetaTable table = this.registry.require("concurrent_entity");
+		MetaEntityRegistry entities = new MetaEntityRegistry(null, 4);
+		CountDownLatch start = new CountDownLatch(1);
+		ExecutorService pool = Executors.newFixedThreadPool(8);
+		try {
+			List<Future<Class<? extends MetaClass>>> futures = new ArrayList<>();
+			for (int i = 0; i < 8; i++) {
+				futures.add(pool.submit(() -> {
+					start.await(5, TimeUnit.SECONDS);
+					return entities.entityType(table);
+				}));
+			}
+			start.countDown();
+			Class<? extends MetaClass> expected = futures.get(0).get(20, TimeUnit.SECONDS);
+			for (Future<Class<? extends MetaClass>> future : futures) {
+				assertThat(future.get(20, TimeUnit.SECONDS)).isSameAs(expected);
+			}
+			assertThat(entities.size()).isEqualTo(1);
+			assertThat(expected.getDeclaredFields()).isNotEmpty();
+		}
+		finally {
+			pool.shutdownNow();
+		}
+	}
+
+	/** 缓存上限压到 1，连着改三次表：每次都要重新生成类，旧实例仍必须能读。 */
+	@Test
+	void repeatedSchemaEvolutionWithTinyCachesKeepsOldRowsUsable() throws Exception {
+		MetaMapperOptions options = new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(),
+				this.xmlDirectory.toString(), true, "", 1);
+		MetaMapperClient evolving = MetaMapperEngine
+				.forDataSource("evolve", this.dataSource, options).defaultClient();
+
+		Object key = evolving.save("form_order", Map.of("order_no", "EV1", "status", 1));
+		Class<? extends MetaClass> previous = evolving.entityType("form_order");
+		List<MetaClass> snapshots = new ArrayList<>();
+
+		for (int i = 1; i <= 3; i++) {
+			try (Connection connection = this.dataSource.getConnection();
+					Statement statement = connection.createStatement()) {
+				statement.execute("ALTER TABLE form_order ADD COLUMN col_" + i + " VARCHAR(16)");
+			}
+			evolving.refresh("form_order");
+			Class<? extends MetaClass> current = evolving.entityType("form_order");
+			assertThat(current).isNotSameAs(previous);
+			assertThat(current.getSimpleName()).isEqualTo(previous.getSimpleName());
+			assertThat(current.getName()).isNotEqualTo(previous.getName()); // 指纹变了 → 新包
+
+			assertThat(evolving.updateById("form_order", key, Map.of("col_" + i, "v" + i))).isEqualTo(1);
+			MetaClass row = evolving.findById("form_order", key).orElseThrow();
+			assertThat(row.getClass()).isSameAs(current);
+			assertThat(row.getString("col_" + i)).isEqualTo("v" + i);
+			snapshots.add(row);
+			previous = current;
+		}
+
+		for (int i = 0; i < snapshots.size(); i++) {
+			assertThat(snapshots.get(i).getString("order_no")).isEqualTo("EV1");
+			assertThat(snapshots.get(i).getString("col_" + (i + 1))).isEqualTo("v" + (i + 1));
+		}
+	}
+
+	private static MetaTable tableWithColumns(String name, String... columnNames) {
+		List<MetaProperty> columns = new ArrayList<>();
+		for (String column : columnNames) {
+			MetaProperty property = new MetaProperty();
+			property.setName(column);
+			property.setType(String.class.getName());
+			property.setJdbcType(Types.VARCHAR);
+			property.setNullable(true);
+			columns.add(property);
+		}
+		MetaClass meta = new MetaClass();
+		meta.setName(name);
+		meta.setProperties(columns);
+		return new MetaTable(meta, null);
 	}
 
 	private void createTable(String name) throws Exception {

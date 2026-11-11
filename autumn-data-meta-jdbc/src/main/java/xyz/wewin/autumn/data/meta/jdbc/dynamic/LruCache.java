@@ -28,8 +28,12 @@ final class LruCache<K, V> implements BoundedCache<K, V> {
 	/** accessOrder=true：get 会把条目移到链表尾部，头部就是最久未访问的。 */
 	private final LinkedHashMap<K, V> entries;
 
-	/** 正在加载中的 key → 结果占位；只在锁内访问，与 entries 共用一把锁避免竞态。 */
-	private final Map<K, CompletableFuture<V>> pendingLoads = new HashMap<>();
+	/**
+	 * 正在加载中的 key → 结果占位；只在锁内访问，与 entries 共用一把锁避免竞态。
+	 * 失效操作会把对应的占位从表里摘掉：这样 refresh 之后的新请求不会 join 到过期的在途加载，
+	 * 而在途加载收尾时通过「自己仍是当前占位」的判断决定要不要把结果写回缓存。
+	 */
+	private final Map<K, Load<V>> pendingLoads = new HashMap<>();
 
 	LruCache(int maximumSize) {
 		if (maximumSize <= 0) {
@@ -60,7 +64,7 @@ final class LruCache<K, V> implements BoundedCache<K, V> {
 	public V get(K key, Function<? super K, ? extends V> mappingFunction) {
 		Objects.requireNonNull(key, "key");
 		Objects.requireNonNull(mappingFunction, "mappingFunction");
-		CompletableFuture<V> future;
+		Load<V> load;
 		boolean owner;
 		this.lock.lock();
 		try {
@@ -68,18 +72,18 @@ final class LruCache<K, V> implements BoundedCache<K, V> {
 			if (hit != null) {
 				return hit;
 			}
-			future = this.pendingLoads.get(key);
-			owner = future == null;
+			load = this.pendingLoads.get(key);
+			owner = load == null;
 			if (owner) {
-				future = new CompletableFuture<>();
-				this.pendingLoads.put(key, future);
+				load = new Load<>();
+				this.pendingLoads.put(key, load);
 			}
 		}
 		finally {
 			this.lock.unlock();
 		}
 		if (!owner) {
-			return await(future);
+			return await(load.future);
 		}
 
 		V loaded;
@@ -90,26 +94,36 @@ final class LruCache<K, V> implements BoundedCache<K, V> {
 		catch (RuntimeException | Error ex) {
 			this.lock.lock();
 			try {
-				this.pendingLoads.remove(key);
+				removePendingIfCurrent(key, load);
 			}
 			finally {
 				this.lock.unlock();
 			}
-			future.completeExceptionally(ex);
+			load.future.completeExceptionally(ex);
 			throw ex;
 		}
 		this.lock.lock();
 		try {
-			if (loaded != null) {
+			// 加载期间若被 invalidate / put 取代，旧结果只交给本次调用者，绝不写回缓存：
+			// 否则「改表 → refresh」之后，慢查询会把旧表结构重新塞回来。
+			if (removePendingIfCurrent(key, load) && loaded != null) {
 				this.entries.put(key, loaded);
 			}
-			this.pendingLoads.remove(key);
 		}
 		finally {
 			this.lock.unlock();
 		}
-		future.complete(loaded);
+		load.future.complete(loaded);
 		return loaded;
+	}
+
+	/** 只在「自己仍是该 key 的当前占位」时摘掉占位；调用方必须持有 lock。 */
+	private boolean removePendingIfCurrent(K key, Load<V> load) {
+		if (this.pendingLoads.get(key) != load) {
+			return false;
+		}
+		this.pendingLoads.remove(key);
+		return true;
 	}
 
 	@Override
@@ -118,6 +132,8 @@ final class LruCache<K, V> implements BoundedCache<K, V> {
 		Objects.requireNonNull(value, "value");
 		this.lock.lock();
 		try {
+			// 手工登记要压过同 key 的在途加载，不能被稍后完成的旧结果覆盖。
+			this.pendingLoads.remove(key);
 			this.entries.put(key, value);
 		}
 		finally {
@@ -131,6 +147,7 @@ final class LruCache<K, V> implements BoundedCache<K, V> {
 		this.lock.lock();
 		try {
 			this.entries.remove(key);
+			this.pendingLoads.remove(key);
 		}
 		finally {
 			this.lock.unlock();
@@ -142,6 +159,7 @@ final class LruCache<K, V> implements BoundedCache<K, V> {
 		this.lock.lock();
 		try {
 			this.entries.clear();
+			this.pendingLoads.clear();
 		}
 		finally {
 			this.lock.unlock();
@@ -154,6 +172,7 @@ final class LruCache<K, V> implements BoundedCache<K, V> {
 		this.lock.lock();
 		try {
 			this.entries.keySet().removeIf(condition::test);
+			this.pendingLoads.keySet().removeIf(condition::test);
 		}
 		finally {
 			this.lock.unlock();
@@ -190,6 +209,12 @@ final class LruCache<K, V> implements BoundedCache<K, V> {
 	@Override
 	public int maximumSize() {
 		return this.maximumSize;
+	}
+
+	/** 一次在途加载的占位；失效时被移出 pendingLoads，旧 owner 据此放弃写回。 */
+	private static final class Load<V> {
+
+		private final CompletableFuture<V> future = new CompletableFuture<>();
 	}
 
 	private static <V> V await(CompletableFuture<V> future) {

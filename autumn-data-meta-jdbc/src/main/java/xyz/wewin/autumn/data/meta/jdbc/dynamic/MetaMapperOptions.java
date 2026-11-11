@@ -14,7 +14,7 @@ import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
  * @param logicDeleteColumns    逻辑删除列名（大小写不敏感）；命中后查询自动追加 {@code = 0}，未命中不追加
  * @param xmlDirectory          Mapper 文件目录；空串表示语句只在内存里生成、不落盘
  * @param generateXml           文件不存在时是否按表结构生成一份 Mapper 文件；false 时缺失直接报错
- * @param entitySourceDirectory 生成的实体 {@code .java} 源码落盘目录；空串表示只在临时目录编译、不额外留存
+ * @param entitySourceDirectory 生成的实体 {@code .java} 源码落盘目录；空串表示全程内存编译、不额外留存
  * @param tableCacheSize        按表缓存（表结构 / 动态实体类 / Mapper AST）各自的条目上限，默认一万张表
  */
 public record MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,

@@ -4,11 +4,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 import org.junit.jupiter.api.Test;
 
@@ -180,6 +182,129 @@ class BoundedCacheTest {
 		cache.put("x", "X");
 		cache.invalidateAll();
 		assertThat(cache.estimatedSize()).isZero();
+	}
+
+	// ------------------------------------------------------------------
+	// refresh / 淘汰 与「在途加载」的竞态：低代码平台改表时最容易踩到的一条
+	// ------------------------------------------------------------------
+
+	@Test
+	void invalidationDuringLoadDoesNotRepublishStaleValue() {
+		assertInvalidationDropsInFlightLoad(cache -> cache.invalidate("k"));
+	}
+
+	@Test
+	void invalidateAllDuringLoadDoesNotRepublishStaleValue() {
+		assertInvalidationDropsInFlightLoad(BoundedCache::invalidateAll);
+	}
+
+	@Test
+	void invalidateIfDuringLoadDoesNotRepublishStaleValue() {
+		assertInvalidationDropsInFlightLoad(cache -> cache.invalidateIf(key -> key.equals("k")));
+	}
+
+	/**
+	 * 加载函数慢（读元数据 / javac）时发生 refresh：在途的那次调用可以拿它读到的旧值，
+	 * 但<b>旧值绝不能被重新写回缓存</b>，否则改表 + refresh 之后所有请求都会一直读到旧结构。
+	 * 同时 refresh 之后的新请求不能 join 到那个已经过期的在途加载。
+	 */
+	private static void assertInvalidationDropsInFlightLoad(Consumer<BoundedCache<String, String>> invalidation) {
+		BoundedCache<String, String> cache = BoundedCaches.lru(4);
+		AtomicInteger loads = new AtomicInteger();
+		CountDownLatch entered = new CountDownLatch(1);
+		CountDownLatch release = new CountDownLatch(1);
+		ExecutorService pool = Executors.newSingleThreadExecutor();
+		try {
+			Future<String> inFlight = pool.submit(() -> cache.get("k", key -> {
+				int attempt = loads.incrementAndGet();
+				entered.countDown();
+				await(release);
+				return "v" + attempt;
+			}));
+			assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+
+			invalidation.accept(cache); // 相当于 MetaMapperClient.refresh(tableName)
+			release.countDown();
+
+			assertThat(inFlight.get(5, TimeUnit.SECONDS)).isEqualTo("v1");
+			assertThat(cache.getIfPresent("k")).as("refresh 之后旧结构不许回写缓存").isNull();
+			assertThat(cache.get("k", key -> "v" + loads.incrementAndGet())).isEqualTo("v2");
+			assertThat(loads.get()).isEqualTo(2);
+		}
+		catch (Exception ex) {
+			throw new AssertionError(ex);
+		}
+		finally {
+			release.countDown();
+			pool.shutdownNow();
+		}
+	}
+
+	@Test
+	void failedLoadWakesAllWaitersWithoutCachingTheFailure() throws Exception {
+		BoundedCache<String, String> cache = BoundedCaches.lru(4);
+		CountDownLatch entered = new CountDownLatch(1);
+		CountDownLatch release = new CountDownLatch(1);
+		ExecutorService pool = Executors.newFixedThreadPool(4);
+		try {
+			Future<String> first = pool.submit(() -> cache.get("k", key -> {
+				entered.countDown();
+				await(release);
+				throw new IllegalStateException("boom");
+			}));
+			assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+			List<Future<String>> waiters = new ArrayList<>();
+			for (int i = 0; i < 3; i++) {
+				waiters.add(pool.submit(() -> cache.get("k", key -> "OK")));
+			}
+			release.countDown();
+			assertThatThrownBy(() -> first.get(5, TimeUnit.SECONDS))
+					.hasRootCauseInstanceOf(IllegalStateException.class).hasRootCauseMessage("boom");
+			// 等待者要么 join 到同一次失败、要么在失败后重新加载；关键是绝不能永久挂起。
+			for (Future<String> waiter : waiters) {
+				try {
+					assertThat(waiter.get(5, TimeUnit.SECONDS)).isEqualTo("OK");
+				}
+				catch (ExecutionException ex) {
+					assertThat(ex).hasRootCauseInstanceOf(IllegalStateException.class);
+				}
+			}
+			assertThat(cache.get("k", key -> "OK")).isEqualTo("OK");
+		}
+		finally {
+			release.countDown();
+			pool.shutdownNow();
+		}
+	}
+
+	@Test
+	void concurrentReadsAndWritesNeverExceedTheBound() throws Exception {
+		BoundedCache<Integer, Integer> cache = BoundedCaches.lru(4);
+		ExecutorService pool = Executors.newFixedThreadPool(8);
+		try {
+			List<Future<?>> tasks = new ArrayList<>();
+			for (int worker = 0; worker < 8; worker++) {
+				int id = worker;
+				tasks.add(pool.submit(() -> {
+					for (int i = 0; i < 300; i++) {
+						int key = (id * 300 + i) % 50;
+						cache.get(key, value -> value);
+						cache.put(key, key);
+						long size = cache.estimatedSize();
+						if (size > cache.maximumSize()) {
+							throw new AssertionError("cache exceeded its bound: " + size);
+						}
+					}
+				}));
+			}
+			for (Future<?> task : tasks) {
+				task.get(20, TimeUnit.SECONDS);
+			}
+			assertThat(cache.estimatedSize()).isLessThanOrEqualTo(4);
+		}
+		finally {
+			pool.shutdownNow();
+		}
 	}
 
 	private static void await(CountDownLatch latch) {

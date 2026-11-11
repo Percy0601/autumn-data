@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -247,11 +248,13 @@ public final class MetaEntityCompiler {
 			for (Class<?> type : List.of(MetaClass.class, MetaEntityReader.class, MetaEntityCompiler.class)) {
 				CodeSource codeSource = type.getProtectionDomain().getCodeSource();
 				if (codeSource != null && codeSource.getLocation() != null) {
-					try {
-						addNormalized(paths, Paths.get(codeSource.getLocation().toURI()));
+					Path location = pathFromUri(codeSource.getLocation());
+					if (location != null) {
+						addNormalized(paths, location);
 					}
-					catch (URISyntaxException | IllegalArgumentException ex) {
-						LOG.log(Level.FINE, "cannot resolve code source for " + type.getName(), ex);
+					else {
+						LOG.log(Level.FINE, "skipping non-file code source for {0}: {1}",
+								new Object[] { type.getName(), codeSource.getLocation() });
 					}
 				}
 			}
@@ -268,6 +271,28 @@ public final class MetaEntityCompiler {
 		}
 	}
 
+	/**
+	 * 把 {@link CodeSource} 的 URL 转成 javac 可用的目录/文件路径。
+	 *
+	 * <p>Spring Boot 可执行 jar 里这个 URL 是 {@code jar:file:/app.jar!/BOOT-INF/classes!/}：
+	 * {@code Paths.get(URI)} 会抛 {@code FileSystemNotFoundException}（不是
+	 * {@code IllegalArgumentException}），若漏掉就会让 classpath 的静态初始化整体失败，
+	 * 报出与真实原因无关的 {@code ExceptionInInitializerError}。这里只对 {@code file:} 做转换，
+	 * 其它协议一律跳过，让 javac 自己给出「找不到依赖类」的可读诊断。</p>
+	 */
+	static Path pathFromUri(URL location) {
+		if (location == null || !"file".equalsIgnoreCase(location.getProtocol())) {
+			return null;
+		}
+		try {
+			return Paths.get(location.toURI()).toAbsolutePath().normalize();
+		}
+		catch (URISyntaxException | RuntimeException ex) {
+			LOG.log(Level.FINE, "cannot resolve code source " + location, ex);
+			return null;
+		}
+	}
+
 	private static void expandManifest(Path jar, Set<Path> paths) {
 		try (JarFile jarFile = new JarFile(jar.toFile())) {
 			Manifest manifest = jarFile.getManifest();
@@ -281,11 +306,14 @@ public final class MetaEntityCompiler {
 			for (String entry : declared.trim().split("\\s+")) {
 				try {
 					URI uri = new URI(entry);
+					if (uri.isAbsolute() && !"file".equalsIgnoreCase(uri.getScheme())) {
+						continue;
+					}
 					Path resolved = uri.isAbsolute() ? Paths.get(uri)
 							: jar.getParent().resolve(uri.getPath()).normalize();
 					addNormalized(paths, resolved);
 				}
-				catch (URISyntaxException | IllegalArgumentException ex) {
+				catch (URISyntaxException | RuntimeException ex) {
 					LOG.log(Level.FINE, "bad Class-Path entry in " + jar + ": " + entry, ex);
 				}
 			}

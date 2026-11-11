@@ -34,6 +34,8 @@ import java.util.function.Predicate;
  *
  * <p>语义约定：键与值都不允许为 {@code null}；{@code get} 的加载函数返回 {@code null} 表示不缓存，
  * 抛异常则只传播不缓存；同一个 key 并发未命中时只有一次加载（单飞），加载过程不持有全局锁；
+ * <b>加载期间发生 {@code invalidate*} / {@code put}，旧加载结果不得再写回缓存</b>（在途调用者仍可拿到
+ * 它当时读到的值，之后的请求重新加载），否则运行期改表后 {@code refresh} 会失效；
  * 淘汰是<b>同步</b>的，{@link #estimatedSize()} 恒不超过 {@link #maximumSize()}
  * （Caffeine 的淘汰是异步的，切过去后测试断言要改用 {@code cleanUp()} 后再看 size）。</p>
  */
