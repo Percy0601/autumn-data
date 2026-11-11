@@ -6,22 +6,36 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.BiFunction;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementType;
 import xyz.wewin.autumn.data.common.meta.MetaProperty;
 import xyz.wewin.autumn.data.jdbc.page.Page;
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.ConnectionSource;
+import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
+import xyz.wewin.autumn.data.meta.jdbc.SqlBuild;
 
 /**
- * 绑定到某个数据源（池）的动态 CRUD 客户端。
+ * 绑定到某个数据源（池）的动态客户端。
  *
  * <p>{@link MetaMapper} 的静态方法默认走默认池；多数据源显式用 {@link MetaMapper#of(String)}
  * 拿到本类型，把“哪个库”固定在调用边界上，而不是藏在线程上下文里。表名/列名/类型仍然在每次
  * 调用时从 {@link MetaTableRegistry} 解析，所以运行期建表后无需重启。</p>
+ *
+ * <p>两组入口各走一条路，不存在“同一次调用可能被两套实现分走”的情况：</p>
+ * <ul>
+ *   <li>{@link MetaQuery} 驱动的 CRUD（{@code findById/findList/findPage/count/save/updateById}）：
+ *       SQL 由 {@link MetaSqlBuilder} 按元数据现拼。条件运算符是开集（{@code >}/{@code LIKE}/
+ *       {@code IN}/{@code BETWEEN}/排序……），固定文件表达不了，所以这条路不读 XML；</li>
+ *   <li>命名语句（{@code sqlFor/selectList/selectOne/selectCount/execute}）：SQL 来自
+ *       {@link MetaStatementStore} 的 Mapper 文件——文件存在就用文件，缺失时按表结构生成一次，
+ *       之后归使用方编辑。</li>
+ * </ul>
  *
  * <p>只提供查询、保存、更新；<b>不提供物理删除</b>。业务上的作废用一次
  * {@code updateById(..., Map.of("status", "VOID"))}。</p>
@@ -40,26 +54,25 @@ public final class MetaMapperClient {
 
 	private final MetaSqlBuilder sqlBuilder;
 
-	private final MetaMapperXmlStore xmlStore;
+	private final MetaStatementStore statementStore;
 
 	private final int defaultListLimit;
 
 	public MetaMapperClient(String poolName, AutumnJdbc jdbc, ConnectionSource connectionSource,
-			MetaTableRegistry registry, MetaSqlBuilder sqlBuilder, int defaultListLimit) {
-		this(poolName, jdbc, connectionSource, registry, sqlBuilder, null, defaultListLimit);
-	}
-
-	public MetaMapperClient(String poolName, AutumnJdbc jdbc, ConnectionSource connectionSource,
-			MetaTableRegistry registry, MetaSqlBuilder sqlBuilder, MetaMapperXmlStore xmlStore, int defaultListLimit) {
+			MetaTableRegistry registry, MetaSqlBuilder sqlBuilder, MetaStatementStore statementStore,
+			int defaultListLimit) {
 		if (defaultListLimit <= 0) {
 			throw new IllegalArgumentException("defaultListLimit must be > 0");
+		}
+		if (statementStore == null) {
+			throw new IllegalArgumentException("statementStore must not be null");
 		}
 		this.poolName = poolName;
 		this.jdbc = jdbc;
 		this.connectionSource = connectionSource;
 		this.registry = registry;
 		this.sqlBuilder = sqlBuilder;
-		this.xmlStore = xmlStore;
+		this.statementStore = statementStore;
 		this.defaultListLimit = defaultListLimit;
 	}
 
@@ -69,7 +82,7 @@ public final class MetaMapperClient {
 	}
 
 	// ------------------------------------------------------------------
-	// 查询
+	// 查询（MetaQuery 驱动）
 	// ------------------------------------------------------------------
 
 	public Optional<MetaRow> findById(String tableName, Object id) {
@@ -107,33 +120,25 @@ public final class MetaMapperClient {
 		}
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
-			MetaSqlBuilder.SelectParts parts = this.sqlBuilder.selectParts(table, query);
-			String sql = this.xmlStore == null ? this.sqlBuilder.select(table, query).sql()
-					: this.xmlStore.render(table, "findList", selectModel(table, parts));
-			return this.jdbc.query(limit, sql, MetaRow.mapper(table), parts.args());
+			SqlBuild sql = this.sqlBuilder.select(table, query);
+			return this.jdbc.query(limit, sql.sql(), MetaRow.mapper(table), sql.args());
 		});
 	}
 
 	public Page<MetaRow> findPage(String tableName, MetaQuery query, Pageable pageable) {
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
-			MetaSqlBuilder.SelectParts selectParts = this.sqlBuilder.selectParts(table, query);
-			MetaSqlBuilder.CountParts countParts = this.sqlBuilder.countParts(table, query);
-			String selectSql = this.xmlStore == null ? this.sqlBuilder.select(table, query).sql()
-					: this.xmlStore.render(table, "findList", selectModel(table, selectParts));
-			String countSql = this.xmlStore == null ? this.sqlBuilder.count(table, query).sql()
-					: this.xmlStore.render(table, "count", countModel(table, countParts));
-			return this.jdbc.page(selectSql, countSql, MetaRow.mapper(table), pageable, selectParts.args());
+			SqlBuild select = this.sqlBuilder.select(table, query);
+			SqlBuild count = this.sqlBuilder.count(table, query);
+			return this.jdbc.page(select.sql(), count.sql(), MetaRow.mapper(table), pageable, select.args());
 		});
 	}
 
 	public long count(String tableName, MetaQuery query) {
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
-			MetaSqlBuilder.CountParts parts = this.sqlBuilder.countParts(table, query);
-			String sql = this.xmlStore == null ? this.sqlBuilder.count(table, query).sql()
-					: this.xmlStore.render(table, "count", countModel(table, parts));
-			return this.jdbc.count(sql, parts.args());
+			SqlBuild sql = this.sqlBuilder.count(table, query);
+			return this.jdbc.count(sql.sql(), sql.args());
 		});
 	}
 
@@ -152,19 +157,17 @@ public final class MetaMapperClient {
 	 */
 	public Object save(String tableName, Map<String, ?> values) {
 		MetaTable table = this.registry.require(tableName);
-		MetaSqlBuilder.InsertParts parts = this.sqlBuilder.insertParts(table, values);
-		String sql = this.xmlStore == null ? this.sqlBuilder.insert(table, values).sql()
-				: this.xmlStore.render(table, "insert", insertModel(table, parts));
+		SqlBuild sql = this.sqlBuilder.insert(table, values);
 		MetaProperty pk = table.singlePrimaryKey();
 		if (pk != null && pk.isAutoIncrement()) {
-			return withConnection(() -> this.jdbc.insertReturningKey(sql, pk.getName(), parts.args()));
+			return withConnection(() -> this.jdbc.insertReturningKey(sql.sql(), pk.getName(), sql.args()));
 		}
-		withConnection(() -> this.jdbc.update(sql, parts.args()));
+		withConnection(() -> this.jdbc.update(sql.sql(), sql.args()));
 		return pk == null ? null : primaryKeyValue(pk, values);
 	}
 
 	/**
-	 * 批量新增；列集合一致时走 JDBC batch，否则退化为逐条 save。
+	 * 批量新增；SQL 文本一致时走 JDBC batch，否则退化为逐条 save。
 	 *
 	 * @return 按入参顺序排列的主键列表；无主键返回空列表
 	 */
@@ -173,37 +176,32 @@ public final class MetaMapperClient {
 			return List.of();
 		}
 		MetaTable table = this.registry.require(tableName);
-		List<MetaSqlBuilder.InsertParts> partsList = new ArrayList<>(rows.size());
+		List<SqlBuild> statements = new ArrayList<>(rows.size());
 		for (Map<String, ?> row : rows) {
-			partsList.add(this.sqlBuilder.insertParts(table, row));
+			statements.add(this.sqlBuilder.insert(table, row));
 		}
-		MetaSqlBuilder.InsertParts first = partsList.get(0);
 		MetaProperty pk = table.singlePrimaryKey();
-		boolean sameSql = partsList.stream().allMatch(parts -> parts.columnsSql().equals(first.columnsSql())
-				&& parts.valuesSql().equals(first.valuesSql()));
-		if (sameSql) {
-			String sql = this.xmlStore == null ? this.sqlBuilder.insert(table, rows.get(0)).sql()
-					: this.xmlStore.render(table, "insert", insertModel(table, first));
-			List<Object[]> args = partsList.stream().map(MetaSqlBuilder.InsertParts::args).toList();
-			if (pk != null && pk.isAutoIncrement()) {
-				List<Object> keys = new ArrayList<>(rows.size());
-				withConnection(() -> this.jdbc.batchInsertReturningKeys(sql, pk.getName(), args))
-						.forEach(keys::add);
-				return keys;
-			}
-			withConnection(() -> this.jdbc.batchUpdate(sql, args));
-			if (pk == null) {
-				return List.of();
-			}
+		String sql = statements.get(0).sql();
+		if (statements.stream().anyMatch(statement -> !statement.sql().equals(sql))) {
 			List<Object> keys = new ArrayList<>(rows.size());
 			for (Map<String, ?> row : rows) {
-				keys.add(primaryKeyValue(pk, row));
+				keys.add(save(tableName, row));
 			}
 			return keys;
 		}
+		List<Object[]> args = statements.stream().map(SqlBuild::args).toList();
+		if (pk != null && pk.isAutoIncrement()) {
+			List<Object> keys = new ArrayList<>(rows.size());
+			withConnection(() -> this.jdbc.batchInsertReturningKeys(sql, pk.getName(), args)).forEach(keys::add);
+			return keys;
+		}
+		withConnection(() -> this.jdbc.batchUpdate(sql, args));
+		if (pk == null) {
+			return List.of();
+		}
 		List<Object> keys = new ArrayList<>(rows.size());
 		for (Map<String, ?> row : rows) {
-			keys.add(save(tableName, row));
+			keys.add(primaryKeyValue(pk, row));
 		}
 		return keys;
 	}
@@ -230,63 +228,122 @@ public final class MetaMapperClient {
 	public int updateByKey(String tableName, Map<String, ?> key, Map<String, ?> values) {
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
-			MetaSqlBuilder.UpdateParts parts = this.sqlBuilder.updateParts(table, key, values);
-			String sql = this.xmlStore == null ? this.sqlBuilder.update(table, key, values).sql()
-					: this.xmlStore.render(table, "update", updateModel(table, parts));
-			return this.jdbc.update(sql, parts.args());
+			SqlBuild sql = this.sqlBuilder.update(table, key, values);
+			return this.jdbc.update(sql.sql(), sql.args());
 		});
 	}
 
-	/** 表结构变化后刷新元数据快照与 Mapper XML 缓存。 */
+	// ------------------------------------------------------------------
+	// 命名语句（Mapper 文件）
+	// ------------------------------------------------------------------
+
+	/**
+	 * 渲染命名语句，只返回 SQL 与参数、不执行；用来核对语句或交给别的执行器。
+	 */
+	public SqlBuild sqlFor(String tableName, String statementId, Map<String, ?> params) {
+		MetaTable table = this.registry.require(tableName);
+		return render(table, this.statementStore.statement(table, statementId), params);
+	}
+
+	/** 执行 {@code <select>} 语句取列表，行数上限用默认值。 */
+	public List<MetaRow> selectList(String tableName, String statementId, Map<String, ?> params) {
+		return selectList(tableName, statementId, params, this.defaultListLimit);
+	}
+
+	public List<MetaRow> selectList(String tableName, String statementId, Map<String, ?> params, long limit) {
+		if (limit <= 0) {
+			throw new IllegalArgumentException("limit must be > 0");
+		}
+		return withConnection(() -> {
+			MetaTable table = this.registry.require(tableName);
+			SqlBuild sql = render(table, selectStatement(table, statementId), params);
+			return this.jdbc.query(limit, sql.sql(), MetaRow.mapper(table), sql.args());
+		});
+	}
+
+	public Optional<MetaRow> selectOne(String tableName, String statementId, Map<String, ?> params) {
+		List<MetaRow> rows = selectList(tableName, statementId, params, 1);
+		return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+	}
+
+	/** 执行返回单个数字的 {@code <select>}（{@code COUNT(*)} 之类）。 */
+	public long selectCount(String tableName, String statementId, Map<String, ?> params) {
+		return withConnection(() -> {
+			MetaTable table = this.registry.require(tableName);
+			SqlBuild sql = render(table, selectStatement(table, statementId), params);
+			return this.jdbc.count(sql.sql(), sql.args());
+		});
+	}
+
+	/** 执行 {@code <insert>}/{@code <update>} 语句，返回影响行数。 */
+	public int execute(String tableName, String statementId, Map<String, ?> params) {
+		return withConnection(() -> {
+			MetaTable table = this.registry.require(tableName);
+			SqlTemplate statement = this.statementStore.statement(table, statementId);
+			if (statement.type() == StatementType.SELECT) {
+				throw new MetaSqlException("statement '" + statementId + "' of table '" + table.name()
+						+ "' is a <select>; use selectList/selectCount(...)");
+			}
+			if (statement.type() == StatementType.DELETE) {
+				throw new MetaSqlException("statement '" + statementId + "' of table '" + table.name()
+						+ "' is a <delete>; the dynamic layer does not run physical deletes");
+			}
+			SqlBuild sql = render(table, statement, params);
+			return this.jdbc.update(sql.sql(), sql.args());
+		});
+	}
+
+	/** 表结构变化后刷新元数据快照与 Mapper 语句缓存；只重读文件，不重写文件。 */
 	public void refresh(String tableName) {
 		this.registry.refresh(tableName);
-		if (this.xmlStore != null) {
-			this.xmlStore.refresh(tableName);
-		}
+		this.statementStore.refresh(tableName);
 	}
 
 	/** 刷新当前客户端可见的全部表快照。 */
 	public void refreshAll() {
 		this.registry.refreshAll();
-		if (this.xmlStore != null) {
-			this.xmlStore.refreshAll();
+		this.statementStore.refreshAll();
+	}
+
+	// ------------------------------------------------------------------
+	// 命名语句的渲染上下文
+	// ------------------------------------------------------------------
+
+	private SqlBuild render(MetaTable table, SqlTemplate statement, Map<String, ?> params) {
+		return statement.render(model(table, params), binder(table));
+	}
+
+	/**
+	 * 参数键先按元数据归一：语句里的 {@code test}/{@code #{}} 引用的就是列名本身，调用方传
+	 * {@code ORDER_NO} 还是 {@code order_no} 都能对上；非列名的键（循环变量、业务开关）原样保留。
+	 */
+	private Map<String, Object> model(MetaTable table, Map<String, ?> params) {
+		Map<String, Object> model = new HashMap<>();
+		model.put("table", this.sqlBuilder.quoteTable(table));
+		if (params != null) {
+			for (Map.Entry<String, ?> entry : params.entrySet()) {
+				MetaProperty column = table.findColumn(entry.getKey());
+				model.put(column == null ? entry.getKey() : column.getName(), entry.getValue());
+			}
 		}
-	}
-
-	// ------------------------------------------------------------------
-	// Mapper XML 渲染模型
-	// ------------------------------------------------------------------
-
-	private Map<String, Object> selectModel(MetaTable table, MetaSqlBuilder.SelectParts parts) {
-		Map<String, Object> model = new HashMap<>();
-		model.put("table", this.sqlBuilder.quoteTable(table));
-		model.put("columnsSql", parts.columnsSql());
-		model.put("whereSql", parts.whereSql());
-		model.put("orderSql", parts.orderSql());
 		return model;
 	}
 
-	private Map<String, Object> countModel(MetaTable table, MetaSqlBuilder.CountParts parts) {
-		Map<String, Object> model = new HashMap<>();
-		model.put("table", this.sqlBuilder.quoteTable(table));
-		model.put("whereSql", parts.whereSql());
-		return model;
+	/** 绑定值按列类型收口（表单字符串 → 数值/日期）；对不上列名的键直接交给 JDBC。 */
+	private BiFunction<String, Object, Object> binder(MetaTable table) {
+		return (name, value) -> {
+			MetaProperty column = table.findColumn(name);
+			return column == null ? value : MetaTypeCoercion.toJdbc(column, value);
+		};
 	}
 
-	private Map<String, Object> insertModel(MetaTable table, MetaSqlBuilder.InsertParts parts) {
-		Map<String, Object> model = new HashMap<>();
-		model.put("table", this.sqlBuilder.quoteTable(table));
-		model.put("insertColumnsSql", parts.columnsSql());
-		model.put("insertValuesSql", parts.valuesSql());
-		return model;
-	}
-
-	private Map<String, Object> updateModel(MetaTable table, MetaSqlBuilder.UpdateParts parts) {
-		Map<String, Object> model = new HashMap<>();
-		model.put("table", this.sqlBuilder.quoteTable(table));
-		model.put("setSql", parts.setSql());
-		model.put("keyWhereSql", parts.keyWhereSql());
-		return model;
+	private SqlTemplate selectStatement(MetaTable table, String statementId) {
+		SqlTemplate statement = this.statementStore.statement(table, statementId);
+		if (statement.type() != StatementType.SELECT) {
+			throw new MetaSqlException("statement '" + statementId + "' of table '" + table.name()
+					+ "' is not a <select>; use execute(...)");
+		}
+		return statement;
 	}
 
 	// ------------------------------------------------------------------

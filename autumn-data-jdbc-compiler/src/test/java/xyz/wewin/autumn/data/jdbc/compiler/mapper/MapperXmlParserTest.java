@@ -5,7 +5,10 @@ import java.nio.charset.StandardCharsets;
 
 import org.junit.jupiter.api.Test;
 
-import xyz.wewin.autumn.data.jdbc.compiler.template.TemplateNode;
+import xyz.wewin.autumn.data.common.mapper.MapperDefinition;
+import xyz.wewin.autumn.data.common.mapper.MapperXmlParseException;
+import xyz.wewin.autumn.data.common.mapper.MapperXmlParser;
+import xyz.wewin.autumn.data.common.mapper.TemplateNode;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;

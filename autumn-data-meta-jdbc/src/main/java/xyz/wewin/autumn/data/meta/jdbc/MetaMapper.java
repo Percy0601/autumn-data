@@ -1,4 +1,4 @@
-package xyz.wewin.autumn.data.meta.jdbc.dynamic;
+package xyz.wewin.autumn.data.meta.jdbc;
 
 import java.util.List;
 import java.util.Map;
@@ -7,6 +7,10 @@ import java.util.Objects;
 
 import xyz.wewin.autumn.data.jdbc.page.Page;
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
+import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaMapperClient;
+import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaMapperEngine;
+import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaQuery;
+import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaRow;
 
 /**
  * 动态表 CRUD 的静态门面。

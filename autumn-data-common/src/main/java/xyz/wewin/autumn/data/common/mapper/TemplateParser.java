@@ -1,4 +1,4 @@
-package xyz.wewin.autumn.data.jdbc.compiler.template;
+package xyz.wewin.autumn.data.common.mapper;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -9,11 +9,17 @@ import org.w3c.dom.Node;
 /**
  * 模板体解析器：把 XML 语句元素内的混合内容（文本 + 控制标签）解析成 {@link TemplateNode} AST。
  *
+ * <p>编译期与动态运行期共用这一份解析。关键约束：<b>{@code #{...}} 在解析阶段就被摘成
+ * {@link TemplateNode.Parameter} 节点</b>，绝不以文本形式留在 SQL 里，因此不存在
+ * 「模板先渲染、参数后补」的二次解释顺序问题，也不会和任何模板语言的插值语法互相打断。</p>
+ *
  * <p>支持的 XML 标签：</p>
  * <ul>
  *   <li>{@code <if test="expr">...</if>} — 条件块</li>
  *   <li>{@code <choose>/<when test="...">/<otherwise>} — 多分支</li>
  *   <li>{@code <foreach collection="..." item="..." separator="..." open="(" close=")">...</foreach>} — 循环</li>
+ *   <li>{@code <where>...</where>} — 条件容器（{@code <trim prefix="WHERE " prefixOverrides="AND|OR">} 的语法糖）</li>
+ *   <li>{@code <trim prefix="(" suffix=")" suffixOverrides=",">...</trim>} — 带前后缀的容器</li>
  * </ul>
  *
  * <p>文本内容中的插值语法：</p>
@@ -21,6 +27,12 @@ import org.w3c.dom.Node;
  *   <li>{@code ${name}} — 变量插值（原样拼入 SQL，用于表名/列名/排序方向）</li>
  *   <li>{@code #{name}} — 参数占位符（生成 {@code ?}，运行期 JDBC 绑定）</li>
  * </ul>
+ *
+ * <p>注意：{@code <#if ...>}／{@code <#list ...>} 这类 FreeMarker 标签不是合法 XML
+ * （标签名不能以 {@code #} 开头、表达式不是属性），一旦被 DOM 解析器看到就直接
+ * {@code SAXParseException}；写进 CDATA 又会变成不可解析的纯文本。因此本方言只接受
+ * MyBatis 式标签，FreeMarker 的兼容做在 {@code test} 表达式层
+ * （{@code name??}、{@code name?has_content}、{@code !expr}）。</p>
  */
 public final class TemplateParser {
 
@@ -40,8 +52,10 @@ public final class TemplateParser {
 		for (Node child = parent.getFirstChild(); child != null; child = child.getNextSibling()) {
 			switch (child.getNodeType()) {
 				case Node.TEXT_NODE, Node.CDATA_SECTION_NODE -> {
+					// 缩进和换行是 SQL 的分词，不能丢：相邻 <if> 之间的空白一旦被吃掉，
+					// 渲染结果就是 "AND a = ?AND b = ?"。容器自己的 trim 负责首尾，中间的原样保留。
 					String text = child.getTextContent();
-					if (!text.isBlank()) {
+					if (!text.isEmpty()) {
 						out.addAll(parseInterpolation(text));
 					}
 				}
@@ -55,10 +69,33 @@ public final class TemplateParser {
 			case "if" -> out.add(parseIf(element));
 			case "choose" -> out.add(parseChoose(element));
 			case "foreach" -> out.add(parseForEach(element));
+			case "where" -> out.add(TemplateNode.Trim.where(collect(element)));
+			case "trim" -> out.add(parseTrim(element));
 			default -> throw new TemplateParseException(
 					"unsupported template tag <" + element.getTagName()
-							+ ">; supported: if, choose, foreach");
+							+ ">; supported: if, choose, foreach, where, trim");
 		}
+	}
+
+	/** {@code <trim prefix suffix prefixOverrides suffixOverrides>}，Overrides 用 {@code |} 分隔。 */
+	private static TemplateNode.Trim parseTrim(Element element) {
+		return new TemplateNode.Trim(element.getAttribute("prefix"), element.getAttribute("suffix"),
+				overrides(element.getAttribute("prefixOverrides")), overrides(element.getAttribute("suffixOverrides")),
+				collect(element));
+	}
+
+	private static List<String> overrides(String attribute) {
+		if (attribute.isBlank()) {
+			return List.of();
+		}
+		List<String> tokens = new ArrayList<>();
+		for (String token : attribute.split("\\|")) {
+			String trimmed = token.trim();
+			if (!trimmed.isEmpty()) {
+				tokens.add(trimmed);
+			}
+		}
+		return List.copyOf(tokens);
 	}
 
 	/**
@@ -102,11 +139,32 @@ public final class TemplateParser {
 				nodes.add(new TemplateNode.Variable(expression));
 			}
 			else {
-				nodes.add(new TemplateNode.Parameter(expression));
+				nodes.add(new TemplateNode.Parameter(parameterName(expression)));
 			}
 			cursor = close + 1;
 		}
 		return nodes;
+	}
+
+	/**
+	 * {@code #{name}} 里允许跟 MyBatis 式属性（{@code #{name, jdbcType=VARCHAR}}），
+	 * 解析阶段就截掉，只保留参数名 —— 两条执行路径都按名字取值。
+	 */
+	private static String parameterName(String expression) {
+		int comma = expression.indexOf(',');
+		String name = comma < 0 ? expression : expression.substring(0, comma);
+		name = name.trim();
+		if (name.isEmpty()) {
+			throw new TemplateParseException("empty parameter name in #{" + expression + "}");
+		}
+		return name;
+	}
+
+	/** 解析一个容器的子节点并合并相邻文本。 */
+	private static List<TemplateNode> collect(Element element) {
+		List<TemplateNode> body = new ArrayList<>();
+		collectChildren(element, body);
+		return mergeAdjacentText(body);
 	}
 
 	private static TemplateNode.If parseIf(Element element) {
@@ -114,9 +172,7 @@ public final class TemplateParser {
 		if (test.isEmpty()) {
 			throw new TemplateParseException("<if> requires a 'test' attribute");
 		}
-		List<TemplateNode> body = new ArrayList<>();
-		collectChildren(element, body);
-		return new TemplateNode.If(test, mergeAdjacentText(body));
+		return new TemplateNode.If(test, collect(element));
 	}
 
 	private static TemplateNode.Choose parseChoose(Element element) {
@@ -167,16 +223,8 @@ public final class TemplateParser {
 		}
 		List<TemplateNode> body = new ArrayList<>();
 		collectChildren(element, body);
-		List<TemplateNode> mergedBody = mergeAdjacentText(body);
-		if (!open.isEmpty()) {
-			mergedBody = new ArrayList<>(mergedBody);
-			mergedBody.addFirst(new TemplateNode.Text(open));
-		}
-		if (!close.isEmpty()) {
-			mergedBody = new ArrayList<>(mergedBody);
-			mergedBody.addLast(new TemplateNode.Text(close));
-		}
-		return new TemplateNode.ForEach(item, collection, separator, mergedBody);
+		// open/close 属于整段，不属于循环体：塞进 body 会让每行都带上一遍括号
+		return new TemplateNode.ForEach(item, collection, separator, open, close, mergeAdjacentText(body));
 	}
 
 	/**

@@ -16,9 +16,8 @@ import xyz.wewin.autumn.data.meta.jdbc.SqlBuild;
  * <p>这是动态查询的注入防线：调用方传进来的只是“列名引用”，最终拼进 SQL 的标识符一定来自
  * {@link MetaTable#requireColumn(String)} 的返回值；排序字段同样先校验再引用。</p>
  *
- * <p>{@code *Parts} 方法把 SQL 拆成可复用片段（列清单、WHERE、ORDER、SET、主键条件），
- * 供 FreeMarker Mapper XML 组装；{@link #select}/{@link #count}/{@link #insert}/{@link #update}
- * 是片段拼好的默认 SQL。</p>
+ * <p>只服务 {@link MetaQuery} 驱动的 CRUD。命名语句不在这里拼——那部分 SQL 文本来自
+ * Mapper 文件（{@link MetaStatementStore}），两条路各自完整，互不掺混。</p>
  */
 public final class MetaSqlBuilder {
 
@@ -39,66 +38,23 @@ public final class MetaSqlBuilder {
 	 * @param projection 需要查询的列（大小写不敏感）；{@code null}/空表示全列
 	 */
 	public SqlBuild select(MetaTable table, MetaQuery query, List<String> projection) {
-		SelectParts parts = selectParts(table, query, projection);
-		return new SqlBuild("SELECT " + parts.columnsSql() + " FROM " + quote(table.name()) + parts.whereSql()
-				+ parts.orderSql(), parts.args());
+		StringBuilder sql = new StringBuilder("SELECT ")
+				.append(quoteNames(resolveProjection(table, projection))).append(" FROM ")
+				.append(quote(table.name()));
+		List<Object> args = appendWhere(sql, table, query);
+		appendOrder(sql, table, query);
+		return new SqlBuild(sql.toString(), args.toArray());
 	}
 
 	/** COUNT 查询（与 {@link #select} 共用同一组条件参数）。 */
 	public SqlBuild count(MetaTable table, MetaQuery query) {
-		CountParts parts = countParts(table, query);
-		return new SqlBuild("SELECT COUNT(*) FROM " + quote(table.name()) + parts.whereSql(), parts.args());
+		StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM ").append(quote(table.name()));
+		List<Object> args = appendWhere(sql, table, query);
+		return new SqlBuild(sql.toString(), args.toArray());
 	}
 
 	/** INSERT；自增主键未提供时自动省略该列，非自增主键缺失则拒绝。 */
 	public SqlBuild insert(MetaTable table, Map<String, ?> values) {
-		InsertParts parts = insertParts(table, values);
-		return new SqlBuild("INSERT INTO " + quote(table.name()) + " (" + parts.columnsSql() + ") VALUES ("
-				+ parts.valuesSql() + ")", parts.args());
-	}
-
-	/**
-	 * 按主键 UPDATE（部分更新）：只更新传入的列，主键列不允许出现在 SET 里。
-	 *
-	 * @param key 主键值，必须覆盖表的全部主键列
-	 */
-	public SqlBuild update(MetaTable table, Map<String, ?> key, Map<String, ?> values) {
-		UpdateParts parts = updateParts(table, key, values);
-		return new SqlBuild("UPDATE " + quote(table.name()) + " SET " + parts.setSql() + " WHERE "
-				+ parts.keyWhereSql(), parts.args());
-	}
-
-	// ------------------------------------------------------------------
-	// 片段：供 Mapper XML 复用
-	// ------------------------------------------------------------------
-
-	public SelectParts selectParts(MetaTable table, MetaQuery query) {
-		return selectParts(table, query, null);
-	}
-
-	public SelectParts selectParts(MetaTable table, MetaQuery query, List<String> projection) {
-		List<MetaProperty> selected = resolveProjection(table, projection);
-		StringBuilder columns = new StringBuilder();
-		for (int i = 0; i < selected.size(); i++) {
-			if (i > 0) {
-				columns.append(", ");
-			}
-			columns.append(quote(selected.get(i).getName()));
-		}
-		StringBuilder where = new StringBuilder();
-		List<Object> args = appendWhere(where, table, query);
-		StringBuilder order = new StringBuilder();
-		appendOrder(order, table, query);
-		return new SelectParts(columns.toString(), where.toString(), order.toString(), args.toArray());
-	}
-
-	public CountParts countParts(MetaTable table, MetaQuery query) {
-		StringBuilder where = new StringBuilder();
-		List<Object> args = appendWhere(where, table, query);
-		return new CountParts(where.toString(), args.toArray());
-	}
-
-	public InsertParts insertParts(MetaTable table, Map<String, ?> values) {
 		Map<String, Object> resolved = resolveValues(table, values);
 		for (MetaProperty key : table.primaryKeys()) {
 			if (!key.isAutoIncrement()) {
@@ -111,8 +67,9 @@ public final class MetaSqlBuilder {
 				}
 			}
 		}
-		List<String> columns = new ArrayList<>();
 		List<Object> args = new ArrayList<>();
+		StringBuilder columns = new StringBuilder();
+		StringBuilder placeholders = new StringBuilder();
 		for (MetaProperty column : table.columns()) {
 			Object value = resolved.get(column.getName());
 			if (value == null && !resolved.containsKey(column.getName())) {
@@ -121,31 +78,30 @@ public final class MetaSqlBuilder {
 			if (column.isAutoIncrement() && !resolved.containsKey(column.getName())) {
 				continue;
 			}
-			columns.add(quote(column.getName()));
+			if (!columns.isEmpty()) {
+				columns.append(", ");
+				placeholders.append(", ");
+			}
+			columns.append(quote(column.getName()));
+			placeholders.append('?');
 			args.add(MetaTypeCoercion.toJdbc(column, value));
 		}
 		if (columns.isEmpty()) {
 			throw new MetaSqlException("no writable columns provided for insert into '" + table.name() + "'");
 		}
-		StringBuilder valuesSql = new StringBuilder();
-		for (int i = 0; i < columns.size(); i++) {
-			if (i > 0) {
-				valuesSql.append(", ");
-			}
-			valuesSql.append('?');
-		}
-		return new InsertParts(String.join(", ", columns), valuesSql.toString(), args.toArray());
+		return new SqlBuild(
+				"INSERT INTO " + quote(table.name()) + " (" + columns + ") VALUES (" + placeholders + ")",
+				args.toArray());
 	}
 
-	public UpdateParts updateParts(MetaTable table, Map<String, ?> key, Map<String, ?> values) {
-		if (values == null || values.isEmpty()) {
-			throw new MetaSqlException("no columns provided for update on '" + table.name() + "'");
-		}
+	/**
+	 * 按主键 UPDATE（部分更新）：只更新传入的列，主键列不允许出现在 SET 里。
+	 *
+	 * @param key 主键值，必须覆盖表的全部主键列
+	 */
+	public SqlBuild update(MetaTable table, Map<String, ?> key, Map<String, ?> values) {
 		Map<String, Object> resolvedKey = resolveKey(table, key);
 		Map<String, Object> resolvedValues = resolveValues(table, values);
-		if (resolvedValues.isEmpty()) {
-			throw new MetaSqlException("no columns provided for update on '" + table.name() + "'");
-		}
 		List<String> setClauses = new ArrayList<>();
 		List<Object> args = new ArrayList<>();
 		for (MetaProperty column : table.columns()) {
@@ -167,39 +123,11 @@ public final class MetaSqlBuilder {
 			keyClauses.add(quote(column.getName()) + " = ?");
 			args.add(MetaTypeCoercion.toJdbc(column, resolvedKey.get(column.getName())));
 		}
-		return new UpdateParts(String.join(", ", setClauses), String.join(" AND ", keyClauses), args.toArray());
+		return new SqlBuild("UPDATE " + quote(table.name()) + " SET " + String.join(", ", setClauses) + " WHERE "
+				+ String.join(" AND ", keyClauses), args.toArray());
 	}
 
-	/** 主键条件片段：调用方保证主键值完整；args 顺序与 SQL 中的 {@code ?} 一致。 */
-	public KeyParts keyParts(MetaTable table, Map<String, ?> key) {
-		Map<String, Object> resolvedKey = resolveKey(table, key);
-		List<String> clauses = new ArrayList<>();
-		List<Object> args = new ArrayList<>();
-		for (MetaProperty column : table.primaryKeys()) {
-			clauses.add(quote(column.getName()) + " = ?");
-			args.add(MetaTypeCoercion.toJdbc(column, resolvedKey.get(column.getName())));
-		}
-		return new KeyParts(String.join(" AND ", clauses), args.toArray());
-	}
-
-	/** 全列清单（已加引号），供 XML 模板。 */
-	public String columnsSql(MetaTable table) {
-		StringBuilder columns = new StringBuilder();
-		for (int i = 0; i < table.columns().size(); i++) {
-			if (i > 0) {
-				columns.append(", ");
-			}
-			columns.append(quote(table.columns().get(i).getName()));
-		}
-		return columns.toString();
-	}
-
-	/** 单引号标识符，供 XML 生成器使用。 */
-	public String quoteColumn(MetaProperty column) {
-		return quote(column.getName());
-	}
-
-	/** 表名（已加引号）。 */
+	/** 表名（已加引号），供 Mapper 语句的 {@code ${table}}。 */
 	public String quoteTable(MetaTable table) {
 		return quote(table.name());
 	}
@@ -364,18 +292,14 @@ public final class MetaSqlBuilder {
 		return this.dialect.quoteIdentifier(identifier);
 	}
 
-	public record SelectParts(String columnsSql, String whereSql, String orderSql, Object[] args) {
-	}
-
-	public record CountParts(String whereSql, Object[] args) {
-	}
-
-	public record InsertParts(String columnsSql, String valuesSql, Object[] args) {
-	}
-
-	public record UpdateParts(String setSql, String keyWhereSql, Object[] args) {
-	}
-
-	public record KeyParts(String whereSql, Object[] args) {
+	private String quoteNames(List<MetaProperty> columns) {
+		StringBuilder names = new StringBuilder();
+		for (MetaProperty column : columns) {
+			if (!names.isEmpty()) {
+				names.append(", ");
+			}
+			names.append(quote(column.getName()));
+		}
+		return names.toString();
 	}
 }

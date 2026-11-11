@@ -74,7 +74,7 @@ spring-data-jdbc -> spring-data-relational, spring-data-commons,
 ## 5. 对 autumn 的取舍
 
 1. **核心模块（`autumn-data-jdbc` / `autumn-data-meta-jdbc`，方言在 `autumn-data-common`）不依赖 `spring-boot-starter-jdbc`**：
-   - 现网代码实测只 import `javax.sql.DataSource` + `java.sql.*` + `freemarker.*`，无一处 Spring。
+   - 现网代码实测只 import `javax.sql.DataSource` + `java.sql.*`，无一处 Spring，也无模板引擎（动态层的 XML 由 `autumn-data-common` 的 `TemplateParser` 解析后解释执行）。
    - 只需 `com.zaxxer:HikariCP`（版本由 `spring-boot-starter-parent` BOM 管理，无需写死）。
    - 事务：首期直接用 JDBC 原生 `Connection.setAutoCommit(false)` / `commit()`；若使用方要 `@Transactional`，只需在 classpath 上有 `spring-tx` + `spring-jdbc` 的 `DataSourceTransactionManager`（对 `DataSource` 编程，不依赖我们的类），无需核心模块透传。
 2. **不引入 `spring-data-commons`**：注解（`@Repository`/`@Query`/`@Param`/`CrudRepository`）由 autumn 自定义，方法名解析按 [spring-data-derived-query.md](spring-data-derived-query.md) 在编译期自实现；避免 Spring 类型进公开 API、避免 APT 生成代码依赖运行时反射。

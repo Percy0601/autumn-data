@@ -11,7 +11,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
-import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaMapper;
+import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
 import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaMapperEngine;
 import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaMapperOptions;
 

@@ -10,8 +10,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import javax.sql.DataSource;
-
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,7 +22,9 @@ import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.ConnectionSource;
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 import xyz.wewin.autumn.data.jdbc.runtime.JdbcConnectionSource;
+import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
+import xyz.wewin.autumn.data.meta.jdbc.SqlBuild;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -65,9 +65,10 @@ class MetaMapperDynamicTest {
 		this.connectionSource = new PerThreadConnectionSource(() -> new JdbcConnectionSource(this.dataSource));
 		AutumnJdbc jdbc = new AutumnJdbc(this.connectionSource, new H2Dialect(), FetchPolicy.defaults());
 		this.registry = new MetaTableRegistry(this.dataSource, new H2Dialect(), Set.of("deleted_flag"));
-		MetaMapperXmlStore xmlStore = new MetaMapperXmlStore(this.xmlDirectory.toString(), true);
+		MetaStatementStore statementStore = new MetaStatementStore(this.xmlDirectory.toString(), true,
+				new H2Dialect());
 		this.client = new MetaMapperClient("test", jdbc, this.connectionSource, this.registry,
-				new MetaSqlBuilder(new H2Dialect()), xmlStore, 1000);
+				new MetaSqlBuilder(new H2Dialect()), statementStore, 1000);
 	}
 
 	@Test
@@ -179,7 +180,7 @@ class MetaMapperDynamicTest {
 		Object key = this.client.save("form_order", Map.of("order_no", "E001", "status", 1));
 		assertThatThrownBy(() -> this.client.updateById("form_order", key, Map.of()))
 				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("no columns provided");
+				.hasMessageContaining("must not be empty");
 	}
 
 	@Test
@@ -216,41 +217,127 @@ class MetaMapperDynamicTest {
 	}
 
 	@Test
-	void generatesMapperXmlOnceAndReusesExistingFile() throws Exception {
-		this.client.save("form_order", Map.of("order_no", "X001", "status", 1));
-
+	void namedStatementsGenerateTheMapperFileOnce() throws Exception {
 		Path file = this.xmlDirectory.resolve("form_order.xml");
-		assertThat(file).exists();
+		this.client.save("form_order", Map.of("order_no", "G001", "status", 1));
+		assertThat(file).doesNotExist();
+
+		assertThat(this.client.selectCount("form_order", "selectCount", Map.of())).isEqualTo(1);
+
 		String content = Files.readString(file);
 		assertThat(content).contains("generated-by: autumn-data-meta-jdbc");
-		assertThat(content).contains("id=\"findList\"");
-		assertThat(content).contains("id=\"insert\"");
+		assertThat(content).contains("id=\"selectList\"").contains("id=\"selectCount\"");
+		assertThat(content).contains("id=\"insert\"").contains("id=\"updateByKey\"");
+		assertThat(content).contains("#{status}").contains("<where>").contains("<trim");
 
-		Path before = this.xmlDirectory.resolve("form_order.xml");
-		MetaMapperXmlStore secondStore = new MetaMapperXmlStore(this.xmlDirectory.toString(), true);
-		MetaMapperXml xml = secondStore.load(this.registry.require("form_order"));
-		assertThat(xml.generated()).isTrue();
-		assertThat(Files.readString(before)).isEqualTo(content);
+		// 文件已经在了：改表 + refresh 只重读，不重写
+		try (Connection connection = this.dataSource.getConnection(); Statement statement = connection.createStatement()) {
+			statement.execute("ALTER TABLE form_order ADD COLUMN remark VARCHAR(64)");
+		}
+		this.client.refresh("form_order");
+
+		assertThat(this.client.selectList("form_order", "selectList", Map.of("order_no", "G001")))
+				.extracting(row -> row.getString("order_no")).containsExactly("G001");
+		assertThat(Files.readString(file)).isEqualTo(content);
 	}
 
 	@Test
-	void usesExistingCustomMapperXmlWithoutRegenerating() throws Exception {
+	void generatedStatementsBindValuesAndKeepHoldersInSql() {
+		Object key = this.client.save("form_order", Map.of("order_no", "N001", "status", 1));
+
+		SqlBuild sql = this.client.sqlFor("form_order", "selectList", Map.of("order_no", "N' OR '1'='1"));
+		assertThat(sql.sql()).doesNotContain("N' OR '1'='1").contains("= ?");
+		assertThat(sql.args()).containsExactly("N' OR '1'='1");
+		assertThat(this.client.selectList("form_order", "selectList", Map.of("order_no", "N' OR '1'='1")))
+				.isEmpty();
+
+		MetaRow matched = this.client.selectOne("form_order", "selectList", Map.of("status", 1, "id", key))
+				.orElseThrow();
+		assertThat(matched.getString("order_no")).isEqualTo("N001");
+
+		this.client.execute("form_order", "updateByKey", Map.of("id", key, "status", 2));
+		assertThat(this.client.findById("form_order", key).orElseThrow().getInt("status")).isEqualTo(2);
+	}
+
+	@Test
+	void executeRunsThePartialInsertFromTheMapperFile() {
+		// 只给两个列：trim 把没传值的列整段剥掉，交给数据库默认值
+		assertThat(this.client.execute("form_order", "insert", Map.of("order_no", "I001", "status", 1))).isEqualTo(1);
+
+		MetaRow row = this.client.selectOne("form_order", "selectList", Map.of("order_no", "I001")).orElseThrow();
+		assertThat(row.getInt("status")).isEqualTo(1);
+		assertThat(row.getInt("deleted_flag")).isZero();
+		assertThat(row.get("amount")).isNull();
+	}
+
+	@Test
+	void customMapperFileWinsAndIsNeverRewritten() throws Exception {
 		String custom = """
 				<?xml version="1.0" encoding="UTF-8"?>
 				<mapper namespace="custom.form_order">
-				    <select id="findList"><![CDATA[SELECT ${columnsSql} FROM ${table}${whereSql}${orderSql}]]></select>
-				    <select id="count"><![CDATA[SELECT COUNT(*) FROM ${table}<#if whereSql?has_content>${whereSql}</#if>]]></select>
-				    <insert id="insert"><![CDATA[INSERT INTO ${table} (${insertColumnsSql}) VALUES (${insertValuesSql})]]></insert>
-				    <update id="update"><![CDATA[UPDATE ${table} SET ${setSql} WHERE ${keyWhereSql}]]></update>
+				    <select id="byStatus">
+				        SELECT id, order_no FROM ${table}
+				        <where>
+				            AND deleted_flag = 0
+				            <if test="status != null">AND status = #{status}</if>
+				            <if test="amount != null">AND amount &gt; #{amount}</if>
+				        </where>
+				    </select>
+				    <select id="orderNosByIds">
+				        SELECT order_no FROM ${table} WHERE id IN
+				        <foreach collection="ids" item="no" open="(" separator="," close=")">#{no}</foreach>
+				    </select>
+				    <delete id="dropById">DELETE FROM ${table} WHERE id = #{id}</delete>
 				</mapper>
 				""";
-		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), custom);
+		Path file = this.xmlDirectory.resolve("form_order.xml");
+		Files.writeString(file, custom);
 
-		Object key = this.client.save("form_order", Map.of("order_no", "C001", "status", 1));
-		assertThat(this.client.findById("form_order", key).orElseThrow().getString("order_no")).isEqualTo("C001");
+		Object first = this.client.save("form_order", Map.of("order_no", "C001", "status", 1, "amount", "5.00"));
+		Object second = this.client.save("form_order", Map.of("order_no", "C002", "status", 2, "amount", "50.00"));
 
-		String content = Files.readString(this.xmlDirectory.resolve("form_order.xml"));
-		assertThat(content).contains("namespace=\"custom.form_order\"");
-		assertThat(content).doesNotContain("generated-by: autumn-data-meta-jdbc");
+		assertThat(this.client.selectList("form_order", "byStatus", Map.of("status", 1)))
+				.extracting(row -> row.getString("order_no")).containsExactly("C001");
+		assertThat(this.client.selectList("form_order", "byStatus", Map.of("amount", "10")))
+				.extracting(row -> row.getString("order_no")).containsExactly("C002");
+
+		SqlBuild in = this.client.sqlFor("form_order", "orderNosByIds", Map.of("ids", List.of(first, second)));
+		assertThat(in.sql()).contains("(?,?)");
+		assertThat(in.args()).containsExactly(first, second);
+		assertThat(this.client.selectList("form_order", "orderNosByIds", Map.of("ids", List.of(first, second))))
+				.hasSize(2);
+
+		assertThatThrownBy(() -> this.client.execute("form_order", "dropById", Map.of("id", first)))
+				.isInstanceOf(MetaSqlException.class)
+				.hasMessageContaining("does not run physical deletes");
+		assertThat(this.client.findById("form_order", first)).isPresent();
+
+		assertThat(Files.readString(file)).isEqualTo(custom);
+	}
+
+	@Test
+	void dollarInterpolationRejectsNonIdentifierValues() throws Exception {
+		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<mapper namespace="custom.form_order">
+				    <select id="rawNo">SELECT order_no FROM ${table} WHERE order_no = ${order_no}</select>
+				</mapper>
+				""");
+
+		assertThatThrownBy(() -> this.client.sqlFor("form_order", "rawNo", Map.of("order_no", "A001' OR 1=1 --")))
+				.isInstanceOf(MetaSqlException.class)
+				.hasMessageContaining("not an identifier fragment");
+
+		// ${} 走拼接：过白名单的标识符照拼，这是写语句的人显式承担的风险面
+		assertThat(this.client.sqlFor("form_order", "rawNo", Map.of("order_no", "A001")).sql())
+				.contains("WHERE order_no = A001");
+	}
+
+	@Test
+	void missingStatementReportsTheAvailableOnes() {
+		assertThatThrownBy(() -> this.client.sqlFor("form_order", "noSuchStatement", Map.of()))
+				.isInstanceOf(MetaSqlException.class)
+				.hasMessageContaining("noSuchStatement")
+				.hasMessageContaining("selectList");
 	}
 }

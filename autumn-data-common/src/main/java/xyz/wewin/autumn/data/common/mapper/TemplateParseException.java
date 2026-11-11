@@ -1,4 +1,4 @@
-package xyz.wewin.autumn.data.jdbc.compiler.template;
+package xyz.wewin.autumn.data.common.mapper;
 
 /**
  * 模板解析异常：XML 格式错误、标签属性缺失、插值语法不合法时抛出。

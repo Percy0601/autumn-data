@@ -8,7 +8,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcOperations;
 
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
-import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaMapper;
+import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
 import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaQuery;
 import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaRow;
 

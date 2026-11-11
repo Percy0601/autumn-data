@@ -1,8 +1,6 @@
-package xyz.wewin.autumn.data.jdbc.compiler.mapper;
+package xyz.wewin.autumn.data.common.mapper;
 
 import java.util.List;
-
-import xyz.wewin.autumn.data.jdbc.compiler.template.TemplateNode;
 
 /**
  * 解析后的 Mapper 定义：一个 XML 文件对应一个 {@code MapperDefinition}。

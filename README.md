@@ -11,7 +11,7 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 | `autumn-data-jdbc-spring-boot-starter` | Spring Boot 集成层（唯一使用方入口） | 约定大于配置：只引这一个依赖 + `spring.datasource.*` 即可用。仿 MyBatis 分层（引擎零 Spring / 集成层依赖 Boot），自动配置 `Dialect` Bean，支持 `autumn.data.jdbc.dialect` 显式指定或按 `DataSource` 元数据自动识别。多库场景可用 `autumn.data.meta.enabled=true` 让 `SpringMetaDataSource`（继承 Spring `AbstractDataSource`）接管数据源，底层交给 `MetaDataSource`。 |
 | `autumn-data-jdbc-compiler` | JSR-269 注解处理器 | 编译期为 `@AutumnRepository` 接口生成 `<名称>Impl`；仅 `annotationProcessorPaths` 使用，**运行时不依赖**。已实现：实体元数据提取（`@Entity`/`@Table`/`@Id`/`@Column`/`@GeneratedValue`/`@OneToMany`）、CRUD + 分页 + 一对多 + 方法名派生查询 SQL **编译期内联为生成类常量**、`RowMapper` 与批量读写/装配代码生成。解析不了的方法在**接口方法声明处**报错，不静默生成半成品。 |
 | `autumn-data-jdbc-spring-boot-starter-using` | 使用方示例（不发布） | **使用驱动开发的主战场**：只引 starter + 挂 compiler 处理器，在这里写后续所有用法（单表、一对多、多对一、派生查询），以用法倒逼核心实现。 |
-| `autumn-data-meta-jdbc` | 轻量动态 SQL 引擎 + 动态表 CRUD | 对标 **MyBatis** 但更轻量，支持**运行时动态加载**；用 **FreeMarker（.ftl）** 语法替代 MyBatis 的 XML SQL。数据源连接池同样使用 **HikariCP**；方言复用 `autumn-data-common`。另含 `dynamic` 包：运行期建表后无需重启即可按表名/列名查询、保存、更新（`MetaMapper`，见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)）；动态表复用了 common 的 `MetaClass` / `MetaProperty` 元模型，Mapper XML 首次缺失时按元数据生成、之后直接复用。 |
+| `autumn-data-meta-jdbc` | 轻量动态 SQL 引擎 + 动态表 CRUD | 对标 **MyBatis** 但更轻量，支持**运行时动态加载**：XML 方言与静态实体的编译期 Mapper **同一套**（`#{}` 绑定、`${}` 标识符、`<if>/<choose>/<foreach>/<where>/<trim>`），运行期解释执行，不引模板引擎。数据源连接池同样使用 **HikariCP**；方言与解析器复用 `autumn-data-common`。另含 `dynamic` 包：运行期建表后无需重启即可按表名/列名查询、保存、更新（`MetaMapper`，见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)）；动态表复用了 common 的 `MetaClass` / `MetaProperty` 元模型，Mapper 文件首次缺失时按表结构生成一份、之后归使用方编辑。 |
 
 各数据访问模块共享 `autumn-data-common` 的多数据库方言（`Dialect`）抽象，至少支持 **MySQL** 与 **PostgreSQL**，并可通过 `DialectResolver` 根据 `DataSource` 的元数据自动识别。
 
@@ -20,7 +20,7 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 - [x] 根 POM / `.gitignore` / `.gitattributes` / Maven Wrapper
 - [x] `autumn-data-jdbc` 模块骨架 + 多数据库 `Dialect`
 - [x] 新增 `autumn-data-common`：收编 jdbc / meta 两套重复 `Dialect` 为公共底座，各模块改为依赖它
-- [x] `autumn-data-meta-jdbc` 模块骨架 + FreeMarker 配置（原 `autumn-data-meta`，方言已收编至 `autumn-data-common`）
+- [x] `autumn-data-meta-jdbc` 模块骨架（原 `autumn-data-meta`，方言已收编至 `autumn-data-common`）
 - [x] `autumn-data-common` 新增 `MetaDataSource`：多连接池注册表（`name → DataSource`，懒加载 + 多池模式 3 分钟轮询回收空闲 Hikari 池 + 默认池保护）
 - [x] `autumn-data-common` 新增 `GlobalScheduler`：框架内**唯一**的定时任务线程池（懒启动的单线程守护调度器，任务抛异常只记日志、不静默停止排期）；`MetaDataSource` 的空闲池轮询改为挂在其上，组件「停止」只 `cancel` 自己的 future，不再各自 `Executors.newXxx` 建池
 - [x] Spring Data 派生查询（方法名约定）规范文档：[docs/spring-data-derived-query.md](docs/spring-data-derived-query.md)
@@ -39,11 +39,12 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 - [x] compiler：解析不了的接口方法（未知属性/关键词、参数或返回类型不符、`Distinct`/`First`/`deleteBy`/两层以上关联）在**方法声明处**报错，不再静默跳过后由 javac 报「实现类未覆盖…」
 - [x] 一次性取数上下文（`AutumnDataContextHolder`，按线程保存 + `wrap` 线程池透传）：分页关联加载三态（`DEFAULT` 阈值级联 / `CASCADE` 强制级联 / `DISABLED` 强制关闭）与**字段投影**（`selectFields` / `excludeFields` 运行期真裁剪 `SELECT` 列清单，主键与多对一外键编译期判定为不可省略，级联不被裁剪打断）；被最近一次取实体行的查询消费后自动清除，无需手动 `clear`
 - [x] starter 多数据源接管（`autumn.data.meta.enabled=true`，默认关闭）：`SpringMetaDataSource` 继承 Spring 的 `AbstractDataSource` 成为应用唯一的 `DataSource`（配置排在 `DataSourceAutoConfiguration` 之前，Boot 建池自动退让），底层就是 `MetaDataSource` 注册表；默认池参数仍来自 `spring.datasource.*`（含 `spring.datasource.hikari.*` 调优项），额外池 `autumn.data.meta.pools.<名称>.*` 懒建 + 空闲回收，运行期 `register(name, supplier)` 可继续追加；Spring 事务只绑默认池，`@Transactional` 提交/回滚实测不变（using 模块有示例与集成测试）
-- [x] `autumn-data-meta-jdbc` 新增 `dynamic` 包：运行期动态表 CRUD（`MetaMapper` 静态门面 + 按 pool 绑定的 `MetaMapperClient` + `DatabaseMetaData` 元数据快照 + `refresh` 热更新 + 条件/排序/分页/批量保存/部分更新/类型转换）；元模型直接复用 `autumn-data-common` 的 `MetaClass` / `MetaProperty`，`MetaTable` 只是它的物理表视图；**不提供物理删除**，逻辑删除列可自动过滤；12 个 H2 用例覆盖“建表 → 不重启读写 → 加列 refresh → 复合主键 → Mapper XML 生成/复用”
+- [x] `autumn-data-meta-jdbc` 新增 `dynamic` 包：运行期动态表 CRUD（`MetaMapper` 静态门面 + 按 pool 绑定的 `MetaMapperClient` + `DatabaseMetaData` 元数据快照 + `refresh` 热更新 + 条件/排序/分页/批量保存/部分更新/类型转换）；元模型直接复用 `autumn-data-common` 的 `MetaClass` / `MetaProperty`，`MetaTable` 只是它的物理表视图；**不提供物理删除**，逻辑删除列可自动过滤；16 个 H2 用例覆盖“建表 → 不重启读写 → 加列 refresh → 复合主键 → Mapper 文件生成一次/手工文件优先/注入拒绝”
 - [ ] 动态表 CRUD 接入 Spring 事务（当前单方法内自提交，跨方法 `@Transactional` 暂不生效）
 - [ ] `OrderBy` 之外的排序入参（`findAllBy(Sort)`）与 `Pageable` 排序
 - [ ] `autumn-data-meta-jdbc` 同步去 Spring 依赖（同样挪到各自 starter）
-- [x] `autumn-data-meta-jdbc`：FreeMarker 动态 Mapper XML 执行引擎（首次访问按元数据生成，已存在则直接复用；SQL 骨架放在 `<xml-directory>/<表名>.xml`，运行期由 FreeMarker 用表/列/条件片段渲染）
+- [x] `autumn-data-meta-jdbc`：动态 Mapper 文件 + 运行期解释器（`MetaStatementStore` 首次访问按表结构生成 `<xml-directory>/<表名>.xml`，已存在则直接用、永不回头覆盖；`SqlTemplate` 解释执行 common 的同一套 XML 方言，`#{}` 解析期就摘成 JDBC 绑定、`${}` 只放标识符白名单；命名语句走 `sqlFor/selectList/selectOne/selectCount/execute`）
+- [x] XML 方言下沉 `autumn-data-common`（`TemplateParser` / `TemplateNode` / `MapperXmlParser`），编译期生成器与动态运行期共用一棵 AST；去掉 `org.freemarker` 依赖（FreeMarker 的 `<#if>` 不是合法 XML，兼容只做在 `test` 表达式层：`name??` / `name?has_content` / `name?size`）
 
 ## 依赖策略
 
@@ -97,14 +98,13 @@ MetaMapper.of("tenant-a").findList("form_order", MetaQuery.by("status", 1));
 ```
 
 - 元数据从 `DatabaseMetaData` 读取，直接填入 `MetaClass` / `MetaProperty`（表名 = `MetaClass.name`、schema = `namespace`、列 = properties）；建表/加列**提交后**调 `MetaMapper.refresh("form_order")` 换快照，不重启；
-- **Mapper XML 按需生成**：首次访问某张表时，若 `autumn.data.meta.mapper.xml-directory`（默认 `meta-mappers`）下没有 `<表名>.xml`，用 FreeMarker 模板按元数据生成一份并落盘；已存在则直接读取，不重复生成。文件里是 SQL 骨架（`${table}` / `${columnsSql}` / `${whereSql}` / `${setSql}` 等），运行期仍由 FreeMarker 用当前元数据片段渲染；
-- 自动生成的文件带 `generated-by` 标记与表结构 fingerprint（仅用于识别）；**文件存在就直接复用，不再生成**。加列后 `refresh` 仍可用，因为 `${columnsSql}` / `${setSql}` 等片段是运行期按新元数据重算的；确实要按新结构重写生成文件时，删掉文件即可；
-- 手工改过的文件（无 `generated-by` 标记）同样原样使用，不会被覆盖；
+- **Mapper 文件按需生成**：命名语句（`selectList/selectOne/selectCount/execute/sqlFor`）的 SQL 来自 `<xml-directory>/<表名>.xml`；文件不存在时按表结构生成一份（逐列 `<if>` + `<where>` + `<trim>`）并落盘，**已存在就直接使用，改表也不会回头覆盖**——文件归使用方所有。`MetaQuery` 驱动的 CRUD 不读文件，SQL 由 `MetaSqlBuilder` 按元数据现拼（条件运算符是开集，固定文件表达不了）；
+- 自动生成的文件带 `generated-by` 标记；`refresh` 只丢缓存重读文件，要按新结构重来就删文件；手工文件同样原样使用，不会被覆盖；
 - **没有 delete**：应用侧不提供物理删除，作废用一次状态列更新；`deleted_flag` / `del_flag` / `is_deleted` 可自动过滤；
 - `findList` 默认最多 1000 行，多数据源按 pool 绑定句柄而不是 ThreadLocal；
 - 当前版本**不接入 Spring 事务**：单方法内自提交，跨方法 `@Transactional` 待下一版接入（替换连接源即可，门面/SQL 层不动）。
 
-Mapper XML 相关配置：
+Mapper 文件相关配置：
 
 ```properties
 autumn.data.meta.mapper.xml-directory=meta-mappers   # 空串表示只生成到内存、不落盘
@@ -118,7 +118,7 @@ autumn.data.meta.mapper.generate-xml=true            # false 时缺失 XML 直�
 | `autumn-data-common` | 纯 JDK（`java.sql` / `javax.sql`）+ `com.zaxxer:HikariCP`（optional，仅 `MetaDataSource` 回收检测用，不传递） | — | H2、JUnit 5、Mockito |
 | `autumn-data-jdbc` | `autumn-data-common`、`com.zaxxer:HikariCP`、`org.slf4j:slf4j-api`、`javax.sql.DataSource`（JDK） | `jakarta.persistence:jakarta.persistence-api`（实体注解）、APT（待加） | H2 |
 | `autumn-data-jdbc-spring-boot-starter` | `autumn-data-jdbc`、`autumn-data-common`、`autumn-data-meta-jdbc`、`spring-boot-starter-jdbc`、`spring-boot-autoconfigure` | `spring-boot-configuration-processor`（构建期，不入依赖树） | H2、spring-boot-test |
-| `autumn-data-meta-jdbc` | `autumn-data-common`、`autumn-data-jdbc`、`com.zaxxer:HikariCP`、`org.freemarker:freemarker` | — | H2 |
+| `autumn-data-meta-jdbc` | `autumn-data-common`、`autumn-data-jdbc`、`com.zaxxer:HikariCP` | — | H2 |
 
 说明：
 - `spring-boot-starter-jdbc` 传递引入 `spring-boot-starter` → `spring-boot` + `snakeyaml` + `logback` + `jsp` 等，以及 `spring-jdbc`/`spring-tx`，对「编译期生成 SQL、运行时零反射」的核心库属于额外负担。
@@ -198,5 +198,5 @@ mvn -B clean install -DskipTests
 - Java 25
 - Spring Boot 4.1.2 父 POM（仅作 BOM 与构建约定）
 - HikariCP（数据源连接池，核心模块直接声明，不经由 `spring-boot-starter-jdbc`）
-- FreeMarker（替代 MyBatis XML）
+- MyBatis 式 XML 方言（`#{}` 绑定 + `${}` 标识符 + `<if>/<choose>/<foreach>/<where>/<trim>`），由 `autumn-data-common` 解析成同一棵 AST：静态实体走编译期生成 Java，动态表走运行期解释，**不引模板引擎**
 - 目标数据库：MySQL、PostgreSQL（方言可扩展）

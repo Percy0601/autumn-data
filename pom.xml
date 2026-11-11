@@ -8,7 +8,7 @@
 	<version>0.0.1-SNAPSHOT</version>
 	<packaging>pom</packaging>
 	<name>autumn-data</name>
-	<description>Autumn 数据访问层：零反射 JDBC 仓储（编译期处理）+ FreeMarker 动态 SQL 引擎</description>
+	<description>Autumn 数据访问层：零反射 JDBC 仓储（编译期处理）+ 动态表 Mapper XML 引擎（运行期解释）</description>
 
 	<!--
 		兼容 Maven 4.x：本项目沿用 POM Model 4.0.0（Maven 3 / 4 通用），

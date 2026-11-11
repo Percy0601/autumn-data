@@ -1,7 +1,9 @@
-package xyz.wewin.autumn.data.jdbc.compiler.mapper;
+package xyz.wewin.autumn.data.common.mapper;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -14,16 +16,17 @@ import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.xml.sax.SAXException;
 
-import xyz.wewin.autumn.data.jdbc.compiler.mapper.MapperDefinition.StatementDefinition;
-import xyz.wewin.autumn.data.jdbc.compiler.mapper.MapperDefinition.StatementType;
-import xyz.wewin.autumn.data.jdbc.compiler.template.TemplateNode;
-import xyz.wewin.autumn.data.jdbc.compiler.template.TemplateParseException;
-import xyz.wewin.autumn.data.jdbc.compiler.template.TemplateParser;
+import xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementDefinition;
+import xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementType;
 
 /**
  * MyBatis 风格 XML Mapper 解析器：用 JDK 内置 DOM 把 {@code <mapper>} 文件翻译成 {@link MapperDefinition}。
  *
- * <p>编译期调用，运行期不出现。零第三方依赖——只用 {@code javax.xml.parsers}。</p>
+ * <p>编译期注解处理器和动态表运行期共用这一份语法：静态路径把 AST 编译成 Java 源码，
+ * 动态路径直接解释执行 AST。解析阶段就把 {@code #{...}} 摘成独立的
+ * {@link TemplateNode.Parameter} 节点，任何插值都不会在文本层被二次解释。</p>
+ *
+ * <p>零第三方依赖——只用 {@code javax.xml.parsers}。</p>
  *
  * <p>XML 格式示例：</p>
  * <pre>{@code
@@ -67,6 +70,13 @@ public final class MapperXmlParser {
 		catch (IOException ex) {
 			throw new MapperXmlParseException("failed to read mapper XML: " + resourcePath, ex);
 		}
+	}
+
+	/**
+	 * 从 XML 文本解析 Mapper XML（动态层的文件已在内存里）。
+	 */
+	public static MapperDefinition parse(String xml, String sourceDescription) {
+		return parse(new ByteArrayInputStream(xml.getBytes(StandardCharsets.UTF_8)), sourceDescription);
 	}
 
 	/**
@@ -125,6 +135,9 @@ public final class MapperXmlParser {
 			DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
 			factory.setNamespaceAware(false);
 			factory.setValidating(false);
+			// mapper XML 不需要 DTD，而运行期这份是从磁盘读的：直接禁掉 DOCTYPE，
+			// XXE 就没有入口，比只关外部实体少一类漏配。
+			factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
 			factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
 			factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
 			DocumentBuilder builder = factory.newDocumentBuilder();

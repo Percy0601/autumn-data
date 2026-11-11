@@ -12,8 +12,8 @@ import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
  * @param defaultListLimit   {@code findList} 未显式限行时的默认上限（防止全表拉取）
  * @param fetchPolicy        批量分块与关联取数上限（复用 autumn-data-jdbc 的策略对象）
  * @param logicDeleteColumns 逻辑删除列名（大小写不敏感）；命中后查询自动追加 {@code = 0}，未命中不追加
- * @param xmlDirectory       Mapper XML 存放目录；空串表示只生成到内存、不落盘
- * @param generateXml        文件不存在时是否用 FreeMarker 按元数据生成；false 时缺失 XML 直接报错
+ * @param xmlDirectory       Mapper 文件目录；空串表示语句只在内存里生成、不落盘
+ * @param generateXml        文件不存在时是否按表结构生成一份 Mapper 文件；false 时缺失直接报错
  */
 public record MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,
 		String xmlDirectory, boolean generateXml) {

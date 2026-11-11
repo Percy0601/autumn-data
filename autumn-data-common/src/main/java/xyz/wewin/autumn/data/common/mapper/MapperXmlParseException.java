@@ -1,4 +1,4 @@
-package xyz.wewin.autumn.data.jdbc.compiler.mapper;
+package xyz.wewin.autumn.data.common.mapper;
 
 /**
  * Mapper XML 解析异常：文件格式错误、属性缺失、XML 语法不合法时抛出。
