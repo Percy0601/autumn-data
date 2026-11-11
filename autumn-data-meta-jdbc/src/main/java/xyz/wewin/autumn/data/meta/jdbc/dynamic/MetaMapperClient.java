@@ -2,10 +2,10 @@ package xyz.wewin.autumn.data.meta.jdbc.dynamic;
 
 import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.TreeMap;
 import java.util.function.BiFunction;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -316,9 +316,12 @@ public final class MetaMapperClient {
 	/**
 	 * 参数键先按元数据归一：语句里的 {@code test}/{@code #{}} 引用的就是列名本身，调用方传
 	 * {@code ORDER_NO} 还是 {@code order_no} 都能对上；非列名的键（循环变量、业务开关）原样保留。
+	 *
+	 * <p>查表也大小写不敏感：H2/Oracle 的元数据列名是大写，手写文件里通常按 MySQL 习惯写小写，
+	 * 两边必须能对上，否则 {@code #{order_no}} 会静默绑成 {@code null}。</p>
 	 */
 	private Map<String, Object> model(MetaTable table, Map<String, ?> params) {
-		Map<String, Object> model = new HashMap<>();
+		Map<String, Object> model = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
 		model.put("table", this.sqlBuilder.quoteTable(table));
 		if (params != null) {
 			for (Map.Entry<String, ?> entry : params.entrySet()) {

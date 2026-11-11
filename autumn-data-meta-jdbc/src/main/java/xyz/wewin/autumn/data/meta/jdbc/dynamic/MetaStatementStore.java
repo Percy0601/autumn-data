@@ -9,9 +9,11 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -33,6 +35,9 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
  *   <li>都没有且 {@code generateXml=true}：按 {@link MetaTable} 的列结构生成一份 MyBatis 风格的
  *       Mapper XML，写到 {@code <xmlDirectory>} 后使用；目录为空则只在内存里用、不落盘。</li>
  * </ol>
+ *
+ * <p>前两级按「表名原样 / 小写 / 大写」三个文件名依次找：元数据里的表名在 H2、Oracle 下是大写，
+ * 而手写文件多按 MySQL 习惯写成小写，两边得能对上才算「文件存在」。</p>
  *
  * <p>生成的文件是<b>一次性产物</b>：之后无论表结构怎么变，都不会回头覆盖它——改表加列要同步进
  * 语句，请手工编辑该文件（它归使用方所有）。{@link #refresh(String)} 只丢掉进程内缓存、
@@ -100,23 +105,27 @@ public final class MetaStatementStore {
 	}
 
 	private Map<String, SqlTemplate> load(MetaTable table) {
-		String fileName = fileName(table);
-		Path file = this.directory == null ? null : this.directory.resolve(fileName);
-		String content = readDisk(file);
-		String source = file == null ? null : file.toString();
-		if (content == null) {
-			content = readClasspath(fileName);
-			source = "classpath:" + CLASSPATH_DIRECTORY + fileName;
-		}
-		if (content == null) {
-			if (!this.generateXml) {
-				throw new MetaSqlException("mapper file not found for table '" + table.name() + "'; expected "
-						+ (file == null ? CLASSPATH_DIRECTORY + fileName + " on the classpath" : file));
+		List<String> candidates = fileNames(table);
+		for (String fileName : candidates) {
+			Path file = this.directory == null ? null : this.directory.resolve(fileName);
+			String content = readDisk(file);
+			if (content != null) {
+				return parse(content, file + " for " + table.name());
 			}
-			content = generate(table);
-			source = (file == null ? "generated in memory" : file + " (generated)") + " for " + table.name();
-			write(file, content, table);
+			content = readClasspath(fileName);
+			if (content != null) {
+				return parse(content, "classpath:" + CLASSPATH_DIRECTORY + fileName + " for " + table.name());
+			}
 		}
+		if (!this.generateXml) {
+			throw new MetaSqlException("mapper file not found for table '" + table.name() + "'; looked for "
+					+ candidates + " in " + (this.directory == null ? "(no xml-directory)" : this.directory)
+					+ " and on classpath " + CLASSPATH_DIRECTORY + ", and generate-xml is off");
+		}
+		String content = generate(table);
+		Path file = this.directory == null ? null : this.directory.resolve(candidates.get(0));
+		String source = (file == null ? "generated in memory" : file + " (generated)") + " for " + table.name();
+		write(file, content, table);
 		return parse(content, source);
 	}
 
@@ -309,6 +318,20 @@ public final class MetaStatementStore {
 	private static String fileName(MetaTable table) {
 		String safe = table.name().replaceAll("[^A-Za-z0-9_.-]", "_").replace("..", "_");
 		return (safe.startsWith(".") ? "_" + safe : safe) + ".xml";
+	}
+
+	/**
+	 * 候选文件名：表名原样、小写、大写。文件系统的大小写规则不统一，元数据里的表名在
+	 * H2/Oracle 下是大写、MySQL 习惯写小写，手写文件 {@code demo_order.xml} 配
+	 * {@code DEMO_ORDER} 这张表必须能对上，否则会被当成「文件不存在」又生成一份。
+	 */
+	private static List<String> fileNames(MetaTable table) {
+		String base = fileName(table);
+		Set<String> names = new LinkedHashSet<>();
+		names.add(base);
+		names.add(base.toLowerCase(Locale.ROOT));
+		names.add(base.toUpperCase(Locale.ROOT));
+		return List.copyOf(names);
 	}
 
 	private static String namespace(MetaTable table) {

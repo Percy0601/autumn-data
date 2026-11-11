@@ -121,6 +121,26 @@ class MetaMapperDynamicTest {
 	}
 
 	@Test
+	void nullChecksUseTheirOwnBuilders() {
+		this.client.save("form_order",
+				Map.of("order_no", "N001", "status", 1, "create_time", "2026-01-01 10:00:00"));
+		this.client.save("form_order", Map.of("order_no", "N002", "status", 1));
+
+		assertThat(this.client.findList("form_order", MetaQuery.by("status", 1).isNotNull("create_time")))
+				.extracting(row -> row.getString("order_no")).containsExactly("N001");
+		assertThat(this.client.findList("form_order", MetaQuery.by("status", 1).isNull("create_time")))
+				.extracting(row -> row.getString("order_no")).containsExactly("N002");
+
+		// 把 Op 当条件值传会选中 and(String, Object) 重载：拒绝掉，而不是把枚举绑进 SQL
+		assertThatThrownBy(() -> MetaQuery.by("status", MetaQuery.Op.IS_NULL))
+				.isInstanceOf(IllegalArgumentException.class)
+				.hasMessageContaining("isNull");
+		assertThatThrownBy(() -> MetaQuery.all().and("status", MetaQuery.Op.IS_NOT_NULL))
+				.isInstanceOf(IllegalArgumentException.class)
+				.hasMessageContaining("isNotNull");
+	}
+
+	@Test
 	void findPageReturnsContentAndTotal() {
 		for (int i = 1; i <= 3; i++) {
 			this.client.save("form_order", Map.of("order_no", "P00" + i, "status", 1, "amount", i * 10));
@@ -313,6 +333,32 @@ class MetaMapperDynamicTest {
 		assertThat(this.client.findById("form_order", first)).isPresent();
 
 		assertThat(Files.readString(file)).isEqualTo(custom);
+	}
+
+	@Test
+	void statementIdentifiersMatchColumnsRegardlessOfCase() throws Exception {
+		// 元数据列名是小写（H2 DATABASE_TO_LOWER），手写文件常按 MySQL/Oracle 习惯写大写：两边必须对上，
+		// 否则 #{ORDER_NO} 会静默绑成 null
+		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<mapper namespace="upper.form_order">
+				    <select id="byStatus">
+				        SELECT ORDER_NO FROM ${table}
+				        <where>
+				            <if test="STATUS != null">AND STATUS = #{STATUS}</if>
+				        </where>
+				    </select>
+				</mapper>
+				""");
+		this.client.save("form_order", Map.of("order_no", "U001", "status", 1));
+		this.client.save("form_order", Map.of("order_no", "U002", "status", 2));
+
+		assertThat(this.client.selectList("form_order", "byStatus", Map.of("status", 1)))
+				.extracting(row -> row.getString("order_no")).containsExactly("U001");
+		// 调用方传大写键也一样：参数键先按元数据归一，再大小写不敏感地查表
+		assertThat(this.client.selectList("form_order", "byStatus", Map.of("STATUS", 2)))
+				.extracting(row -> row.getString("order_no")).containsExactly("U002");
+		assertThat(this.client.sqlFor("form_order", "byStatus", Map.of()).sql()).doesNotContain("WHERE");
 	}
 
 	@Test

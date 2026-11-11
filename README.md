@@ -39,7 +39,7 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 - [x] compiler：解析不了的接口方法（未知属性/关键词、参数或返回类型不符、`Distinct`/`First`/`deleteBy`/两层以上关联）在**方法声明处**报错，不再静默跳过后由 javac 报「实现类未覆盖…」
 - [x] 一次性取数上下文（`AutumnDataContextHolder`，按线程保存 + `wrap` 线程池透传）：分页关联加载三态（`DEFAULT` 阈值级联 / `CASCADE` 强制级联 / `DISABLED` 强制关闭）与**字段投影**（`selectFields` / `excludeFields` 运行期真裁剪 `SELECT` 列清单，主键与多对一外键编译期判定为不可省略，级联不被裁剪打断）；被最近一次取实体行的查询消费后自动清除，无需手动 `clear`
 - [x] starter 多数据源接管（`autumn.data.meta.enabled=true`，默认关闭）：`SpringMetaDataSource` 继承 Spring 的 `AbstractDataSource` 成为应用唯一的 `DataSource`（配置排在 `DataSourceAutoConfiguration` 之前，Boot 建池自动退让），底层就是 `MetaDataSource` 注册表；默认池参数仍来自 `spring.datasource.*`（含 `spring.datasource.hikari.*` 调优项），额外池 `autumn.data.meta.pools.<名称>.*` 懒建 + 空闲回收，运行期 `register(name, supplier)` 可继续追加；Spring 事务只绑默认池，`@Transactional` 提交/回滚实测不变（using 模块有示例与集成测试）
-- [x] `autumn-data-meta-jdbc` 新增 `dynamic` 包：运行期动态表 CRUD（`MetaMapper` 静态门面 + 按 pool 绑定的 `MetaMapperClient` + `DatabaseMetaData` 元数据快照 + `refresh` 热更新 + 条件/排序/分页/批量保存/部分更新/类型转换）；元模型直接复用 `autumn-data-common` 的 `MetaClass` / `MetaProperty`，`MetaTable` 只是它的物理表视图；**不提供物理删除**，逻辑删除列可自动过滤；16 个 H2 用例覆盖“建表 → 不重启读写 → 加列 refresh → 复合主键 → Mapper 文件生成一次/手工文件优先/注入拒绝”
+- [x] `autumn-data-meta-jdbc` 新增 `dynamic` 包：运行期动态表 CRUD（`MetaMapper` 静态门面 + 按 pool 绑定的 `MetaMapperClient` + `DatabaseMetaData` 元数据快照 + `refresh` 热更新 + 条件/排序/分页/批量保存/部分更新/类型转换，空值判断走 `isNull` / `isNotNull`）；元模型直接复用 `autumn-data-common` 的 `MetaClass` / `MetaProperty`，`MetaTable` 只是它的物理表视图；**不提供物理删除**，逻辑删除列可自动过滤；18 个 H2 用例覆盖“建表 → 不重启读写 → 加列 refresh → 复合主键 → Mapper 文件生成一次/手工文件优先/名字忽略大小写/注入拒绝”，using 模块另有 5 个上层用法示例
 - [ ] 动态表 CRUD 接入 Spring 事务（当前单方法内自提交，跨方法 `@Transactional` 暂不生效）
 - [ ] `OrderBy` 之外的排序入参（`findAllBy(Sort)`）与 `Pageable` 排序
 - [ ] `autumn-data-meta-jdbc` 同步去 Spring 依赖（同样挪到各自 starter）
@@ -100,6 +100,7 @@ MetaMapper.of("tenant-a").findList("form_order", MetaQuery.by("status", 1));
 - 元数据从 `DatabaseMetaData` 读取，直接填入 `MetaClass` / `MetaProperty`（表名 = `MetaClass.name`、schema = `namespace`、列 = properties）；建表/加列**提交后**调 `MetaMapper.refresh("form_order")` 换快照，不重启；
 - **Mapper 文件按需生成**：命名语句（`selectList/selectOne/selectCount/execute/sqlFor`）的 SQL 来自 `<xml-directory>/<表名>.xml`；文件不存在时按表结构生成一份（逐列 `<if>` + `<where>` + `<trim>`）并落盘，**已存在就直接使用，改表也不会回头覆盖**——文件归使用方所有。`MetaQuery` 驱动的 CRUD 不读文件，SQL 由 `MetaSqlBuilder` 按元数据现拼（条件运算符是开集，固定文件表达不了）；
 - 自动生成的文件带 `generated-by` 标记；`refresh` 只丢缓存重读文件，要按新结构重来就删文件；手工文件同样原样使用，不会被覆盖；
+- 文件名与列名按**忽略大小写**对齐：H2/Oracle 元数据给的是大写名，手写文件多按 MySQL 习惯写小写，`demo_order.xml` 配 `DEMO_ORDER` 这张表、`#{order_no}` 配 `ORDER_NO` 这一列都能对上；
 - **没有 delete**：应用侧不提供物理删除，作废用一次状态列更新；`deleted_flag` / `del_flag` / `is_deleted` 可自动过滤；
 - `findList` 默认最多 1000 行，多数据源按 pool 绑定句柄而不是 ThreadLocal；
 - 当前版本**不接入 Spring 事务**：单方法内自提交，跨方法 `@Transactional` 待下一版接入（替换连接源即可，门面/SQL 层不动）。
@@ -111,7 +112,10 @@ autumn.data.meta.mapper.xml-directory=meta-mappers   # 空串表示只生成到�
 autumn.data.meta.mapper.generate-xml=true            # false 时缺失 XML 直接报错
 ```
 
-完整设计与语义见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)。
+完整设计与语义见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)；上层怎么调有两个能直接跑的例子：
+`autumn-data-jdbc-spring-boot-starter-using` 的 `MetaMapperXmlUsingTest`（五段走查：CRUD 不碰文件 →
+首次生成 → 手写文件优先 → 语句类型/id 校验 → 注入边界）和它用的手写文件
+`src/test/resources/meta-mappers/demo_order.xml`。
 
 | 模块 | 运行时依赖 | 编译期依赖 | test |
 | --- | --- | --- | --- |

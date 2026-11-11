@@ -43,6 +43,7 @@ MetaMapper.findOne("form_order", MetaQuery.by("order_no", "A001"));
 MetaMapper.findList("form_order", MetaQuery.by("status", 1)
         .and("create_time", MetaQuery.Op.GE, from)
         .orderBy("create_time", MetaQuery.Direction.DESC));
+MetaMapper.findList("form_order", MetaQuery.all().isNull("remark"));      // 空值判断走专门的方法
 MetaMapper.findPage("form_order", MetaQuery.by("status", 1), Pageable.of(0, 20));
 MetaMapper.count(...); MetaMapper.exists(...);
 
@@ -161,7 +162,10 @@ SqlBuild sql = client.sqlFor("form_order", "selectList", Map.of("status", 1)); /
   `name??`、`name?has_content`、`name?size`、`!expr`、`a && b`。FreeMarker 的 `<#if>` 标签本身
   不是合法 XML（标签名不能以 `#` 开头），DOM 解析阶段就进不来，所以兼容只做在表达式层；
 - 调用方传的参数键按元数据归一，`Map.of("ORDER_NO", ...)` 与 `order_no` 都能对上模板里的列名；
-  值按列的 JDBC 类型收口（表单字符串 → Long/BigDecimal/LocalDateTime）。
+  值按列的 JDBC 类型收口（表单字符串 → Long/BigDecimal/LocalDateTime）；
+- 名字按忽略大小写对齐：`#{}` / `test` 里写的列名、调用方传的键、Mapper 文件名三者都不要求
+  和元数据的大小写一致。H2、Oracle 的元数据列名是大写，手写文件多按 MySQL 习惯写小写，
+  对不上时 `#{order_no}` 会静默绑成 `null`——所以这里显式做成大小写不敏感。
 
 ```properties
 autumn.data.meta.mapper.xml-directory=meta-mappers
@@ -170,6 +174,22 @@ autumn.data.meta.mapper.generate-xml=true
 
 `xml-directory` 为空串时只生成到内存；`generate-xml=false` 时缺失文件直接抛
 `MetaSqlException`，适合生产环境要求 Mapper 必须预置的场景。
+
+### 上手示例
+
+上层怎么调，看使用方模块里的两个文件，都是能直接跑的：
+
+- `autumn-data-jdbc-spring-boot-starter-using/src/test/java/.../using/MetaMapperXmlUsingTest.java`
+  按「CRUD 不碰文件 → 命名语句首次生成 → 手写文件优先 → 类型与 id 校验 → 注入边界」五段走一遍，
+  Spring 只配了数据源，引擎由 starter 自动装配进 `MetaMapper`；
+- `autumn-data-jdbc-spring-boot-starter-using/src/test/resources/meta-mappers/demo_order.xml`
+  就是那份手写 Mapper 文件，`<if>/<where>/<trim>/<choose>/<foreach>` + `#{}` + `${}` 各有一条，
+  注释里写了查找顺序和三条写法约定。
+
+跑起来：`mvn -B test`（全 reactor）。想只跑这一类示例，先 `mvn -B install -DskipTests`
+把编译期处理器装进本地仓库，再 `mvn -pl autumn-data-jdbc-spring-boot-starter-using test
+-Dtest=MetaMapperXmlUsingTest`。生成的文件落在 `target/meta-mappers/`，删掉它就等于
+「按新表结构重来」。
 
 ## 写入语义
 
@@ -222,6 +242,7 @@ ThreadLocal 最多作为“请求级默认池”的便利糖，不能作为唯�
   （`MetaStatementStore` 管文件生命周期，`SqlTemplate` 是运行期解释器，方言与编译期生成器
   共用 `autumn-data-common` 的 `TemplateParser` / `TemplateNode`）
 - 用例：`MetaMapperDynamicTest`（建表 → 不重启 CRUD → 加列 refresh → 逻辑删除 → 复合主键 →
-  Mapper 文件生成一次/改表不重写 → 手工文件优先 → `#{}` 绑定与注入拒绝 → `${}` 白名单 →
-  `<foreach>` / `<trim>` / `<delete>` 拒绝），共 16 个；starter 装配 2 个；using 模块端到端 1 个。
+  Mapper 文件生成一次/改表不重写 → 手工文件优先 → 名字忽略大小写对齐 → 空值判断方法 →
+  `#{}` 绑定与注入拒绝 → `${}` 白名单 → `<foreach>` / `<trim>` / `<delete>` 拒绝），共 18 个；
+  starter 装配 2 个；using 模块端到端 1 个 + 上层用法示例 5 个。
 - 全 reactor：`mvn -B test`，starter / using / compiler / common 全绿。

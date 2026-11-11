@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    使用方手写的 Mapper 文件示例（对应 demo_order 表）。
+
+    放的位置：src/main/resources/meta-mappers/<表名>.xml（测试里放 src/test/resources 同理）。
+    查找顺序是 <xml-directory>/<表名>.xml → classpath meta-mappers/<表名>.xml，
+    表名大小写都能对上；找到就直接用，不会再按表结构生成，也永远不会回头覆盖这个文件——它归使用方所有。
+    想按新表结构重来，删掉文件即可（生成语句的 id 是 selectList / selectCount / insert / updateByKey）。
+
+    三条写法约定：
+      #{}    解析阶段就摘成 JDBC 绑定，SQL 文本里只留 ?，值不进文本；
+      ${}    只做标识符拼接，展开结果必须过标识符白名单（分号、引号、注释符、比较符直接拒绝）；
+             ${table} 由框架按方言填好带引号的表名，调用方不用传；
+      test   MyBatis 写法（a != null）和 FreeMarker 表达式写法（a?? / a?has_content / a?size / !a / a && b）都认。
+
+    列名这里不加引号：交给数据库自身的大小写规则，MySQL / H2 / Oracle 都能跑。
+-->
+<mapper namespace="using.demo_order">
+
+    <!-- 动态条件列表：<where> 整段为空时连 WHERE 一起省掉；ORDER BY 走 ${} 标识符 -->
+    <select id="search">
+        SELECT id, order_no, user_id, amount FROM ${table}
+        <where>
+            <if test="order_no?has_content">AND order_no LIKE #{order_no}</if>
+            <if test="user_id != null">AND user_id = #{user_id}</if>
+            <if test="minAmount != null">AND amount &gt;= #{minAmount}</if>
+            <if test="ids??">AND id IN
+                <foreach collection="ids" item="one" open="(" separator="," close=")">#{one}</foreach>
+            </if>
+        </where>
+        <if test="orderBy != null">ORDER BY ${orderBy}</if>
+    </select>
+
+    <!-- 只按单号取一行 -->
+    <select id="byOrderNo">
+        SELECT id, order_no, user_id, amount FROM ${table} WHERE order_no = #{order_no}
+    </select>
+
+    <!-- 计数：selectCount 走这条语句，返回第一列的数字 -->
+    <select id="countMatching">
+        SELECT COUNT(*) FROM ${table}
+        <where>
+            <if test="user_id != null">AND user_id = #{user_id}</if>
+            <if test="maxAmount != null">AND amount &lt; #{maxAmount}</if>
+        </where>
+    </select>
+
+    <!-- 二选一排序：<choose> 命中第一个为真的分支，都不命中走 otherwise -->
+    <select id="listSorted">
+        SELECT id, order_no FROM ${table}
+        <choose>
+            <when test="latest">ORDER BY id DESC</when>
+            <otherwise>ORDER BY id ASC</otherwise>
+        </choose>
+    </select>
+
+    <!-- 只写调用方给了值的列；自增主键不出现，缺省列交给数据库默认值 -->
+    <insert id="quickAdd">
+        INSERT INTO ${table}
+        <trim prefix="(" suffix=")" suffixOverrides=",">
+            <if test="order_no != null">order_no,</if>
+            <if test="user_id != null">user_id,</if>
+            <if test="amount != null">amount,</if>
+        </trim>
+        <trim prefix="VALUES (" suffix=")" suffixOverrides=",">
+            <if test="order_no != null">#{order_no},</if>
+            <if test="user_id != null">#{user_id},</if>
+            <if test="amount != null">#{amount},</if>
+        </trim>
+    </insert>
+
+    <!-- 部分更新：传 MetaValue.NULL 表示显式置空，不传表示这一列不动 -->
+    <update id="patch">
+        UPDATE ${table}
+        <trim prefix="SET " suffixOverrides=",">
+            <if test="amount != null">amount = #{amount},</if>
+            <if test="user_id != null">user_id = #{user_id},</if>
+        </trim>
+        WHERE id = #{id}
+    </update>
+
+    <!-- 写在文件里也只会解析成功：动态层拒绝执行物理删除 -->
+    <delete id="purgeById">DELETE FROM ${table} WHERE id = #{id}</delete>
+</mapper>

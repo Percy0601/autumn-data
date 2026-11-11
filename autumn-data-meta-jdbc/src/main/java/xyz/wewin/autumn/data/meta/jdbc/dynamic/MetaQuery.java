@@ -53,6 +53,7 @@ public final class MetaQuery {
 
 	/** {@code column = value} 的快捷写法。 */
 	public static MetaQuery by(String column, Object value) {
+		requireNotOperator(value);
 		return all().and(column, Op.EQ, value);
 	}
 
@@ -63,6 +64,7 @@ public final class MetaQuery {
 
 	/** 追加一个 AND 条件（{@code column = value}）。 */
 	public MetaQuery and(String column, Object value) {
+		requireNotOperator(value);
 		return and(column, Op.EQ, value);
 	}
 
@@ -92,6 +94,21 @@ public final class MetaQuery {
 			throw new IllegalArgumentException("LIKE value must not be null for column '" + column + "'");
 		}
 		return and(column, Op.LIKE, "%" + value + "%");
+	}
+
+	/**
+	 * 追加 {@code column IS NULL}。
+	 *
+	 * <p>空值判断没有值可传，只能这样调：{@code and("c", Op.IS_NULL)} 会选中
+	 * {@link #and(String, Object)} 这个重载，把枚举本身当成等值条件的值。</p>
+	 */
+	public MetaQuery isNull(String column) {
+		return and(column, Op.IS_NULL, new Object[0]);
+	}
+
+	/** 追加 {@code column IS NOT NULL}。 */
+	public MetaQuery isNotNull(String column) {
+		return and(column, Op.IS_NOT_NULL, new Object[0]);
 	}
 
 	/** 追加排序（默认升序）。 */
@@ -129,6 +146,14 @@ public final class MetaQuery {
 	private static void requireColumn(String column) {
 		if (column == null || column.isBlank()) {
 			throw new IllegalArgumentException("query column must not be blank");
+		}
+	}
+
+	/** 等值写法里混进 {@link Op} 说明用错了重载，直接报错好过把枚举绑成条件值。 */
+	private static void requireNotOperator(Object value) {
+		if (value instanceof Op op) {
+			throw new IllegalArgumentException("use isNull(...) / isNotNull(...) for " + op
+					+ " instead of the equality overload and(String, Object)");
 		}
 	}
 

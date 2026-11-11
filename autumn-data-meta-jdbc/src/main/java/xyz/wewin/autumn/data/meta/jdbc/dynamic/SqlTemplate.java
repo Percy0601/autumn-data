@@ -3,11 +3,11 @@ package xyz.wewin.autumn.data.meta.jdbc.dynamic;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.function.BiFunction;
 
 import xyz.wewin.autumn.data.common.mapper.MapperDefinition;
@@ -475,12 +475,12 @@ public final class SqlTemplate {
 		}
 	}
 
-	/** 允许 {@code <foreach>} 临时覆盖同名键的参数视图。 */
+	/** 允许 {@code <foreach>} 临时覆盖同名键的参数视图（大小写不敏感，与列名习惯一致）。 */
 	private static final class ScopedParams {
 
 		private final Map<String, ?> source;
 
-		private final Map<String, Object> overrides = new HashMap<>();
+		private final Map<String, Object> overrides = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
 
 		ScopedParams(Map<String, ?> source) {
 			this.source = source;
