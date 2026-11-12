@@ -4,12 +4,14 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.sql.Types;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
 import xyz.wewin.autumn.data.common.dialect.Dialect;
+import xyz.wewin.autumn.data.common.dialect.LimitClause;
 import xyz.wewin.autumn.data.jdbc.page.Page;
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
 
@@ -181,6 +183,217 @@ public class AutumnJdbc {
 			}
 		}
 		return keys;
+	}
+
+	// ------------------------------------------------------------------
+	// 预编译执行计划：#{} 语义 → PreparedStatement；${}/字面量语义 → Statement
+	// ------------------------------------------------------------------
+
+	/**
+	 * 执行预编译计划取列表。
+	 *
+	 * <p>{@link PreparedPlan#parameterCount()} 为 0 时 SQL 文本已是成品，直接走
+	 * {@link java.sql.Statement}；大于 0 时走 {@link PreparedStatement}，由计划自己完成类型化绑定。</p>
+	 */
+	public <A, T> List<T> query(PreparedPlan<A> plan, A args, RowMapper<T> mapper) {
+		return query(plan, args, mapper, 0L, 0L);
+	}
+
+	/** 执行预编译计划取列表并限制行数。 */
+	public <A, T> List<T> query(PreparedPlan<A> plan, A args, RowMapper<T> mapper, long limit) {
+		return query(plan, args, mapper, limit, 0L);
+	}
+
+	/** 执行预编译计划并分页（{@code limit<=0} 表示不分页）。 */
+	public <A, T> List<T> query(PreparedPlan<A> plan, A args, RowMapper<T> mapper, long limit, long offset) {
+		return execute(plan, args, limit, offset, false, null, execution -> {
+			try (ResultSet rs = execution.query()) {
+				List<T> rows = new ArrayList<>();
+				int rowNum = 0;
+				while (rs.next()) {
+					rows.add(mapper.mapRow(rs, rowNum++));
+				}
+				return rows;
+			}
+		});
+	}
+
+	/** 取一行；没有结果返回 {@link Optional#empty()}。 */
+	public <A, T> Optional<T> queryOptional(PreparedPlan<A> plan, A args, RowMapper<T> mapper, long limit) {
+		List<T> rows = query(plan, args, mapper, limit);
+		return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+	}
+
+	/** 执行计数计划（返回单个数字的 SELECT）。 */
+	public <A> long count(PreparedPlan<A> plan, A args) {
+		return execute(plan, args, 0L, 0L, false, null, execution -> {
+			try (ResultSet rs = execution.query()) {
+				if (rs.next()) {
+					long value = rs.getLong(1);
+					return rs.wasNull() ? 0L : value;
+				}
+				return 0L;
+			}
+		});
+	}
+
+	/** 执行 INSERT / UPDATE，返回影响行数。 */
+	public <A> int update(PreparedPlan<A> plan, A args) {
+		return execute(plan, args, 0L, 0L, false, null, execution -> execution.modify(false));
+	}
+
+	/** 执行 INSERT 并取回指定主键列的生成值。 */
+	public <A> Number insertReturningKey(PreparedPlan<A> plan, A args, String keyColumn) {
+		return execute(plan, args, 0L, 0L, true, keyColumn, execution -> {
+			execution.modify(true);
+			try (ResultSet generated = execution.statement().getGeneratedKeys()) {
+				if (generated.next() && generated.getObject(1) instanceof Number number) {
+					return number;
+				}
+				return null;
+			}
+		});
+	}
+
+	/**
+	 * 批量执行同一计划：语句只准备一次，逐行绑定后 {@code addBatch}，按 {@code batchSize} 分块。
+	 *
+	 * <p>零绑定计划（成品 SQL）退化为逐条执行——没有可绑的差异，重复同一条语句没有意义。</p>
+	 */
+	public <A> int[] batchUpdate(PreparedPlan<A> plan, List<A> rows) {
+		int n = rows.size();
+		if (plan.parameterCount() == 0) {
+			int[] single = new int[n];
+			for (int i = 0; i < n; i++) {
+				single[i] = update(plan, rows.get(i));
+			}
+			return single;
+		}
+		int[] total = new int[n];
+		int index = 0;
+		for (List<A> chunk : partitionArgs(rows, this.fetchPolicy.batchSize())) {
+			try (PreparedStatement ps = connection().prepareStatement(plan.sql())) {
+				for (A row : chunk) {
+					plan.bind(ps, row);
+					ps.addBatch();
+				}
+				int[] result = ps.executeBatch();
+				System.arraycopy(result, 0, total, index, result.length);
+				index += result.length;
+			}
+			catch (SQLException ex) {
+				throw new SqlException("batchUpdate failed: " + plan.sql(), ex);
+			}
+		}
+		return total;
+	}
+
+	/** 批量 INSERT 并按入参顺序取回生成主键。 */
+	public <A> List<Number> batchInsertReturningKeys(PreparedPlan<A> plan, List<A> rows, String keyColumn) {
+		List<Number> keys = new ArrayList<>(rows.size());
+		if (plan.parameterCount() == 0) {
+			for (A row : rows) {
+				keys.add(insertReturningKey(plan, row, keyColumn));
+			}
+			return keys;
+		}
+		for (List<A> chunk : partitionArgs(rows, this.fetchPolicy.batchSize())) {
+			try (PreparedStatement ps = connection().prepareStatement(plan.sql(), new String[] { keyColumn })) {
+				for (A row : chunk) {
+					plan.bind(ps, row);
+					ps.addBatch();
+				}
+				ps.executeBatch();
+				try (ResultSet rs = ps.getGeneratedKeys()) {
+					while (rs.next() && rs.getObject(1) instanceof Number number) {
+						keys.add(number);
+					}
+				}
+			}
+			catch (SQLException ex) {
+				throw new SqlException("batchInsert failed: " + plan.sql(), ex);
+			}
+		}
+		return keys;
+	}
+
+	/**
+	 * 分页执行：内容查询带参数化 LIMIT/OFFSET，计数查询用同一实参，两条计划共用一次绑定语义。
+	 */
+	public <A, T> Page<T> page(PreparedPlan<A> select, PreparedPlan<A> count, A args, RowMapper<T> mapper,
+			Pageable pageable) {
+		List<T> content = query(select, args, mapper, pageable.limit(), pageable.offset());
+		long total = count(count, args);
+		return Page.of(content, pageable, total);
+	}
+
+	/**
+	 * 计划执行分流：{@code parameterCount()==0} 的成品 SQL 走 {@link Statement}（分页片段由方言内联），
+	 * 否则走 {@link PreparedStatement}（分页片段带 {@code ?}，续在业务参数之后绑定）。
+	 */
+	private <A, T> T execute(PreparedPlan<A> plan, A args, long limit, long offset, boolean returnKeys,
+			String keyColumn, PlanAction<T> action) {
+		boolean paged = limit > 0 || offset > 0;
+		if (plan.parameterCount() == 0) {
+			String sql = paged ? plan.sql() + this.dialect.limitOffset(limit, offset) : plan.sql();
+			try (Statement st = connection().createStatement()) {
+				return action.apply(new SqlExecution(st, sql));
+			}
+			catch (SQLException ex) {
+				throw new SqlException("statement failed: " + sql, ex);
+			}
+		}
+		LimitClause clause = this.dialect.limitClause();
+		String sql = paged ? plan.sql() + clause.fragment() : plan.sql();
+		try (PreparedStatement ps = returnKeys ? connection().prepareStatement(sql, new String[] { keyColumn })
+				: connection().prepareStatement(sql)) {
+			plan.bind(ps, args);
+			if (paged) {
+				long[] bound = clause.bind(limit, offset);
+				ps.setLong(plan.parameterCount() + 1, bound[0]);
+				ps.setLong(plan.parameterCount() + 2, bound[1]);
+			}
+			return action.apply(new SqlExecution(ps, sql));
+		}
+		catch (SQLException ex) {
+			throw new SqlException("prepared statement failed: " + sql, ex);
+		}
+	}
+
+	/** 语句与分页片段都就绪后的执行动作。 */
+	private interface PlanAction<T> {
+
+		T apply(SqlExecution execution) throws SQLException;
+	}
+
+	/**
+	 * 抹平 {@link Statement} 与 {@link PreparedStatement} 的执行入口差异：前者在 execute 时才交文本、
+	 * 自增键也只能在这里声明，后者文本已在 prepare 阶段交出、再传文本属于误用。
+	 */
+	private record SqlExecution(Statement statement, String sql) {
+
+		ResultSet query() throws SQLException {
+			if (this.statement instanceof PreparedStatement prepared) {
+				return prepared.executeQuery();
+			}
+			return this.statement.executeQuery(this.sql);
+		}
+
+		int modify(boolean returnGeneratedKeys) throws SQLException {
+			if (this.statement instanceof PreparedStatement prepared) {
+				return prepared.executeUpdate();
+			}
+			return this.statement.executeUpdate(this.sql,
+					returnGeneratedKeys ? Statement.RETURN_GENERATED_KEYS : Statement.NO_GENERATED_KEYS);
+		}
+	}
+
+	private <A> List<List<A>> partitionArgs(List<A> rows, int batchSize) {
+		List<List<A>> chunks = new ArrayList<>((rows.size() + batchSize) / batchSize);
+		for (int from = 0; from < rows.size(); from += batchSize) {
+			chunks.add(rows.subList(from, Math.min(from + batchSize, rows.size())));
+		}
+		return chunks;
 	}
 
 	private Connection connection() {

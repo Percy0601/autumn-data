@@ -107,6 +107,8 @@ public class MetaUtil {
                 metaProperty.setValue(null);
                 continue;
             }
+            // JSON 里出现过的字段就是调用方「提供的」，等价于写过：部分更新据此判定待写列
+            metaClass.markChanged(name);
             if (MetaClass.class.getName().equals(metaProperty.getType())) {
                 MetaClass mc = deepCopy(resolveType(metaProperty));
                 metaProperty.setValue(mc);

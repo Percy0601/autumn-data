@@ -1,7 +1,6 @@
 package xyz.wewin.autumn.data.meta.jdbc.dynamic;
 
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Locale;
 
 import xyz.wewin.autumn.data.common.meta.MetaClass;
@@ -24,22 +23,28 @@ public final class MetaEntityRegistry {
 
 	private final Path sourceDirectory;
 
+	private final MetaEntityTemplate template;
+
 	private final BoundedCache<String, MetaEntityModel> models;
 
 	public MetaEntityRegistry() {
-		this((String) null);
-	}
-
-	public MetaEntityRegistry(String sourceDirectory) {
-		this(sourceDirectory, BoundedCache.DEFAULT_MAXIMUM_SIZE);
+		this(new MetaEntityTemplate(), null, BoundedCache.DEFAULT_MAXIMUM_SIZE);
 	}
 
 	/**
-	 * @param maximumSize 结构版本的缓存上限（默认 {@value BoundedCache#DEFAULT_MAXIMUM_SIZE}）
+	 * @param directories   工作目录：模板取 {@code <root>/template}，生成的 .java 落 {@code <root>/entity}；
+	 *                      纯内存目录则两者都退回内置默认与不落盘
+	 * @param generateFiles 模板文件缺失时是否落一份内置默认
+	 * @param maximumSize   结构版本的缓存上限（默认 {@value BoundedCache#DEFAULT_MAXIMUM_SIZE}）
 	 */
-	public MetaEntityRegistry(String sourceDirectory, int maximumSize) {
-		this.sourceDirectory = sourceDirectory == null || sourceDirectory.isBlank()
-				? null : Paths.get(sourceDirectory.trim());
+	public MetaEntityRegistry(MetaDirectories directories, boolean generateFiles, int maximumSize) {
+		this(new MetaEntityTemplate(new MetaTemplateStore(directories.templateDirectory(), generateFiles, 16)),
+				directories.entityDirectory(), maximumSize);
+	}
+
+	public MetaEntityRegistry(MetaEntityTemplate template, Path entityDirectory, int maximumSize) {
+		this.template = template == null ? new MetaEntityTemplate() : template;
+		this.sourceDirectory = entityDirectory;
 		this.models = BoundedCaches.lru(maximumSize);
 	}
 
@@ -75,8 +80,13 @@ public final class MetaEntityRegistry {
 		return this.models.maximumSize();
 	}
 
+	/** 生成源码用的模板（可外置、可热替换）。 */
+	public MetaEntityTemplate template() {
+		return this.template;
+	}
+
 	private MetaEntityModel compile(MetaTable table, String fingerprint) {
-		MetaEntityTemplate.Source source = MetaEntityTemplate.render(table);
+		MetaEntityTemplate.Source source = this.template.render(table);
 		Class<? extends MetaClass> type = MetaEntityCompiler.compile(source, this.sourceDirectory);
 		MetaEntityReader reader;
 		try {

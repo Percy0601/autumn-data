@@ -5,7 +5,6 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -29,10 +28,10 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
  *
  * <p>解析顺序（和「文件存在就不再调整」这条规则一样，只有前两级是读取）：</p>
  * <ol>
- *   <li>{@code <xmlDirectory>/<表名>.xml}；</li>
+ *   <li>{@code <mapper 目录>/<表名>.xml}；</li>
  *   <li>classpath {@code meta-mappers/<表名>.xml}（打进 jar 的默认语句）；</li>
- *   <li>都没有且 {@code generateXml=true}：按 {@link MetaTable} 的列结构生成一份 MyBatis 风格的
- *       Mapper XML，写到 {@code <xmlDirectory>} 后使用；目录为空则只在内存里用、不落盘。</li>
+ *   <li>都没有且 {@code generateFiles=true}：按 {@link MetaTable} 的列结构生成一份 MyBatis 风格的
+ *       Mapper XML，写到该目录下后使用；目录为空则只在内存里用、不落盘。</li>
  * </ol>
  *
  * <p>前两级按「表名原样 / 小写 / 大写」三个文件名依次找：元数据里的表名在 H2、Oracle 下是大写，
@@ -59,7 +58,7 @@ public final class MetaStatementStore {
 
 	private final Path directory;
 
-	private final boolean generateXml;
+	private final boolean generateFiles;
 
 	private final ClassLoader classLoader;
 
@@ -67,28 +66,30 @@ public final class MetaStatementStore {
 
 	private final BoundedCache<String, Map<String, SqlTemplate>> cache;
 
-	public MetaStatementStore(String xmlDirectory, boolean generateXml, Dialect dialect) {
-		this(xmlDirectory, generateXml, dialect, defaultClassLoader(), BoundedCache.DEFAULT_MAXIMUM_SIZE);
+	public MetaStatementStore(Path directory, boolean generateFiles, Dialect dialect) {
+		this(directory, generateFiles, dialect, defaultClassLoader(), BoundedCache.DEFAULT_MAXIMUM_SIZE);
 	}
 
-	public MetaStatementStore(String xmlDirectory, boolean generateXml, Dialect dialect, ClassLoader classLoader) {
-		this(xmlDirectory, generateXml, dialect, classLoader, BoundedCache.DEFAULT_MAXIMUM_SIZE);
+	public MetaStatementStore(Path directory, boolean generateFiles, Dialect dialect, int maximumSize) {
+		this(directory, generateFiles, dialect, defaultClassLoader(), maximumSize);
+	}
+
+	public MetaStatementStore(Path directory, boolean generateFiles, Dialect dialect, ClassLoader classLoader) {
+		this(directory, generateFiles, dialect, classLoader, BoundedCache.DEFAULT_MAXIMUM_SIZE);
 	}
 
 	/**
+	 * @param directory   Mapper 文件目录（通常是 {@code <root>/mapper}）；{@code null} 表示只在内存里生成、不落盘
+	 * @param generateFiles 目录里没有该表的文件时是否按表结构生成一份；false 时缺失直接报错
 	 * @param maximumSize 表级语句缓存上限（默认 {@value BoundedCache#DEFAULT_MAXIMUM_SIZE}）
 	 */
-	public MetaStatementStore(String xmlDirectory, boolean generateXml, Dialect dialect, int maximumSize) {
-		this(xmlDirectory, generateXml, dialect, defaultClassLoader(), maximumSize);
-	}
-
-	public MetaStatementStore(String xmlDirectory, boolean generateXml, Dialect dialect, ClassLoader classLoader,
+	public MetaStatementStore(Path directory, boolean generateFiles, Dialect dialect, ClassLoader classLoader,
 			int maximumSize) {
 		if (dialect == null) {
 			throw new IllegalArgumentException("dialect must not be null");
 		}
-		this.directory = xmlDirectory == null || xmlDirectory.isBlank() ? null : Paths.get(xmlDirectory);
-		this.generateXml = generateXml;
+		this.directory = directory;
+		this.generateFiles = generateFiles;
 		this.dialect = dialect;
 		this.classLoader = classLoader == null ? defaultClassLoader() : classLoader;
 		this.cache = BoundedCaches.lru(maximumSize);
@@ -142,10 +143,10 @@ public final class MetaStatementStore {
 				return parse(content, "classpath:" + CLASSPATH_DIRECTORY + fileName + " for " + table.name());
 			}
 		}
-		if (!this.generateXml) {
+		if (!this.generateFiles) {
 			throw new MetaSqlException("mapper file not found for table '" + table.name() + "'; looked for "
-					+ candidates + " in " + (this.directory == null ? "(no xml-directory)" : this.directory)
-					+ " and on classpath " + CLASSPATH_DIRECTORY + ", and generate-xml is off");
+					+ candidates + " in " + (this.directory == null ? "(no mapper directory)" : this.directory)
+					+ " and on classpath " + CLASSPATH_DIRECTORY + ", and file generation is off");
 		}
 		String content = generate(table);
 		Path file = this.directory == null ? null : this.directory.resolve(candidates.get(0));

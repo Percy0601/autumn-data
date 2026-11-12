@@ -69,8 +69,7 @@ public final class MetaMapperEngine {
 	}
 
 	public static MetaMapperEngine standalone(String defaultPoolName, MetaMapperOptions options) {
-		MetaEntityRegistry entities = new MetaEntityRegistry(options.entitySourceDirectory(),
-				options.tableCacheSize());
+		MetaEntityRegistry entities = entityRegistry(options);
 		return new MetaMapperEngine(defaultPoolName, poolName -> {
 			DataSource dataSource;
 			try {
@@ -99,12 +98,16 @@ public final class MetaMapperEngine {
 		if (dataSource == null) {
 			throw new IllegalArgumentException("dataSource must not be null");
 		}
-		MetaEntityRegistry entities = new MetaEntityRegistry(options.entitySourceDirectory(),
-				options.tableCacheSize());
+		MetaEntityRegistry entities = entityRegistry(options);
 		return new MetaMapperEngine(defaultPoolName, poolName -> {
 			DataSource target = poolName.equals(defaultPoolName) ? dataSource : MetaDataSource.get(poolName);
 			return createClient(poolName, target, options, entities);
 		}, entities, options.tableCacheSize());
+	}
+
+	/** 实体类注册表：模板与生成的 .java 都来自同一个工作目录，全引擎共享一份。 */
+	private static MetaEntityRegistry entityRegistry(MetaMapperOptions options) {
+		return new MetaEntityRegistry(options.directories(), options.generateFiles(), options.tableCacheSize());
 	}
 
 	private static MetaMapperClient createClient(String poolName, DataSource dataSource, MetaMapperOptions options,
@@ -113,10 +116,13 @@ public final class MetaMapperEngine {
 		ConnectionSource connectionSource = new PerThreadConnectionSource(
 				() -> new JdbcConnectionSource(dataSource));
 		AutumnJdbc jdbc = new AutumnJdbc(connectionSource, dialect, options.fetchPolicy());
-		MetaTableRegistry registry = new MetaTableRegistry(dataSource, dialect, options.logicDeleteColumns(),
+		MetaDirectories directories = options.directories();
+		MetaModelStore models = new MetaModelStore(directories.metaClassDirectory(), options.generateFiles(),
 				options.tableCacheSize());
-		MetaStatementStore statementStore = new MetaStatementStore(options.xmlDirectory(), options.generateXml(),
-				dialect, options.tableCacheSize());
+		MetaTableRegistry registry = new MetaTableRegistry(dataSource, dialect, options.logicDeleteColumns(),
+				models, options.tableCacheSize());
+		MetaStatementStore statementStore = new MetaStatementStore(directories.mapperDirectory(),
+				options.generateFiles(), dialect, options.tableCacheSize());
 		return new MetaMapperClient(poolName, jdbc, connectionSource, registry, new MetaSqlBuilder(dialect),
 				statementStore, entities, options.defaultListLimit());
 	}

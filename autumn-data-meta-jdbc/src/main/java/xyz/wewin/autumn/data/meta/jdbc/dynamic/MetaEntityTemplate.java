@@ -13,10 +13,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-import freemarker.template.Configuration;
 import freemarker.template.Template;
 import freemarker.template.TemplateException;
-import freemarker.template.TemplateExceptionHandler;
 import xyz.wewin.autumn.data.common.meta.MetaProperty;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
 
@@ -27,14 +25,13 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
  * 所有标识符与字面量在这一层先做安全处理：Java 关键字、非法字符、引号、注释符都在进模板前收口，
  * 模板里不会出现需要二次拼装的代码片段。</p>
  *
+ * <p>模板文本本身由 {@link MetaTemplateStore} 供给：外置在 {@code <root>/template} 下，
+ * 缺失时落一份内置默认，改了下次渲染就生效——生成什么样的实体是使用方的决定，不是 jar 的决定。</p>
+ *
  * <p>结构指纹决定包名：表加了一列，指纹就变，生成的是另一个包下的新类——旧类还能被
  * 正在执行的查询继续使用，不会出现同名类被重定义或新旧实例互相 ClassCastException。</p>
  */
 public final class MetaEntityTemplate {
-
-	private static final String TEMPLATE_NAME = "meta-class.ftl";
-
-	private static final String TEMPLATE_BASE = "xyz/wewin/autumn/data/meta/jdbc/dynamic";
 
 	private static final String GENERATED_PACKAGE = "xyz.wewin.autumn.data.meta.jdbc.generated";
 
@@ -58,9 +55,15 @@ public final class MetaEntityTemplate {
 			"toMap", "toJson", "toString", "hashCode", "getClass",
 			"clone", "finalize", "notify", "notifyAll", "wait");
 
-	private static final Configuration FREEMARKER = configuration();
+	private final MetaTemplateStore templates;
 
-	private MetaEntityTemplate() {
+	public MetaEntityTemplate(MetaTemplateStore templates) {
+		this.templates = templates == null ? MetaTemplateStore.builtin() : templates;
+	}
+
+	/** 用 jar 内置模板渲染：没有外置目录时的退化路径。 */
+	public MetaEntityTemplate() {
+		this(MetaTemplateStore.builtin());
 	}
 
 	/** 渲染结果：源码 + 它声明的类名（编译器按这个名字落盘与加载）。 */
@@ -69,7 +72,7 @@ public final class MetaEntityTemplate {
 	}
 
 	/** 按表结构生成源码。 */
-	public static Source render(MetaTable table) {
+	public Source render(MetaTable table) {
 		String fingerprint = fingerprint(table);
 		String packageName = GENERATED_PACKAGE + ".v" + fingerprint;
 		String className = className(table.name());
@@ -83,7 +86,7 @@ public final class MetaEntityTemplate {
 		model.put("columnCount", table.columns().size());
 		model.put("columns", columns(table.columns()));
 		try {
-			Template template = FREEMARKER.getTemplate(TEMPLATE_NAME);
+			Template template = this.templates.template(MetaTemplateStore.ENTITY_TEMPLATE);
 			StringWriter out = new StringWriter(4096);
 			template.process(model, out);
 			return new Source(packageName, className, packageName + "." + className, fingerprint, out.toString());
@@ -91,16 +94,6 @@ public final class MetaEntityTemplate {
 		catch (IOException | TemplateException ex) {
 			throw new MetaSqlException("failed to render entity template for table '" + table.name() + "'", ex);
 		}
-	}
-
-	private static Configuration configuration() {
-		Configuration cfg = new Configuration(Configuration.VERSION_2_3_32);
-		cfg.setClassLoaderForTemplateLoading(MetaEntityTemplate.class.getClassLoader(), TEMPLATE_BASE);
-		cfg.setDefaultEncoding(StandardCharsets.UTF_8.name());
-		cfg.setTemplateExceptionHandler(TemplateExceptionHandler.RETHROW_HANDLER);
-		cfg.setLogTemplateExceptions(false);
-		cfg.setWrapUncheckedExceptions(true);
-		return cfg;
 	}
 
 	// ------------------------------------------------------------------

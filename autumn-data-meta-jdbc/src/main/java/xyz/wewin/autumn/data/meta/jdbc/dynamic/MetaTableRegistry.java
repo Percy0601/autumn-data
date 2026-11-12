@@ -49,6 +49,9 @@ public final class MetaTableRegistry {
 
 	private final Set<String> logicDeleteColumns;
 
+	/** 元类定义（{@code <root>/meta-class}）：定义优先，缺字段用库补齐。 */
+	private final MetaModelStore models;
+
 	/** 数据库元数据读出来的表结构快照。 */
 	private final BoundedCache<String, MetaTable> cache;
 
@@ -56,30 +59,28 @@ public final class MetaTableRegistry {
 	private final BoundedCache<String, MetaTable> overrides;
 
 	public MetaTableRegistry(DataSource dataSource, Dialect dialect) {
-		this(dataSource, dialect, Set.of(), BoundedCache.DEFAULT_MAXIMUM_SIZE);
+		this(dataSource, dialect, Set.of(), MetaModelStore.none(), BoundedCache.DEFAULT_MAXIMUM_SIZE);
 	}
 
 	/**
 	 * @param logicDeleteColumns 逻辑删除列名（大小写不敏感）；查询未显式引用时自动追加 {@code = 0}
 	 */
 	public MetaTableRegistry(DataSource dataSource, Dialect dialect, Set<String> logicDeleteColumns) {
-		this(dataSource, dialect, logicDeleteColumns, BoundedCache.DEFAULT_MAXIMUM_SIZE);
+		this(dataSource, dialect, logicDeleteColumns, MetaModelStore.none(), BoundedCache.DEFAULT_MAXIMUM_SIZE);
 	}
 
-	/**
-	 * @param maximumSize 表结构快照的缓存上限（默认 {@value BoundedCache#DEFAULT_MAXIMUM_SIZE}）
-	 */
 	public MetaTableRegistry(DataSource dataSource, Dialect dialect, Set<String> logicDeleteColumns,
-			int maximumSize) {
+			MetaModelStore models, int maximumSize) {
 		this.dataSource = dataSource;
 		this.dialect = dialect;
 		this.logicDeleteColumns = Set.copyOf(logicDeleteColumns.stream()
 				.map(name -> name.toLowerCase(Locale.ROOT)).toList());
+		this.models = models == null ? MetaModelStore.none() : models;
 		this.cache = BoundedCaches.lru(maximumSize);
 		this.overrides = BoundedCaches.lru(maximumSize);
 	}
 
-	/** 取表描述；首次访问从数据库元数据加载。 */
+	/** 取表描述；首次访问从数据库元数据加载，再套用该表的元类定义。 */
 	public MetaTable require(String tableName) {
 		if (tableName == null || tableName.isBlank()) {
 			throw new MetaSqlException("table name must not be blank");
@@ -89,7 +90,7 @@ public final class MetaTableRegistry {
 		if (override != null) {
 			return override;
 		}
-		return this.cache.get(key, ignored -> introspect(tableName));
+		return this.cache.get(key, ignored -> this.models.apply(introspect(tableName)));
 	}
 
 	/** 手工登记/覆盖一张表的描述（业务元数据覆盖、测试或非标准数据源用）。 */
@@ -98,16 +99,18 @@ public final class MetaTableRegistry {
 		return table;
 	}
 
-	/** 表结构变化后刷新；下次访问重新读取元数据。 */
+	/** 表结构变化后刷新；下次访问重新读取元数据并重读该表的元类定义。 */
 	public void refresh(String tableName) {
 		this.cache.invalidate(normalize(tableName));
 		this.overrides.invalidate(normalize(tableName));
+		this.models.refresh(tableName);
 	}
 
-	/** 清空全部快照（含手工登记）。 */
+	/** 清空全部快照（含手工登记与已解析的定义）。 */
 	public void refreshAll() {
 		this.cache.invalidateAll();
 		this.overrides.invalidateAll();
+		this.models.refreshAll();
 	}
 
 	/** 已缓存的表数（元数据快照 + 手工覆盖，诊断用）。 */

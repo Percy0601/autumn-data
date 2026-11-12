@@ -35,6 +35,19 @@ public interface Dialect {
 	 */
 	String limitOffset(long limit, long offset);
 
+	/**
+	 * 生成参数化分页片段（两个 {@code ?}，值走绑定）。
+	 *
+	 * <p>预编译执行计划用这一条：SQL 文本不再随页码变化，同一种查询在第一页和第一百页拿到的是
+	 * 同一个计划，编译一次跨页复用。默认给 ANSI 的 {@code LIMIT ? OFFSET ?}，
+	 * MySQL 那类 {@code LIMIT offset, count} 语序的方言覆写并把 {@code offsetFirst} 置 true。</p>
+	 *
+	 * @return 分页片段，占位符顺序见 {@link LimitClause#offsetFirst()}
+	 */
+	default LimitClause limitClause() {
+		return new LimitClause(" LIMIT ? OFFSET ?", false);
+	}
+
 	/** 是否支持通过 {@code Statement.RETURN_GENERATED_KEYS} 取回自增主键。 */
 	boolean supportsReturnGeneratedKeys();
 }

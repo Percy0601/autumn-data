@@ -52,10 +52,11 @@ public final class ${className} extends MetaClass {
 
     public void ${c.setter}(${c.javaType} value) {
         this.${c.field} = value;
+        markChanged(${c.nameLiteral});
     }
 
 </#list>
-    /** 逐行读取：先建列标签索引，投影查询缺列时字段保持 null。 */
+    /** 逐行读取：先建列标签索引，投影查询缺列时字段保持 null。直写字段不标脏——读出来的行是干净的。 */
     public static ${className} read(ResultSet rs) throws SQLException {
         ${className} entity = new ${className}();
         Map<String, Integer> cols = MetaEntityColumns.index(rs);
@@ -65,7 +66,7 @@ public final class ${className} extends MetaClass {
         index = cols.get(${c.lowerLiteral});
         if (index != null) {
             raw = rs.getObject(index);
-            entity.${c.setter}(raw == null ? null : MetaValueReader.${c.reader}(raw));
+            entity.${c.field} = raw == null ? null : MetaValueReader.${c.reader}(raw);
         }
 </#list>
         return entity;
@@ -87,7 +88,7 @@ public final class ${className} extends MetaClass {
         }
     }
 
-    /** 按列名写入（大小写不敏感）：值按列的 Java 类型收口。 */
+    /** 按列名写入（大小写不敏感）：值按列的 Java 类型收口，写完标脏。 */
     @Override
     public void set(String name, Object value) {
         if (name == null) {
@@ -97,11 +98,13 @@ public final class ${className} extends MetaClass {
 <#list columns as c>
             case ${c.lowerLiteral}:
                 this.${c.field} = value == null ? null : MetaValueReader.${c.reader}(value);
-                return;
+                break;
 </#list>
             default:
                 super.set(name, value);
+                return;
         }
+        markChanged(name);
     }
 
     /** 元模型视图：把真实字段摊成 MetaProperty，MetaUtil.toMap/toJson 直接可用。 */

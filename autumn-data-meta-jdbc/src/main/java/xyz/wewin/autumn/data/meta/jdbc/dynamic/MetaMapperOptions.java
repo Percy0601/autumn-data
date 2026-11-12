@@ -9,16 +9,17 @@ import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 /**
  * 动态查询层的运行期策略。
  *
- * @param defaultListLimit      {@code findList} 未显式限行时的默认上限（防止全表拉取）
- * @param fetchPolicy           批量分块与关联取数上限（复用 autumn-data-jdbc 的策略对象）
- * @param logicDeleteColumns    逻辑删除列名（大小写不敏感）；命中后查询自动追加 {@code = 0}，未命中不追加
- * @param xmlDirectory          Mapper 文件目录；空串表示语句只在内存里生成、不落盘
- * @param generateXml           文件不存在时是否按表结构生成一份 Mapper 文件；false 时缺失直接报错
- * @param entitySourceDirectory 生成的实体 {@code .java} 源码落盘目录；空串表示全程内存编译、不额外留存
- * @param tableCacheSize        按表缓存（表结构 / 动态实体类 / Mapper AST）各自的条目上限，默认一万张表
+ * @param defaultListLimit   {@code findList} 未显式限行时的默认上限（防止全表拉取）
+ * @param fetchPolicy        批量分块与关联取数上限（复用 autumn-data-jdbc 的策略对象）
+ * @param logicDeleteColumns 逻辑删除列名（大小写不敏感）；命中后查询自动追加 {@code = 0}，未命中不追加
+ * @param metaDirectory      工作根目录，四类产物在其固定子目录下（{@code meta-class} / {@code entity} /
+ *                           {@code template} / {@code mapper}）；空串表示纯内存模式，产物一律不落盘
+ * @param generateFiles      子目录里的文件缺失时是否生成一份（元类定义 / 实体源码 / 模板 / Mapper）。
+ *                           已存在的文件永远不重写，所以关掉它只影响「第一次」
+ * @param tableCacheSize     按表缓存（表结构 / 动态实体类 / Mapper AST / 执行计划）各自的条目上限
  */
 public record MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,
-		String xmlDirectory, boolean generateXml, String entitySourceDirectory, int tableCacheSize) {
+		String metaDirectory, boolean generateFiles, int tableCacheSize) {
 
 	public MetaMapperOptions {
 		if (defaultListLimit <= 0) {
@@ -37,29 +38,27 @@ public record MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, S
 			}
 		}
 		logicDeleteColumns = Set.copyOf(normalized);
-		xmlDirectory = xmlDirectory == null ? "" : xmlDirectory.trim();
-		entitySourceDirectory = entitySourceDirectory == null ? "" : entitySourceDirectory.trim();
+		metaDirectory = metaDirectory == null ? "" : metaDirectory.trim();
 	}
 
-	/** 兼容原有六参构造：按表缓存沿用 {@value BoundedCache#DEFAULT_MAXIMUM_SIZE} 上限。 */
 	public MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,
-			String xmlDirectory, boolean generateXml, String entitySourceDirectory) {
-		this(defaultListLimit, fetchPolicy, logicDeleteColumns, xmlDirectory, generateXml, entitySourceDirectory,
+			String metaDirectory, boolean generateFiles) {
+		this(defaultListLimit, fetchPolicy, logicDeleteColumns, metaDirectory, generateFiles,
 				BoundedCache.DEFAULT_MAXIMUM_SIZE);
 	}
 
-	/** 兼容原有五参构造：不额外留存生成的实体源码。 */
-	public MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,
-			String xmlDirectory, boolean generateXml) {
-		this(defaultListLimit, fetchPolicy, logicDeleteColumns, xmlDirectory, generateXml, "");
+	/** 工作目录（根 + 四个子目录）。 */
+	public MetaDirectories directories() {
+		return MetaDirectories.of(this.metaDirectory);
 	}
 
-	public MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns) {
-		this(defaultListLimit, fetchPolicy, logicDeleteColumns, "meta-mappers", true, "");
-	}
-
-	/** 默认：列表上限 1000、批量 100 一批、不自动识别逻辑删除列、XML 落盘到 ./meta-mappers。 */
+	/** 默认：列表上限 1000、批量 100 一批、不自动识别逻辑删除列、产物落 ./autumn-meta。 */
 	public static MetaMapperOptions defaults() {
-		return new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), "meta-mappers", true, "");
+		return new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), MetaDirectories.DEFAULT_ROOT, true);
+	}
+
+	/** 纯内存：什么文件都不生成，模板用 jar 内置那份。测试与只读部署用。 */
+	public static MetaMapperOptions inMemory() {
+		return new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), "", false);
 	}
 }

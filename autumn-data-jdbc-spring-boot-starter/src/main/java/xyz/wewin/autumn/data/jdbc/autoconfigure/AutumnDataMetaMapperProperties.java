@@ -30,19 +30,17 @@ public class AutumnDataMetaMapperProperties {
 			Set.of("deleted_flag", "del_flag", "is_deleted"));
 
 	/**
-	 * 动态 Mapper XML 目录；首次访问某张表且文件不存在时按元数据生成。
-	 * 空串表示只生成到内存、不落盘。
+	 * 动态层工作根目录，四类产物在其固定子目录下：{@code meta-class/}（元类定义 JSON）、
+	 * {@code entity/}（生成的实体 .java）、{@code template/}（生成实体用的 .ftl）、{@code mapper/}（Mapper XML）。
+	 * 空串表示纯内存模式：模板用 jar 内置那份，产物一律不落盘。
 	 */
-	private String xmlDirectory = "meta-mappers";
-
-	/** 文件不存在时是否自动生成 Mapper XML；false 时缺失直接报错。 */
-	private boolean generateXml = true;
+	private String metaDirectory = "autumn-meta";
 
 	/**
-	 * 生成的动态实体 {@code .java} 源码落盘目录（便于查看、排错、固化成静态类）。
-	 * 空串表示只在临时目录编译，不额外留存。
+	 * 子目录里的文件缺失时是否生成一份（元类定义 / 实体源码 / 模板 / Mapper）。
+	 * 已存在的文件永远不重写，所以关掉它只影响「第一次」。
 	 */
-	private String entitySourceDirectory = "";
+	private boolean generateFiles = true;
 
 	/**
 	 * 按表缓存（表结构快照 / 动态实体类 / Mapper AST）各自的条目上限，默认一万张表。
@@ -82,28 +80,20 @@ public class AutumnDataMetaMapperProperties {
 		this.logicDeleteColumns = logicDeleteColumns;
 	}
 
-	public String getXmlDirectory() {
-		return this.xmlDirectory;
+	public String getMetaDirectory() {
+		return this.metaDirectory;
 	}
 
-	public void setXmlDirectory(String xmlDirectory) {
-		this.xmlDirectory = xmlDirectory;
+	public void setMetaDirectory(String metaDirectory) {
+		this.metaDirectory = metaDirectory;
 	}
 
-	public boolean isGenerateXml() {
-		return this.generateXml;
+	public boolean isGenerateFiles() {
+		return this.generateFiles;
 	}
 
-	public void setGenerateXml(boolean generateXml) {
-		this.generateXml = generateXml;
-	}
-
-	public String getEntitySourceDirectory() {
-		return this.entitySourceDirectory;
-	}
-
-	public void setEntitySourceDirectory(String entitySourceDirectory) {
-		this.entitySourceDirectory = entitySourceDirectory;
+	public void setGenerateFiles(boolean generateFiles) {
+		this.generateFiles = generateFiles;
 	}
 
 	public int getTableCacheSize() {

@@ -29,6 +29,12 @@ public class MySqlDialect implements Dialect {
 		return " LIMIT " + offset + ", " + limit;
 	}
 
+	/** MySQL 的 {@code LIMIT offset, count}：两个占位符是偏移在前。 */
+	@Override
+	public LimitClause limitClause() {
+		return new LimitClause(" LIMIT ?, ?", true);
+	}
+
 	@Override
 	public boolean supportsReturnGeneratedKeys() {
 		return true;
