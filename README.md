@@ -45,7 +45,8 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 - [ ] 动态表 CRUD 接入 Spring 事务（当前单方法内自提交，跨方法 `@Transactional` 暂不生效）
 - [ ] `OrderBy` 之外的排序入参（`findAllBy(Sort)`）与 `Pageable` 排序
 - [ ] `autumn-data-meta-jdbc` 同步去 Spring 依赖（同样挪到各自 starter）
-- [x] `autumn-data-meta-jdbc`：动态 Mapper 文件 + 运行期解释器（`MetaStatementStore` 首次访问按表结构生成 `<xml-directory>/<表名>.xml`，已存在则直接用、永不回头覆盖；`SqlTemplate` 解释执行 common 的同一套 XML 方言，`#{}` 解析期就摘成 JDBC 绑定、`${}` 只放标识符白名单；命名语句走 `sqlFor/selectList/selectOne/selectCount/execute`）
+- [x] `autumn-data-meta-jdbc`：动态 Mapper 文件 + 运行期解释器（`MetaStatementStore` 首次访问按表结构生成 `<meta-directory>/mapper/<表名>.xml`，已存在则直接用、永不回头覆盖；`SqlTemplate` 解释执行 common 的同一套 XML 方言，`#{}` 解析期就摘成 JDBC 绑定、`${}` 只放标识符白名单；命名语句走 `sqlFor/selectList/selectOne/selectCount/execute`，参数一律是 `MetaClass`）
+- [x] `autumn-data-meta-jdbc` SQL 三段：抽取（`MarkedSql`：文本 + 每槽列引用 + 本次实参）→ 再转换（`MetaSqlPlan`：类型判断、列查找、setter 一次做完，按形状缓存）→ 执行（零槽走 `Statement`，有槽走 `PreparedStatement`），动态形状也能吃到游标/执行计划复用
 - [x] XML 方言下沉 `autumn-data-common`（`TemplateParser` / `TemplateNode` / `MapperXmlParser`），编译期生成器与动态运行期共用一棵 AST；**动态 SQL 不引模板引擎**（FreeMarker 的 `<#if>` 不是合法 XML，兼容只做在 `test` 表达式层：`name??` / `name?has_content` / `name?size`）
 - [x] `autumn-data-meta-jdbc` 运行期生成实体类：`MetaMapper` 门面统一返回 `MetaClass`，实例是按 `DatabaseMetaData` 用 FreeMarker 模板生成 `.java`、`javax.tools.JavaCompiler` **内存编译**、内存 `ClassLoader` 加载的 `MetaClass` 子类（真实字段/getter/setter + 类型化 `getProperties()`，逐行映射零反射）；不建临时目录、不落 `.class`，类与 ClassLoader 可随缓存淘汰被 GC；结构指纹决定包名，加列 `refresh` 后生成新类、旧实例不受影响；源码可配置落盘以便固化成静态类
 - [x] 按动态定位收口：删除零引用的 `MetaConfiguration`（编译期静态 Mapper 注册、无界 `HashMap`）与 `MetaSqlSession`（JDK 动态代理反射、需预注册）；所有按表 / 按池增长的内存容器（表快照、手工登记覆盖、动态实体类、Mapper AST、池 client）统一走 `BoundedCache` 有界 LRU，默认上限 10_000
@@ -89,7 +90,10 @@ Spring 事务只绑定默认池那一个实例，额外池不参与外层 `@Tran
 引入 starter 后自动安装 `MetaMapper` 静态门面；默认池取 `DataSource`，其他池用 `MetaMapper.of("tenant-a")` 显式绑定：
 
 ```java
-MetaMapper.save("form_order", Map.of("order_no", "A001", "amount", "12.50", "status", 1));
+MetaClass order = MetaMapper.newEntity("form_order");   // 操作对象一律是实体，没有 Map 入口
+order.set("order_no", "A001");
+order.set("amount", "12.50");
+MetaMapper.save(order);                                 // 赋过值的列才进 INSERT，自增主键回填到 order
 
 MetaClass row = MetaMapper.findById("form_order", 1L).orElseThrow();
 BigDecimal amount = row.getBigDecimal("amount");          // 类型化读取，不是 Map.get 再猜
@@ -99,17 +103,18 @@ Page<MetaClass> page = MetaMapper.findPage("form_order",
         MetaQuery.by("status", 1).orderBy("create_time", MetaQuery.Direction.DESC),
         Pageable.of(0, 20));
 
-MetaMapper.updateById("form_order", 1L, Map.of("status", 2));   // 部分更新，未传列保持原值
+row.setStatus(2);                                       // 生成类的类型化 setter
+MetaMapper.update(row);                                 // 部分更新：只有改过的列进 SET
 
 MetaMapper.of("tenant-a").findList("form_order", MetaQuery.by("status", 1));
 ```
 
 - **返回的 `MetaClass` 是动态生成的实体实例**：首次访问按 `DatabaseMetaData` 的列结构用 FreeMarker 生成 `MetaClass` 子类源码并编译加载，每列有 `Long` / `BigDecimal` / `LocalDateTime` 等真实字段和 getter，结果集映射是生成代码里的直接 setter 调用（逐行零反射）；`getProperties()` 同时保留 `type` / `jdbcType` / 主键 / 可空等描述。完全静态的实体类应付不了运行期建表，全 Map 又丢了类型，这一层就落在两者之间。`MetaMapper.entityType(table)` 可拿到生成出来的类；
 - 结构指纹参与包名：加列/改类型后 `MetaMapper.refresh("form_order")` 会生成新类，已取到的旧实例仍可用，不会同名重定义；
-- `autumn.data.meta.mapper.entity-source-directory=generated-entities` 可把生成的 `.java` 落盘查看或固化；**默认全程内存编译**，不建临时目录、不落 `.class`；运行期需要完整 JDK（`javax.tools`），JRE 上会明确报错；
+- `autumn.data.meta.mapper.meta-directory=autumn-meta` 是唯一的落盘开关：四类产物分别落在它的 `meta-class/`（元类定义 JSON）、`entity/`（生成的实体 `.java`，可查看也可固化）、`template/`（生成用的 `.ftl`）、`mapper/`（Mapper XML）四个固定子目录里。空串表示纯内存模式；**实体默认全程内存编译**，不建临时目录、不落 `.class`；运行期需要完整 JDK（`javax.tools`），JRE 上会明确报错；
 - 元数据从 `DatabaseMetaData` 读取，直接填入 `MetaClass` / `MetaProperty`（表名 = `MetaClass.name`、schema = `namespace`、列 = properties）；建表/加列**提交后**调 `MetaMapper.refresh("form_order")` 换快照，不重启；
-- **所有缓存都有界且弹性**：表结构快照、手工登记覆盖、动态实体类、Mapper AST、池 → client 五处各有独立上限（默认 10_000），触顶按 LRU 淘汰最久未访问的冷条目，下次访问自动懒加载重建——包括手工 `register` 的覆盖（淘汰后回源到 `DatabaseMetaData`）和按池名的 client。实现是 JDK 自带的 `LinkedHashMap(accessOrder)` + 锁（`BoundedCache` 接口刻意对齐 Caffeine `Cache` 的方法名与语义，将来换实现只改 `BoundedCaches` 工厂），**不引入任何缓存库、不引入 Spring**；
-- **Mapper 文件按需生成**：命名语句（`selectList/selectOne/selectCount/execute/sqlFor`）的 SQL 来自 `<xml-directory>/<表名>.xml`；文件不存在时按表结构生成一份（逐列 `<if>` + `<where>` + `<trim>`）并落盘，**已存在就直接使用，改表也不会回头覆盖**——文件归使用方所有。`MetaQuery` 驱动的 CRUD 不读文件，SQL 由 `MetaSqlBuilder` 按元数据现拼（条件运算符是开集，固定文件表达不了）；
+- **所有缓存都有界且弹性**：表结构快照、手工登记覆盖、动态实体类、Mapper AST、SQL 执行计划、池 → client 六处各有独立上限（默认 10_000），触顶按 LRU 淘汰最久未访问的冷条目，下次访问自动懒加载重建——包括手工 `register` 的覆盖（淘汰后回源到 `DatabaseMetaData`）和按池名的 client。实现是 JDK 自带的 `LinkedHashMap(accessOrder)` + 锁（`BoundedCache` 接口刻意对齐 Caffeine `Cache` 的方法名与语义，将来换实现只改 `BoundedCaches` 工厂），**不引入任何缓存库、不引入 Spring**；
+- **Mapper 文件按需生成**：命名语句（`selectList/selectOne/selectCount/execute/sqlFor`）的 SQL 来自 `<meta-directory>/mapper/<表名>.xml`（找不到再看 classpath `meta-mappers/`）；文件不存在时按表结构生成一份（逐列 `<if>` + `<where>` + `<trim>`）并落盘，**已存在就直接使用，改表也不会回头覆盖**——文件归使用方所有。`MetaQuery` 驱动的 CRUD 不读文件，SQL 由 `MetaSqlBuilder` 按元数据现拼（条件运算符是开集，固定文件表达不了）；
 - 自动生成的文件带 `generated-by` 标记；`refresh` 只丢缓存重读文件，要按新结构重来就删文件；手工文件同样原样使用，不会被覆盖；
 - 文件名与列名按**忽略大小写**对齐：H2/Oracle 元数据给的是大写名，手写文件多按 MySQL 习惯写小写，`demo_order.xml` 配 `DEMO_ORDER` 这张表、`#{order_no}` 配 `ORDER_NO` 这一列都能对上；
 - **没有 delete**：应用侧不提供物理删除，作废用一次状态列更新；`deleted_flag` / `del_flag` / `is_deleted` 可自动过滤；
@@ -119,10 +124,12 @@ MetaMapper.of("tenant-a").findList("form_order", MetaQuery.by("status", 1));
 Mapper 文件相关配置：
 
 ```properties
-autumn.data.meta.mapper.xml-directory=meta-mappers            # 空串表示只生成到内存、不落盘
-autumn.data.meta.mapper.generate-xml=true                     # false 时缺失 XML 直接报错
-autumn.data.meta.mapper.entity-source-directory=generated-entities  # 生成实体 .java 落盘；留空不留存
-autumn.data.meta.mapper.table-cache-size=10000                     # 各缓存容器的条目上限，默认 10000
+autumn.data.meta.mapper.meta-directory=autumn-meta      # 工作根目录；空串 = 纯内存，产物一律不落盘
+autumn.data.meta.mapper.generate-files=true             # false 时子目录里缺失的文件直接报错
+autumn.data.meta.mapper.table-cache-size=10000          # 各缓存容器的条目上限，默认 10000
+autumn.data.meta.mapper.default-list-limit=1000         # findList 未显式限行时的上限
+autumn.data.meta.mapper.default-pool-name=default       # 静态门面走的那个池
+autumn.data.meta.mapper.logic-delete-columns=deleted_flag,del_flag,is_deleted
 ```
 
 完整设计与语义见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)；上层怎么调有两个能直接跑的例子：

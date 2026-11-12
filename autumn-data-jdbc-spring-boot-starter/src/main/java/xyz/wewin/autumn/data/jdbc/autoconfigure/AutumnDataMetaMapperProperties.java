@@ -5,7 +5,7 @@ import java.util.Set;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-import xyz.wewin.autumn.data.meta.jdbc.dynamic.BoundedCache;
+import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCache;
 
 /**
  * 动态表 CRUD 配置（前缀 {@code autumn.data.meta.mapper}）。

@@ -6,6 +6,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
@@ -51,6 +52,17 @@ public class MetaClass {
      */
     private Set<String> changed;
 
+    /**
+     * 列之外的名字：命名语句的业务开关、排序字段，以及完全动态形态下后加的字段。
+     *
+     * <p>单独放一处而不是塞进 {@link #properties}：运行期生成的实体子类用真实字段摊出列视图，
+     * 覆写后的 {@link #getProperties()} 里不会有这份数据的容身之地；给它一个独立的袋子，
+     * 子类只要在 {@code getProperties()} 末尾接上 {@link #dynamicProperties()} 就能完整可见。</p>
+     *
+     * <p>键按小写归一，读写因此大小写不敏感；懒分配，纯读出来的行不占这份内存。</p>
+     */
+    private Map<String, MetaProperty> dynamic;
+
     public String getName() {
         return name;
     }
@@ -76,7 +88,26 @@ public class MetaClass {
     }
 
     public List<MetaProperty> getProperties() {
-        return properties;
+        if (this.dynamic == null || this.dynamic.isEmpty()) {
+            return properties;
+        }
+        List<MetaProperty> merged = new ArrayList<>(
+                (properties == null ? 0 : properties.size()) + this.dynamic.size());
+        if (properties != null) {
+            merged.addAll(properties);
+        }
+        merged.addAll(this.dynamic.values());
+        return merged;
+    }
+
+    /**
+     * 列以外的动态属性（按写入顺序）。
+     *
+     * <p>覆写 {@link #getProperties()} 的子类（运行期生成的实体）用它把这部分接回自己的视图，
+     * 否则 {@code set("orderBy", ...)} 这类写进非列名字的值会静默消失。</p>
+     */
+    protected List<MetaProperty> dynamicProperties() {
+        return this.dynamic == null ? List.of() : List.copyOf(this.dynamic.values());
     }
 
     public void setProperties(List<MetaProperty> properties) {
@@ -117,7 +148,7 @@ public class MetaClass {
         return property == null ? null : property.getValue();
     }
 
-    /** 按属性名写值（大小写不敏感）；属性不存在时追加一个动态属性。写入即标脏。 */
+    /** 按属性名写值（大小写不敏感）；属性不存在时记成一个动态属性。写入即标脏。 */
     public void set(String propertyName, Object value) {
         MetaProperty property = property(propertyName);
         if (property != null) {
@@ -131,10 +162,10 @@ public class MetaClass {
         MetaProperty added = new MetaProperty();
         added.setName(propertyName);
         added.setValue(value);
-        List<MetaProperty> snapshot = getProperties();
-        List<MetaProperty> current = snapshot == null ? new ArrayList<>() : new ArrayList<>(snapshot);
-        current.add(added);
-        setProperties(current);
+        if (this.dynamic == null) {
+            this.dynamic = new LinkedHashMap<>();
+        }
+        this.dynamic.put(normalize(propertyName), added);
         markChanged(propertyName);
     }
 

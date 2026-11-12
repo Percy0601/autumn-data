@@ -4,6 +4,9 @@ target/
 !**/src/main/**/target/
 !**/src/test/**/target/
 
+# 动态层工作目录（meta-class / entity / template / mapper 四类产物）
+autumn-meta/
+
 ### STS ###
 .apt_generated
 .classpath

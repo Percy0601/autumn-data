@@ -11,17 +11,36 @@
 
 ## 分层
 
+### 包分层
+
+外层是**用户级 API**，里面按职责分五层，层与层之间单向依赖（engine → metadata/entity/sql → support）：
+
 ```text
-MetaMapper（静态门面，只持有 volatile engine；查询返回 MetaClass）
-  └─ MetaMapperEngine（实例，按 pool 懒建/缓存 client，共享一个 MetaEntityRegistry）[有界 LRU]
-       └─ MetaMapperClient（绑定一个 pool）
-            ├─ MetaTableRegistry（表名 → MetaTable 快照 + 手工登记覆盖）        [有界 LRU ×2]
-            ├─ MetaSqlBuilder（按 MetaTable 生成 SQL，标识符只来自快照）
-            ├─ MetaStatementStore（表名 → Mapper AST；已有则读、缺失生成一次） [有界 LRU]
-            ├─ MetaEntityRegistry（结构指纹 → 已编译 MetaClass 子类 + READER） [有界 LRU]
-            │    ├─ MetaEntityTemplate（FreeMarker 生成 .java 源码）
-            │    └─ MetaEntityCompiler（javax.tools 内存编译 + 内存 ClassLoader，零临时目录）
-            └─ AutumnJdbc（复用现有执行层：query / page / count / update / 生成键）
+xyz.wewin.autumn.data.meta.jdbc            用户级：MetaMapper 门面 / MetaQuery 条件 DSL / MetaSqlException / SqlBuild
+  ├─ engine      MetaMapperEngine（池 → client，共享实体注册表）/ MetaMapperClient（一次调用的编排）
+  │              MetaMapperOptions / PerThreadConnectionSource
+  ├─ metadata    MetaTable（列快照）/ MetaTableRegistry（懒读 + 手工覆盖）/ MetaModelStore（元类定义 JSON）
+  ├─ entity      MetaEntityTemplate（FreeMarker 出源码）/ MetaEntityCompiler（内存 javac）
+  │              MetaEntityRegistry（结构指纹 → 类）/ MetaEntityColumns + MetaEntityReader（结果集映射）
+  │              MetaTemplateStore（.ftl 外置与回落）
+  ├─ sql         MetaSqlBuilder（CRUD 现拼）/ MetaStatementStore + SqlTemplate（文件解释）
+  │              MarkedSql（抽取产物）/ MetaPlanCompiler + MetaSqlPlan + MetaBindSlot + MetaTypeCoercion（再转换）
+  │              MetaPlanCache（形状 → 计划）
+  └─ support     BoundedCache / LruCache / BoundedCaches / MetaDirectories（根目录 + 四个固定子目录）
+```
+
+调用链只有一条：
+
+```text
+MetaMapper（静态门面，只持有 volatile engine）
+  └─ MetaMapperEngine [有界 LRU：池名 → client]
+       └─ MetaMapperClient（绑定一个池）
+            ├─ MetaTableRegistry     表名 → MetaTable 快照 + 手工登记覆盖                [有界 LRU ×2]
+            ├─ MetaEntityRegistry    结构指纹 → 已编译 MetaClass 子类 + READER          [有界 LRU]
+            ├─ MetaSqlBuilder        按 MetaTable 现拼 CRUD SQL，标识符只来自快照
+            ├─ MetaStatementStore    表名 → Mapper AST；已有则读、缺失生成一次           [有界 LRU]
+            ├─ MetaPlanCache         形状指纹 + SQL 文本 → 执行计划                     [有界 LRU]
+            └─ AutumnJdbc            复用执行层：query / page / count / update / 生成键 / 预编译计划
 
 所有 [有界 LRU] 都走同一个 BoundedCache 接口 / BoundedCaches 工厂，上限由 table-cache-size 统一配置。
 本模块没有任何「编译期生成的 Mapper 注册中心」或接口动态代理：静态注册路径（MetaConfiguration /
@@ -70,13 +89,13 @@ switch，仍用原始列名，业务语义不变。
 `MetaMapper.entityType(table)` 能拿到生成出来的 `Class<? extends MetaClass>`。
 
 **结构指纹参与包名**：列顺序、名字、JDBC 类型、主键/自增/可空都会算进 SHA-256 指纹，
-生成类的包名是 `...generated.v<指纹>`。加一列后 `refresh`，指纹变化 → 生成另一个包下的新类，
+生成类的包名是 `...meta.jdbc.entity.generated.v<指纹>`。加一列后 `refresh`，指纹变化 → 生成另一个包下的新类，
 旧实例继续由各自的 ClassLoader 持有，不会被重定义，也不会新旧实例互相 ClassCastException。
 同构的表只编译一次，多个数据源池共享一个 `MetaEntityRegistry`。
 
-生成的源码可以配置落盘（`autumn.data.meta.mapper.entity-source-directory`），产出的是一份
-可读、可改、能固化成静态实体的 `.java`。运行期需要完整 JDK（JRE 上没有 `javax.tools`，
-会明确报错）。
+生成的源码可以落盘（`meta-directory` 的 `entity/` 子目录），产出的是一份可读、可改、能固化成静态实体的
+`.java`；同目录下的 `meta-class/` 放元类定义 JSON，`template/` 放生成源码用的 `.ftl`，`mapper/` 放 Mapper
+文件。运行期需要完整 JDK（JRE 上没有 `javax.tools`，会明确报错）。
 
 > **部署注意**：javac 编译生成源码时需要能从 `java.class.path` / `CodeSource` 找到
 > `MetaClass` 等依赖类。普通 classpath 启动（含 Maven Surefire 的 manifest-only jar）已处理；
@@ -96,7 +115,7 @@ switch，仍用原始列名，业务语义不变。
 ```java
 MetaMapper.install(MetaMapperEngine.forDataSource("default", dataSource));
 
-// 查询
+// 查询（返回的就是运行期生成、带真实字段类型的实体）
 Optional<MetaClass> row = MetaMapper.findById("form_order", 1L);
 Class<? extends MetaClass> type = MetaMapper.entityType("form_order");   // 动态生成出来的类
 MetaMapper.findOne("form_order", MetaQuery.by("order_no", "A001"));
@@ -107,26 +126,40 @@ MetaMapper.findList("form_order", MetaQuery.all().isNull("remark"));      // 空
 MetaMapper.findPage("form_order", MetaQuery.by("status", 1), Pageable.of(0, 20));
 MetaMapper.count(...); MetaMapper.exists(...);
 
-// 保存（只 INSERT）
-Object id = MetaMapper.save("form_order", Map.of("order_no", "A001", "amount", "12.50"));
-List<Object> ids = MetaMapper.saveAll("form_order", rows);
+// 新增：实体上赋过值的列才进 INSERT，自增主键回填到同一个实体上
+MetaClass order = MetaMapper.newEntity("form_order");
+order.set("order_no", "A001");
+order.set("amount", "12.50");
+MetaMapper.save(order);
+MetaMapper.saveAll(List.of(order, MetaMapper.newEntity("form_order")));   // 列一致走 JDBC batch
 
-// 更新（部分更新）
-MetaMapper.updateById("form_order", id, Map.of("status", 2));
+// 部分更新：改过的列才进 SET，赋 null 就是真的写 NULL
+order.set("status", 2);
+MetaMapper.update(order);
+MetaClass byKey = MetaMapper.newEntity("form_order");                     // 复合主键按主键读写
+byKey.set("tenant", "T1");
+byKey.set("order_no", "A001");
+MetaMapper.findByKey(byKey);
 
 // 多数据源：显式绑定池
 MetaMapper.of("tenant-a").findPage("form_order", MetaQuery.all(), Pageable.of(0, 20));
 
-// 命名语句走 client（id 就是 Mapper 文件里的语句 id）
+// 命名语句走 client（id 就是 Mapper 文件里的语句 id，参数也是实体）
 MetaMapperClient client = MetaMapper.defaultClient();
-client.selectList("form_order", "selectList", Map.of("status", 1));
-client.selectOne("form_order", "byOrderNo", Map.of("order_no", "A001"));
-client.selectCount("form_order", "countDraft", Map.of("status", 1));
-client.execute("form_order", "voidByNo", Map.of("order_no", "A001"));
-SqlBuild sql = client.sqlFor("form_order", "selectList", Map.of("status", 1)); // 只看文本，不执行
+MetaClass params = MetaMapper.newEntity("form_order");                    // 或 new MetaClass()
+params.set("status", 1);
+client.selectList("form_order", "selectList", params);
+client.selectOne("form_order", "byOrderNo", params);
+client.selectCount("form_order", "countDraft", params);
+client.execute("form_order", "voidByNo", params);
+MarkedSql sql = client.sqlFor("form_order", "selectList", params);        // 只看文本与绑定值，不执行
 ```
 
-**没有 delete。** 应用侧不提供物理删除；作废走 `updateById(..., Map.of("status", "VOID"))`。
+列以外的东西（`<if test>` 的开关、`<foreach>` 的集合、`${orderBy}` 的排序字段）照样写在同一个参数实体上：
+它们不是列，就落在实体的动态属性里，`getProperties()` 会一并摊出来。表名也读自实体，所以
+`client.execute(table, id, entity)` 里 `table` 与 `entity.getName()` 一致即可。
+
+**没有 delete。** 应用侧不提供物理删除；作废走状态列（`entity.set("status", "VOID")` + `update`）。
 若表里有 `deleted_flag` / `del_flag` / `is_deleted`，查询自动追加 `= 0`（可配置关闭）。
 
 ## 元数据快照
@@ -189,9 +222,10 @@ autumn.data.meta.mapper.table-cache-size=10000
 
 规则只有一条：**文件存在就用文件，不存在才按表结构生成一次**。
 
-1. 查找顺序：`<xml-directory>/<表名>.xml` → classpath `meta-mappers/<表名>.xml`；
-2. 都没有且 `generate-xml=true`：按 `MetaTable` 的列结构生成一份，写到 `xml-directory` 后使用；
-   目录为空串时只在内存里用、不落盘；
+1. 查找顺序：`<meta-directory>/mapper/<表名>.xml` → classpath `meta-mappers/<表名>.xml`；
+   两级都按「表名原样 / 小写 / 大写」三个文件名依次找（H2、Oracle 的元数据表名是大写，手写文件多按 MySQL 习惯写小写）；
+2. 都没有且 `generate-files=true`：按 `MetaTable` 的列结构生成一份，写到 `mapper/` 子目录后使用；
+   `meta-directory` 为空串时只在内存里用、不落盘；
 3. 生成文件带 `generated-by: autumn-data-meta-jdbc` 标记。**文件存在就直接使用，永不回头覆盖**：
    改表加列后 `refresh` 只是丢缓存重读文件，要按新结构重来就删文件手工重写。文件归使用方所有。
 
@@ -201,7 +235,7 @@ autumn.data.meta.mapper.table-cache-size=10000
 
 | 入口 | SQL 来源 | 说明 |
 | --- | --- | --- |
-| `findById` / `findList` / `findPage` / `count` / `save` / `updateById` … | `MetaSqlBuilder` 现拼 | 条件运算符是开集（`>` / `LIKE` / `IN` / `BETWEEN` / 排序…），固定文件表达不了，因此这条路**完全不读文件** |
+| `findById` / `findByKey` / `findList` / `findPage` / `count` / `save` / `saveAll` / `update` … | `MetaSqlBuilder` 现拼 | 条件运算符是开集（`>` / `LIKE` / `IN` / `BETWEEN` / 排序…），固定文件表达不了，因此这条路**完全不读文件** |
 | `sqlFor` / `selectList` / `selectOne` / `selectCount` / `execute` | Mapper 文件的命名语句 | 语句 id 就是 XML 里的 `id`；`<select>` 走查询，`<insert>`/`<update>` 走 `execute`，`<delete>` 拒绝执行 |
 
 生成的文件本身就是一份可跑的样例语句（`selectList` / `selectCount` / `insert` / `updateByKey`），
@@ -269,23 +303,26 @@ autumn.data.meta.mapper.table-cache-size=10000
 - `test` 表达式既认 MyBatis 的 `name != null`、`name == 'active'`，也认 FreeMarker 表达式的
   `name??`、`name?has_content`、`name?size`、`!expr`、`a && b`。FreeMarker 的 `<#if>` 标签本身
   不是合法 XML（标签名不能以 `#` 开头），DOM 解析阶段就进不来，所以兼容只做在表达式层；
-- 调用方传的参数键按元数据归一，`Map.of("ORDER_NO", ...)` 与 `order_no` 都能对上模板里的列名；
+- 参数实体上的键按元数据归一，`set("ORDER_NO", ...)` 与 `set("order_no", ...)` 都能对上模板里的列名；
   值按列的 JDBC 类型收口（表单字符串 → Long/BigDecimal/LocalDateTime）；
 - 名字按忽略大小写对齐：`#{}` / `test` 里写的列名、调用方传的键、Mapper 文件名三者都不要求
   和元数据的大小写一致。H2、Oracle 的元数据列名是大写，手写文件多按 MySQL 习惯写小写，
   对不上时 `#{order_no}` 会静默绑成 `null`——所以这里显式做成大小写不敏感。
 
 ```properties
-autumn.data.meta.mapper.xml-directory=meta-mappers
-autumn.data.meta.mapper.generate-xml=true
-autumn.data.meta.mapper.entity-source-directory=generated-entities
+autumn.data.meta.mapper.meta-directory=autumn-meta             # 空串 = 纯内存，四类产物都不落盘
+autumn.data.meta.mapper.generate-files=true                    # false 时缺失文件直接报错
 autumn.data.meta.mapper.table-cache-size=10000
+autumn.data.meta.mapper.default-list-limit=1000
+autumn.data.meta.mapper.default-pool-name=default
+autumn.data.meta.mapper.logic-delete-columns=deleted_flag,del_flag,is_deleted
 ```
 
-`entity-source-directory` 是生成的实体 `.java` 落盘目录，留空表示全程内存编译、完全不落盘。
-`table-cache-size` 是各缓存容器各自的条目上限（默认 10000），详见「有界缓存」一节。
-`xml-directory` 为空串时只生成到内存；`generate-xml=false` 时缺失文件直接抛
-`MetaSqlException`，适合生产环境要求 Mapper 必须预置的场景。
+`meta-directory` 是唯一的工作目录，四类产物落在它的固定子目录里：`meta-class/`（元类定义 JSON）、
+`entity/`（生成的实体 `.java`，留空即全程内存编译）、`template/`（生成实体用的 `.ftl`，缺省时用 jar 内置那份）、
+`mapper/`（Mapper XML）。子目录里的文件一旦存在就不再重写，所以 `generate-files=false` 只影响「第一次」：
+缺失时抛 `MetaSqlException`，适合生产环境要求 Mapper 必须预置的场景。`table-cache-size` 是各缓存容器各自的
+条目上限（默认 10000），详见「有界缓存」一节。
 
 ### 上手示例
 
@@ -300,18 +337,38 @@ autumn.data.meta.mapper.table-cache-size=10000
 
 跑起来：`mvn -B test`（全 reactor）。想只跑这一类示例，先 `mvn -B install -DskipTests`
 把编译期处理器装进本地仓库，再 `mvn -pl autumn-data-jdbc-spring-boot-starter-using test
--Dtest=MetaMapperXmlUsingTest`。生成的文件落在 `target/meta-mappers/`，删掉它就等于
+-Dtest=MetaMapperXmlUsingTest`。生成的文件落在 `target/autumn-meta/mapper/`，删掉它就等于
 「按新表结构重来」。
+
+## 抽取 / 再转换 / 执行：一次 SQL 的三段
+
+动态 SQL 的形状跟着参数变（给几个条件就拼几段），没法像静态实体那样全在编译期定死；但每条语句都现场
+判类型、现场决定怎么绑，又慢又难对齐。这一版把一次调用切成三段，重的两段都有缓存：
+
+1. **抽取** → `MarkedSql(sql, refs, values)`：`#{}` 在解析阶段就摘成 `?`，同时记下每个槽引用的是哪一列
+   （`refs`）和这一次调用的实参（`values`）。形状（`sql` + `refs`）与数据（`values`）分开，是同构调用
+   复用计划的前提；构造时自校验 `?` 数与槽数一致（单引号字面量里的 `?` 不算槽）。
+2. **再转换** → `MetaSqlPlan` + `MetaBindSlot[]`：按「形状指纹 + SQL 文本」缓存，一个形状只做一次。
+   类型判断、列查找、setter 选择、写 NULL 时上报的 JDBC 类型全部在这里定完；引用不是列的槽
+   （`<if test>` 的开关、`<foreach>` 的循环值）标成 OBJECT，原样交给驱动，不猜类型。
+3. **执行**：`parameterCount() == 0` 走 `java.sql.Statement`（纯 `${}` / 字面量，文本就是成品）；
+   `> 0` 走 `PreparedStatement`，运行期只剩「取值 + 编译期已经定好的类型化 setter」。
+   同形状的第二次调用直接命中 `MetaPlanCache`，不解析、不判类型，数据库侧也能复用游标与执行计划。
+
+`client.sqlFor(...)` 返回的就是 `MarkedSql`，`client.compiledShapes()` 给出已缓存的形状数——
+「这条语句拼成了什么、绑了哪几个值」随时可查，注入相关的用例就是直接断言这个返回值。
 
 ## 写入语义
 
 | 方法 | 语义 |
 | --- | --- |
-| `save` | 只做 INSERT；自增主键回填；非自增主键必须由调用方提供；无主键也能写，但返回 `null` |
-| `saveAll` | SQL 文本一致时走 JDBC batch；不一致（传的列不同）时退化为逐条 save |
-| `updateById` / `updateByKey` | 部分更新：只 SET 传入的列；未传列保持原值；置空必须显式传 `MetaValue.NULL` |
+| `save` | 只做 INSERT，写实体上赋过值的列；自增主键回填到实体上并清掉变更集；非自增主键必须由调用方提供；无主键也能写，但返回的实体没有键 |
+| `saveAll` | 每个实体都是「写过的列」，列集合一致时走 JDBC batch；不一致（写过的列不同）时退化为逐条 save；返回按入参顺序 |
+| `update` | 部分更新：只 SET 改过的列，未改列保持原值，赋 `null` 就是真的写 NULL；WHERE 用实体上的主键；影响 0 行时不清变更集 |
 
-主键列不允许出现在 UPDATE 的 SET 里；单主键用 `updateById`，复合主键用 `updateByKey`。
+主键列不允许出现在 UPDATE 的 SET 里：脏主键直接抛错。取行的方式是 `findById`（单主键值）或
+`findByKey`（实体上的主键列，复合主键用这个），改完再 `update`。想绕过「先读后改」就写一条
+按主键更新的命名语句（生成文件里的 `updateByKey` 就是这一条）。
 
 ## 安全边界
 
@@ -350,20 +407,22 @@ ThreadLocal 最多作为“请求级默认池”的便利糖，不能作为唯�
 
 ## 代码与测试
 
-- 实现：`autumn-data-meta-jdbc/src/main/java/xyz/wewin/autumn/data/meta/jdbc/dynamic`
-  （`MetaStatementStore` 管文件生命周期，`SqlTemplate` 是运行期解释器，方言与编译期生成器
-  共用 `autumn-data-common` 的 `TemplateParser` / `TemplateNode`；
-  `MetaEntityTemplate` / `MetaEntityCompiler` / `MetaEntityRegistry` 管 FreeMarker 生成实体类；
-  `BoundedCache` / `LruCache` / `BoundedCaches` 管全部有界缓存；`MetaEntityCompiler` 全内存编译；
-  `SqlBuild` 只作为与静态侧共用的无状态值对象保留）
-- 用例：`MetaMapperDynamicTest`（建表 → 不重启 CRUD → 加列 refresh → 逻辑删除 → 复合主键 →
-  Mapper 文件生成一次/改表不重写 → 手工文件优先 → 名字忽略大小写对齐 → 空值判断方法 →
-  `#{}` 绑定与注入拒绝 → `${}` 白名单 → `<foreach>` / `<trim>` / `<delete>` 拒绝，
-  以及生成类的真实字段类型 / 零反射源码 / 加列后生成新类 / 源码落盘 / 投影缺列 /
-  各缓存淘汰后可重建 / 手工登记也参与淘汰后回源 / 池 client 淘汰重建 /
-  内存编译无临时目录 / 默认上限 10000 / 列名撞基类契约 / 关键字与中文列名 /
-  并发单飞 / 连续改表 / jar: CodeSource 兜底），共 33 个；
-  `BoundedCacheTest` 15 个（LRU 顺序、上限、并发单飞、加载在锁外、失败不缓存、失效语义、
-  `asMap` 只读快照、refresh 与在途加载竞态、并发读写不越界）；
+## 代码与测试
+
+- 实现：`autumn-data-meta-jdbc/src/main/java/xyz/wewin/autumn/data/meta/jdbc`，外层放用户级 API
+  （`MetaMapper` / `MetaQuery` / `MetaSqlException` / `SqlBuild`），内部分五层：
+  `engine`（引擎与 client 的编排）、`metadata`（表结构快照与元类定义）、`entity`（FreeMarker 生成 +
+  内存 javac + 结果集映射）、`sql`（`MetaSqlBuilder` 现拼、`MetaStatementStore` + `SqlTemplate` 解释文件、
+  `MarkedSql` → `MetaPlanCompiler` → `MetaSqlPlan` 三段与 `MetaPlanCache`）、`support`（有界缓存与目录）。
+  方言与编译期生成器共用 `autumn-data-common` 的 `TemplateParser` / `TemplateNode`，本层只解释执行。
+- 用例（共 57 个）：`engine/MetaMapperDynamicTest` 35 个（建表 → 不重启 CRUD → 加列 refresh → 逻辑删除 →
+  复合主键 → Mapper 文件生成一次/改表不重写 → 手工文件优先 → 名字忽略大小写对齐 → 空值判断方法 →
+  `#{}` 绑定与注入拒绝 → `${}` 白名单 → `<foreach>` / `<trim>` / `<delete>` 拒绝，以及生成类的真实字段类型 /
+  零反射源码 / 加列后生成新类 / 源码落盘 / 投影缺列 / 各缓存淘汰后可重建 / 手工登记也参与淘汰后回源 /
+  池 client 淘汰重建 / 内存编译无临时目录 / 默认上限 10000 / 列名撞基类契约 / 关键字与中文列名 /
+  并发单飞 / 连续改表）；`sql/MetaSqlPlanTest` 6 个（形状与数据分离、槽位类型、写过的列决定 INSERT 形状、
+  字面量问号不算槽）；`entity/MetaEntityCompilerTest` 1 个（`jar:` CodeSource 兜底）；
+  `support/BoundedCacheTest` 15 个（LRU 顺序、上限、并发单飞、加载在锁外、失败不缓存、失效语义、
+  `asMap` 只读快照、refresh 与在途加载竞态、并发读写不越界）。
   starter 装配 2 个；using 模块端到端 1 个 + 上层用法示例 5 个。
 - 全 reactor：`mvn -B test`，starter / using / compiler / common 全绿。

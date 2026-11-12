@@ -1,7 +1,5 @@
 package xyz.wewin.autumn.data.using;
 
-import java.util.Map;
-
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -9,7 +7,7 @@ import org.springframework.jdbc.core.JdbcOperations;
 
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
-import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaQuery;
+import xyz.wewin.autumn.data.meta.jdbc.MetaQuery;
 import xyz.wewin.autumn.data.common.meta.MetaClass;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,22 +31,29 @@ class MetaMapperUsingTest {
 				+ " (id BIGINT AUTO_INCREMENT PRIMARY KEY, form_no VARCHAR(32) NOT NULL, amount DECIMAL(12,2),"
 				+ " status INT, create_time TIMESTAMP, deleted_flag INT DEFAULT 0)");
 		try {
-			Object id = MetaMapper.save(TABLE, Map.of("form_no", "D001", "amount", "12.50", "status", 1));
+			MetaClass form = MetaMapper.newEntity(TABLE);
+			form.set("form_no", "D001");
+			form.set("amount", "12.50");
+			form.set("status", 1);
+			MetaMapper.save(form); // 自增主键回填到 form 上
 
-			MetaClass saved = MetaMapper.findById(TABLE, id).orElseThrow();
+			MetaClass saved = MetaMapper.findById(TABLE, form.get("id")).orElseThrow();
 			assertThat(saved.getString("form_no")).isEqualTo("D001");
 			assertThat(saved.getBigDecimal("amount")).isEqualByComparingTo("12.50");
 
-			assertThat(MetaMapper.updateById(TABLE, id, Map.of("status", 2))).isEqualTo(1);
+			saved.set("status", 2);
+			assertThat(MetaMapper.update(saved)).isEqualTo(1); // 只写 status 这一列
 			assertThat(MetaMapper.findPage(TABLE, MetaQuery.by("status", 2), Pageable.of(0, 10)).total())
 					.isEqualTo(1);
 
-			// 运行期加列：refresh 之后不需要重启服务
+			// 运行期加列：refresh 之后不需要重启服务，新列即读写
 			this.jdbcOperations.execute("ALTER TABLE " + TABLE + " ADD COLUMN remark VARCHAR(64)");
 			MetaMapper.refresh(TABLE);
 
-			assertThat(MetaMapper.updateById(TABLE, id, Map.of("remark", "加急"))).isEqualTo(1);
-			assertThat(MetaMapper.findById(TABLE, id).orElseThrow().getString("remark")).isEqualTo("加急");
+			MetaClass reloaded = MetaMapper.findById(TABLE, form.get("id")).orElseThrow();
+			reloaded.set("remark", "加急");
+			assertThat(MetaMapper.update(reloaded)).isEqualTo(1);
+			assertThat(MetaMapper.findById(TABLE, form.get("id")).orElseThrow().getString("remark")).isEqualTo("加急");
 		}
 		finally {
 			this.jdbcOperations.execute("DROP TABLE IF EXISTS " + TABLE);

@@ -12,8 +12,8 @@ import org.springframework.context.annotation.Bean;
 
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
-import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaMapperEngine;
-import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaMapperOptions;
+import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperEngine;
+import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperOptions;
 
 /**
  * 动态表 CRUD 自动配置：把 {@link MetaMapperEngine} 装进 {@link MetaMapper} 静态门面。

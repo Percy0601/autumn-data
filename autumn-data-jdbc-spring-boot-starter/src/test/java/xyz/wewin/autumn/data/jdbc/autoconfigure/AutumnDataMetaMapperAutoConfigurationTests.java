@@ -6,7 +6,7 @@ import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 
 import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
-import xyz.wewin.autumn.data.meta.jdbc.dynamic.MetaMapperEngine;
+import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperEngine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

@@ -36,24 +36,4 @@ public interface PreparedPlan<A> {
 	 * 避免把类型判断留给驱动。</p>
 	 */
 	void bind(PreparedStatement statement, A args) throws SQLException;
-
-	/** 无参数的成品 SQL：走 {@link java.sql.Statement} 执行。 */
-	static PreparedPlan<Void> raw(String sql) {
-		return new PreparedPlan<>() {
-
-			@Override
-			public String sql() {
-				return sql;
-			}
-
-			@Override
-			public int parameterCount() {
-				return 0;
-			}
-
-			@Override
-			public void bind(PreparedStatement statement, Void args) {
-			}
-		};
-	}
 }

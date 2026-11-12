@@ -69,7 +69,7 @@
         </trim>
     </insert>
 
-    <!-- 部分更新：传 MetaValue.NULL 表示显式置空，不传表示这一列不动 -->
+    <!-- 部分更新：#{} 的键在参数里出现才拼这一段，所以「不传」就是这一列不动 -->
     <update id="patch">
         UPDATE ${table}
         <trim prefix="SET " suffixOverrides=",">
@@ -78,6 +78,9 @@
         </trim>
         WHERE id = #{id}
     </update>
+
+    <!-- 想显式把一列写成 NULL 就别判空：绑到什么写什么，NULL 也是使用方的意图 -->
+    <update id="setAmount">UPDATE ${table} SET amount = #{amount} WHERE id = #{id}</update>
 
     <!-- 写在文件里也只会解析成功：动态层拒绝执行物理删除 -->
     <delete id="purgeById">DELETE FROM ${table} WHERE id = #{id}</delete>
