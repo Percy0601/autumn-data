@@ -1,7 +1,10 @@
 package xyz.wewin.autumn.data.common.mapper;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
+import java.util.Map;
 
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
@@ -20,6 +23,8 @@ import org.w3c.dom.Node;
  *   <li>{@code <foreach collection="..." item="..." separator="..." open="(" close=")">...</foreach>} — 循环</li>
  *   <li>{@code <where>...</where>} — 条件容器（{@code <trim prefix="WHERE " prefixOverrides="AND|OR">} 的语法糖）</li>
  *   <li>{@code <trim prefix="(" suffix=")" suffixOverrides=",">...</trim>} — 带前后缀的容器</li>
+ *   <li>{@code <sql id="...">...</sql>} — 可复用片段</li>
+ *   <li>{@code <include refid="...">} — 引用片段；解析阶段内联，运行期 AST 里没有这一层</li>
  * </ul>
  *
  * <p>文本内容中的插值语法：</p>
@@ -28,11 +33,9 @@ import org.w3c.dom.Node;
  *   <li>{@code #{name}} — 参数占位符（生成 {@code ?}，运行期 JDBC 绑定）</li>
  * </ul>
  *
- * <p>注意：{@code <#if ...>}／{@code <#list ...>} 这类 FreeMarker 标签不是合法 XML
- * （标签名不能以 {@code #} 开头、表达式不是属性），一旦被 DOM 解析器看到就直接
- * {@code SAXParseException}；写进 CDATA 又会变成不可解析的纯文本。因此本方言只接受
- * MyBatis 式标签，FreeMarker 的兼容做在 {@code test} 表达式层
- * （{@code name??}、{@code name?has_content}、{@code !expr}）。</p>
+ * <p>方言只有 MyBatis 这一套：{@code test} 表达式只认 {@code name != null}、
+ * {@code status == 'paid'} 这类写法，不提供 FreeMarker 风格的 {@code ?? / ?has_content}。
+ * FreeMarker 的 {@code <#if ...>} 标签本身不是合法 XML，DOM 解析阶段就进不来。</p>
  */
 public final class TemplateParser {
 
@@ -43,12 +46,21 @@ public final class TemplateParser {
 	 * 解析一个语句元素（{@code <select>}/{@code <insert>} 等）的所有子节点为模板 AST。
 	 */
 	public static List<TemplateNode> parse(Element statementElement) {
-		List<TemplateNode> nodes = new ArrayList<>();
-		collectChildren(statementElement, nodes);
-		return mergeAdjacentText(nodes);
+		return parse(statementElement, Map.of());
 	}
 
-	private static void collectChildren(Element parent, List<TemplateNode> out) {
+	/**
+	 * 解析一个语句元素，{@code <include refid="...">} 按给定片段表内联。
+	 *
+	 * @param statementElement 语句元素
+	 * @param fragments 同一份 Mapper 里的 {@code <sql id="...">} 元素，键为 id
+	 */
+	public static List<TemplateNode> parse(Element statementElement, Map<String, Element> fragments) {
+		return collect(statementElement, fragments, new ArrayDeque<>());
+	}
+
+	private static void collectChildren(Element parent, Map<String, Element> fragments, Deque<String> openFragments,
+			List<TemplateNode> out) {
 		for (Node child = parent.getFirstChild(); child != null; child = child.getNextSibling()) {
 			switch (child.getNodeType()) {
 				case Node.TEXT_NODE, Node.CDATA_SECTION_NODE -> {
@@ -59,29 +71,76 @@ public final class TemplateParser {
 						out.addAll(parseInterpolation(text));
 					}
 				}
-				case Node.ELEMENT_NODE -> parseElement((Element) child, out);
+				case Node.ELEMENT_NODE -> parseElement((Element) child, fragments, openFragments, out);
 			}
 		}
 	}
 
-	private static void parseElement(Element element, List<TemplateNode> out) {
+	private static void parseElement(Element element, Map<String, Element> fragments, Deque<String> openFragments,
+			List<TemplateNode> out) {
 		switch (element.getTagName()) {
-			case "if" -> out.add(parseIf(element));
-			case "choose" -> out.add(parseChoose(element));
-			case "foreach" -> out.add(parseForEach(element));
-			case "where" -> out.add(TemplateNode.Trim.where(collect(element)));
-			case "trim" -> out.add(parseTrim(element));
+			case "if" -> out.add(parseIf(element, fragments, openFragments));
+			case "choose" -> out.add(parseChoose(element, fragments, openFragments));
+			case "foreach" -> out.add(parseForEach(element, fragments, openFragments));
+			case "where" -> out.add(TemplateNode.Trim.where(collect(element, fragments, openFragments)));
+			case "trim" -> out.add(parseTrim(element, fragments, openFragments));
+			// <include> 在解析阶段内联：消费方看到的仍是一棵自包含的 AST，
+			// 编译期生成 Java 与运行期解释执行都不需要知道片段表的存在。
+			case "include" -> out.addAll(include(element, fragments, openFragments));
+			case "sql" -> throw new TemplateParseException(
+					"<sql> is only allowed as a direct child of <mapper>, not inside a statement");
 			default -> throw new TemplateParseException(
 					"unsupported template tag <" + element.getTagName()
-							+ ">; supported: if, choose, foreach, where, trim");
+							+ ">; supported: if, choose, foreach, where, trim, sql, include");
+		}
+	}
+
+	/**
+	 * {@code <include refid="..."/>}：按 id 找到 {@code <sql>}，把它的子节点当作当前位置的内容。
+	 *
+	 * <p>片段可以嵌套引用片段；环（a→b→a）在解析阶段就报错，不会留到运行期变成栈溢出。
+	 * {@code refid} 允许写成 {@code namespace.id}，此时取最后一段匹配本文件里的片段
+	 * （跨文件的片段引用不在支持范围内）。</p>
+	 */
+	private static List<TemplateNode> include(Element element, Map<String, Element> fragments,
+			Deque<String> openFragments) {
+		if (element.getElementsByTagName("property").getLength() > 0) {
+			throw new TemplateParseException(
+					"<include> does not support <property> overrides; use #{...} parameters instead");
+		}
+		String refid = element.getAttribute("refid").trim();
+		if (refid.isEmpty()) {
+			throw new TemplateParseException("<include> requires a 'refid' attribute");
+		}
+		String key = refid;
+		Element fragment = fragments.get(key);
+		if (fragment == null && refid.indexOf('.') > 0) {
+			key = refid.substring(refid.lastIndexOf('.') + 1);
+			fragment = fragments.get(key);
+		}
+		if (fragment == null) {
+			throw new TemplateParseException("<include refid=\"" + refid + "\"> has no matching <sql id=\""
+					+ refid + "\">; available fragments: " + fragments.keySet());
+		}
+		if (openFragments.contains(key)) {
+			throw new TemplateParseException("cyclic <sql> include: "
+					+ String.join(" -> ", openFragments) + " -> " + key);
+		}
+		openFragments.addLast(key);
+		try {
+			return collect(fragment, fragments, openFragments);
+		}
+		finally {
+			openFragments.removeLast();
 		}
 	}
 
 	/** {@code <trim prefix suffix prefixOverrides suffixOverrides>}，Overrides 用 {@code |} 分隔。 */
-	private static TemplateNode.Trim parseTrim(Element element) {
+	private static TemplateNode.Trim parseTrim(Element element, Map<String, Element> fragments,
+			Deque<String> openFragments) {
 		return new TemplateNode.Trim(element.getAttribute("prefix"), element.getAttribute("suffix"),
 				overrides(element.getAttribute("prefixOverrides")), overrides(element.getAttribute("suffixOverrides")),
-				collect(element));
+				collect(element, fragments, openFragments));
 	}
 
 	private static List<String> overrides(String attribute) {
@@ -161,21 +220,24 @@ public final class TemplateParser {
 	}
 
 	/** 解析一个容器的子节点并合并相邻文本。 */
-	private static List<TemplateNode> collect(Element element) {
+	private static List<TemplateNode> collect(Element element, Map<String, Element> fragments,
+			Deque<String> openFragments) {
 		List<TemplateNode> body = new ArrayList<>();
-		collectChildren(element, body);
+		collectChildren(element, fragments, openFragments, body);
 		return mergeAdjacentText(body);
 	}
 
-	private static TemplateNode.If parseIf(Element element) {
+	private static TemplateNode.If parseIf(Element element, Map<String, Element> fragments,
+			Deque<String> openFragments) {
 		String test = element.getAttribute("test");
 		if (test.isEmpty()) {
 			throw new TemplateParseException("<if> requires a 'test' attribute");
 		}
-		return new TemplateNode.If(test, collect(element));
+		return new TemplateNode.If(test, collect(element, fragments, openFragments));
 	}
 
-	private static TemplateNode.Choose parseChoose(Element element) {
+	private static TemplateNode.Choose parseChoose(Element element, Map<String, Element> fragments,
+			Deque<String> openFragments) {
 		List<TemplateNode.Choose.WhenBranch> branches = new ArrayList<>();
 		List<TemplateNode> otherwise = List.of();
 		for (Node child = element.getFirstChild(); child != null; child = child.getNextSibling()) {
@@ -190,12 +252,12 @@ public final class TemplateParser {
 						throw new TemplateParseException("<when> requires a 'test' attribute");
 					}
 					List<TemplateNode> body = new ArrayList<>();
-					collectChildren(childElement, body);
+					collectChildren(childElement, fragments, openFragments, body);
 					branches.add(new TemplateNode.Choose.WhenBranch(test, mergeAdjacentText(body)));
 				}
 				case "otherwise" -> {
 					List<TemplateNode> body = new ArrayList<>();
-					collectChildren(childElement, body);
+					collectChildren(childElement, fragments, openFragments, body);
 					otherwise = mergeAdjacentText(body);
 				}
 				default -> throw new TemplateParseException(
@@ -209,7 +271,8 @@ public final class TemplateParser {
 		return new TemplateNode.Choose(branches, otherwise);
 	}
 
-	private static TemplateNode.ForEach parseForEach(Element element) {
+	private static TemplateNode.ForEach parseForEach(Element element, Map<String, Element> fragments,
+			Deque<String> openFragments) {
 		String collection = element.getAttribute("collection");
 		String item = element.getAttribute("item");
 		String separator = element.getAttribute("separator");
@@ -222,7 +285,7 @@ public final class TemplateParser {
 			item = "item";
 		}
 		List<TemplateNode> body = new ArrayList<>();
-		collectChildren(element, body);
+		collectChildren(element, fragments, openFragments, body);
 		// open/close 属于整段，不属于循环体：塞进 body 会让每行都带上一遍括号
 		return new TemplateNode.ForEach(item, collection, separator, open, close, mergeAdjacentText(body));
 	}

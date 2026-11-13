@@ -27,20 +27,10 @@ public final class TemplateCodeGenerator {
 	private static final String SQL_BUILD_FQN = "xyz.wewin.autumn.data.meta.jdbc.SqlBuild";
 
 	/**
-	 * 生成类自带的两个判断辅助：{@code <where>} 去掉打头的 AND/OR，
-	 * 以及 {@code ?has_content} 的取值语义。动态层解释器用同样的规则。
+	 * 生成类自带的结构辅助：{@code <where>} 去掉打头的 AND/OR。
+	 * 动态层解释器用同样的规则。
 	 */
 	private static final String HELPERS = """
-			private static boolean hasContent(Object value) {
-				if (value == null) {
-					return false;
-				}
-				if (value instanceof java.util.Collection<?> list) {
-					return !list.isEmpty();
-				}
-				return !value.toString().isEmpty();
-			}
-
 			private static void applyTrim(StringBuilder sql, List<Object> args, int textMark, int argMark,
 					String prefix, String suffix, String[] prefixOverrides, String[] suffixOverrides) {
 				String body = stripLeading(sql.substring(textMark).trim(), prefixOverrides);
@@ -318,7 +308,6 @@ public final class TemplateCodeGenerator {
 	 * <ul>
 	 *   <li>{@code name != null} → {@code params.get("name") != null}</li>
 	 *   <li>{@code name == null} → {@code params.get("name") == null}</li>
-	 *   <li>{@code name??}（FreeMarker 风格）→ {@code params.get("name") != null}</li>
 	 *   <li>{@code name == 'value'} → {@code "value".equals(params.get("name"))}</li>
 	 *   <li>{@code name != ''} → {@code params.get("name") != null && !params.get("name").toString().isEmpty()}</li>
 	 *   <li>其他 → 原样输出（用户自行保证合法性）</li>
@@ -326,18 +315,6 @@ public final class TemplateCodeGenerator {
 	 */
 	static String translateCondition(String expression) {
 		String trimmed = expression.trim();
-
-		// FreeMarker 风格：name?? → name != null
-		if (trimmed.endsWith("??")) {
-			String var = trimmed.substring(0, trimmed.length() - 2).trim();
-			return "params.get(\"" + escapeJava(var) + "\") != null";
-		}
-
-		// FreeMarker 风格：name?has_content → 非空（集合判空、其余判空串）
-		if (trimmed.endsWith("?has_content")) {
-			String var = trimmed.substring(0, trimmed.length() - "?has_content".length()).trim();
-			return "hasContent(params.get(\"" + escapeJava(var) + "\"))";
-		}
 
 		// name != null / name == null
 		if (trimmed.contains("!= null")) {

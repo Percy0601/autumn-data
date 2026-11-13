@@ -9,8 +9,8 @@ import java.util.List;
  * 编译期由 {@code TemplateCodeGenerator} 翻译成 Java {@code StringBuilder} 源码，
  * 运行期由动态层的解释器直接遍历。两条路都不引入模板引擎，也不反射。</p>
  *
- * <p>支持的语法子集（对标 MyBatis 动态 SQL；条件表达式另兼容 FreeMarker 写法，但标签只有 XML 这一套
- * —— FreeMarker 的 {@code <#if>} 不是合法 XML，DOM 解析阶段就进不来）：</p>
+ * <p>支持的语法子集（只对标 MyBatis 动态 SQL；标签是 XML 这一套，{@code <sql>/<include>}
+ * 在解析阶段内联，不进 AST）：</p>
  * <ul>
  *   <li>{@code ${name}} — 变量插值（原样拼入 SQL，只用于标识符片段）</li>
  *   <li>{@code #{name}} — 参数占位符（生成 {@code ?}，绑定实参，防注入）</li>
@@ -50,9 +50,8 @@ public sealed interface TemplateNode permits TemplateNode.Text, TemplateNode.Var
 	/**
 	 * {@code <if test="expr">} 条件块。
 	 *
-	 * <p>{@code expression} 是简化的条件表达式，对 {@code Map} 参数求值：MyBatis 的
-	 * {@code name != null}、{@code name == 'value'}，以及 FreeMarker 的
-	 * {@code name??}、{@code name?has_content}、{@code name?size} 写法都认。</p>
+	 * <p>{@code expression} 是简化的条件表达式，对参数求值：{@code name != null}、
+	 * {@code status == 'paid'}、{@code name != ''} 以及 {@code &&}/{@code ||}/{@code !} 组合。</p>
 	 */
 	record If(String expression, List<TemplateNode> body) implements TemplateNode {
 	}

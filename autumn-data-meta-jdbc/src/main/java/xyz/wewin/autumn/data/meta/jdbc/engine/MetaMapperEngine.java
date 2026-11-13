@@ -114,9 +114,10 @@ public final class MetaMapperEngine {
 		}, entities, options.tableCacheSize());
 	}
 
-	/** 实体类注册表：模板与生成的 .java 都来自同一个工作目录，全引擎共享一份。 */
+	/** 实体模型注册表：CODE/GENERIC 由 {@link MetaMapperOptions#entityStrategy()} 决定，全引擎共享一份。 */
 	private static MetaEntityRegistry entityRegistry(MetaMapperOptions options) {
-		return new MetaEntityRegistry(options.directories(), options.generateFiles(), options.tableCacheSize());
+		return new MetaEntityRegistry(options.directories(), options.generateFiles(), options.tableCacheSize(),
+				options.entityStrategy());
 	}
 
 	private static MetaMapperClient createClient(String poolName, DataSource dataSource, MetaMapperOptions options,

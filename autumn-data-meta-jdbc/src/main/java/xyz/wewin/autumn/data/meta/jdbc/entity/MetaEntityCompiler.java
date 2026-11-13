@@ -39,7 +39,7 @@ import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
 
 /**
- * 把 {@link MetaEntityTemplate} 产出的 Java 源码在运行期编译并加载。
+ * 把 {@link MetaEntitySource} 产出的 Java 源码在运行期编译并加载。
  *
  * <p>只依赖 JDK 自带的 {@code javax.tools}（需要完整 JDK，JRE 上会明确报错）。<b>全程内存编译</b>：
  * 源码是内存 {@link JavaFileObject}，javac 输出的字节码收进 {@code byte[]}，再由内存
@@ -63,7 +63,7 @@ public final class MetaEntityCompiler {
 	}
 
 	/** 编译并加载生成类；失败时异常里带完整源码与 javac 诊断。 */
-	public static Class<? extends MetaClass> compile(MetaEntityTemplate.Source source, Path sourceDirectory) {
+	public static Class<? extends MetaClass> compile(MetaEntitySource.Source source, Path sourceDirectory) {
 		JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
 		if (compiler == null) {
 			throw new MetaSqlException("cannot generate entity class '" + source.qualifiedName()
@@ -199,7 +199,7 @@ public final class MetaEntityCompiler {
 	}
 
 	/** 把生成源码额外落一份到使用方指定目录，方便查看/固化；失败不影响内存编译。 */
-	private static void writeSourceForHumans(MetaEntityTemplate.Source source, Path directory) {
+	private static void writeSourceForHumans(MetaEntitySource.Source source, Path directory) {
 		if (directory == null) {
 			return;
 		}

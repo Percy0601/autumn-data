@@ -39,7 +39,7 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityColumns;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityModel;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityRegistry;
-import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityTemplate;
+import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntitySource;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaModelStore;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTable;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
@@ -408,6 +408,108 @@ class MetaMapperDynamicTest {
 	}
 
 	@Test
+	void sqlFragmentsAreInlinedAndReusable() throws Exception {
+		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<mapper namespace="fragment.form_order">
+				    <sql id="allColumns">id, order_no, amount</sql>
+				    <sql id="activeRows">deleted_flag = 0</sql>
+				    <select id="active">
+				        SELECT <include refid="allColumns"/> FROM ${table}
+				        WHERE <include refid="fragment.form_order.activeRows"/>
+				        <if test="status != null">AND status = #{status}</if>
+				    </select>
+				</mapper>
+				""");
+		this.client.save(row("form_order", "order_no", "F001", "status", 1, "amount", "6.00"));
+		this.client.save(row("form_order", "order_no", "F002", "status", 2, "amount", "60.00"));
+
+		assertThat(this.client.selectList("form_order", "active", params("status", 1)))
+				.extracting(row -> row.getString("order_no")).containsExactly("F001");
+		assertThat(this.client.selectList("form_order", "active", params())).hasSize(2);
+
+		// 片段在解析阶段就内联：运行期 AST 与 SQL 文本里都没有 <include> 这一层
+		MarkedSql sql = this.client.sqlFor("form_order", "active", params("status", 1));
+		assertThat(sql.sql()).doesNotContain("include").doesNotContain("allColumns");
+		assertThat(sql.sql()).contains("id, order_no, amount");
+	}
+
+	@Test
+	void cyclicSqlFragmentsFailAtParseTime() throws Exception {
+		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<mapper namespace="cycle.form_order">
+				    <sql id="a">SELECT 1 <include refid="b"/></sql>
+				    <sql id="b"><include refid="a"/></sql>
+				    <select id="loop">SELECT 1</select>
+				    <select id="usesCycle">SELECT <include refid="a"/> FROM ${table}</select>
+				</mapper>
+				""");
+
+		assertThatThrownBy(() -> this.client.selectList("form_order", "usesCycle", params()))
+				.hasMessageContaining("cyclic <sql> include")
+				.hasMessageContaining("a -> b -> a");
+		// 缺片段同样在解析期报错，并把可用片段列出来
+		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<mapper namespace="missing.form_order">
+				    <select id="broken">SELECT <include refid="nope"/> FROM ${table}</select>
+				</mapper>
+				""");
+		this.client.refresh("form_order");
+		assertThatThrownBy(() -> this.client.selectList("form_order", "broken", params()))
+				.hasMessageContaining("has no matching <sql id=\"nope\">");
+	}
+
+	/**
+	 * 映射就是「结果集列名 → MetaClass 属性名」：SELECT 起别名之后，生成实体的固定列 READER
+	 * 读不到原名，必须按 resultMap 逐列取值；property 写列名或驼峰字段名都行。
+	 */
+	@Test
+	void resultMapMapsAliasedColumnsToProperties() throws Exception {
+		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<mapper namespace="mapping.form_order">
+				    <resultMap id="orderView" type="form_order">
+				        <id column="id" property="id"/>
+				        <result column="no" property="order_no"/>
+				        <result column="total" property="amount"/>
+				        <result column="order_time" property="createTime"/>
+				    </resultMap>
+				    <select id="aliased" resultMap="orderView">
+				        SELECT id, order_no AS no, amount AS total, create_time AS order_time
+				        FROM ${table} WHERE deleted_flag = 0
+				    </select>
+				</mapper>
+				""");
+		MetaClass saved = this.client.save(row("form_order", "order_no", "AM01", "amount", "18.00",
+				"status", 1, "create_time", "2026-11-12 09:30:00"));
+
+		MetaClass view = this.client.selectOne("form_order", "aliased", params()).orElseThrow();
+		assertThat(view.get("id")).isEqualTo(saved.get("id"));
+		assertThat(view.getString("order_no")).isEqualTo("AM01");
+		assertThat(view.getBigDecimal("amount")).isEqualByComparingTo("18.00");
+		assertThat(view.getLocalDateTime("create_time")).isEqualTo(LocalDateTime.of(2026, 11, 12, 9, 30));
+		// 读出来的行是干净的：后续 update 不会把映射过来的列误当成用户改动
+		assertThat(view.hasChanges()).isFalse();
+
+		// 映射不到的表列（比如 status）保持 null，不会被别的列串值
+		assertThat(view.get("status")).isNull();
+	}
+
+	@Test
+	void unknownResultMapFailsAtParseTime() throws Exception {
+		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<mapper namespace="badmap.form_order">
+				    <select id="broken" resultMap="noSuchMap">SELECT * FROM ${table}</select>
+				</mapper>
+				""");
+		assertThatThrownBy(() -> this.client.selectList("form_order", "broken", params()))
+				.hasMessageContaining("unknown <resultMap id=\"noSuchMap\">");
+	}
+
+	@Test
 	void statementIdentifiersMatchColumnsRegardlessOfCase() throws Exception {
 		// 元数据列名是小写（H2 DATABASE_TO_LOWER），手写文件常按 MySQL/Oracle 习惯写大写：两边必须对上，
 		// 否则 #{ORDER_NO} 会静默绑成 null
@@ -570,7 +672,7 @@ class MetaMapperDynamicTest {
 	@Test
 	void generatedSourceIsReadableJavaWithoutReflectionAndCanBePersisted() throws Exception {
 		Path sources = this.xmlDirectory.resolve("entities");
-		MetaEntityRegistry registry = new MetaEntityRegistry(new MetaEntityTemplate(), sources, 16);
+		MetaEntityRegistry registry = new MetaEntityRegistry(new MetaEntitySource(), sources, 16);
 		MetaEntityModel model = registry.model(this.registry.require("form_order"));
 
 		assertThat(model.entityType().getSimpleName()).isEqualTo("FormOrder");
@@ -582,7 +684,7 @@ class MetaMapperDynamicTest {
 				.contains("MetaEntityColumns.index(rs)")
 				.doesNotContain("java.lang.reflect", "getDeclaredField", "Method.invoke");
 
-		MetaEntityTemplate.Source generated = registry.template().render(this.registry.require("form_order"));
+		MetaEntitySource.Source generated = registry.source().render(this.registry.require("form_order"));
 		Path file = sources.resolve(generated.packageName().replace('.', '/'))
 				.resolve(generated.className() + ".java");
 		assertThat(file).isRegularFile();
@@ -712,7 +814,7 @@ class MetaMapperDynamicTest {
 		MetaTable x = tables.require("cache_x");
 		MetaTable y = tables.require("cache_y");
 
-		MetaEntityRegistry entities = new MetaEntityRegistry(new MetaEntityTemplate(), null, 1);
+		MetaEntityRegistry entities = new MetaEntityRegistry(new MetaEntitySource(), null, 1);
 		Class<? extends MetaClass> first = entities.entityType(x);
 		assertThat(entities.size()).isEqualTo(1);
 		entities.entityType(y);
@@ -801,7 +903,7 @@ class MetaMapperDynamicTest {
 	void concurrentEntityGenerationIsSingleFlightAndReturnsOneType() throws Exception {
 		createTable("concurrent_entity");
 		MetaTable table = this.registry.require("concurrent_entity");
-		MetaEntityRegistry entities = new MetaEntityRegistry(new MetaEntityTemplate(), null, 4);
+		MetaEntityRegistry entities = new MetaEntityRegistry(new MetaEntitySource(), null, 4);
 		CountDownLatch start = new CountDownLatch(1);
 		ExecutorService pool = Executors.newFixedThreadPool(8);
 		try {

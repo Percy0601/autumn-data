@@ -11,29 +11,43 @@
       #{}    解析阶段就摘成 JDBC 绑定，SQL 文本里只留 ?，值不进文本；
       ${}    只做标识符拼接，展开结果必须过标识符白名单（分号、引号、注释符、比较符直接拒绝）；
              ${table} 由框架按方言填好带引号的表名，调用方不用传；
-      test   MyBatis 写法（a != null）和 FreeMarker 表达式写法（a?? / a?has_content / a?size / !a / a && b）都认。
+      test   只认 MyBatis 写法（a != null / a == 'x' / a != '' / !a / a &amp;&amp; b）。
+
+    <sql>/<include> 与 <resultMap>/<result> 都在解析阶段展开：include 内联成 SQL 片段，
+    resultMap 换成「结果集列名 → MetaClass 属性名」的映射清单。
 
     列名这里不加引号：交给数据库自身的大小写规则，MySQL / H2 / Oracle 都能跑。
 -->
 <mapper namespace="using.demo_order">
 
+    <!-- 片段：被下面的 select 引用，解析阶段内联，运行期没有额外开销 -->
+    <sql id="orderColumns">id, order_no, user_id, amount</sql>
+
+    <!-- 映射：SELECT 起别名后，按 column → property 把结果列落回实体的属性 -->
+    <resultMap id="orderView" type="demo_order">
+        <id column="id" property="id"/>
+        <result column="no" property="order_no"/>
+        <result column="user_id" property="user_id"/>
+        <result column="total" property="amount"/>
+    </resultMap>
+
     <!-- 动态条件列表：<where> 整段为空时连 WHERE 一起省掉；ORDER BY 走 ${} 标识符 -->
     <select id="search">
-        SELECT id, order_no, user_id, amount FROM ${table}
+        SELECT <include refid="orderColumns"/> FROM ${table}
         <where>
-            <if test="order_no?has_content">AND order_no LIKE #{order_no}</if>
+            <if test="order_no != null">AND order_no LIKE #{order_no}</if>
             <if test="user_id != null">AND user_id = #{user_id}</if>
             <if test="minAmount != null">AND amount &gt;= #{minAmount}</if>
-            <if test="ids??">AND id IN
+            <if test="ids != null">AND id IN
                 <foreach collection="ids" item="one" open="(" separator="," close=")">#{one}</foreach>
             </if>
         </where>
         <if test="orderBy != null">ORDER BY ${orderBy}</if>
     </select>
 
-    <!-- 只按单号取一行 -->
-    <select id="byOrderNo">
-        SELECT id, order_no, user_id, amount FROM ${table} WHERE order_no = #{order_no}
+    <!-- 只按单号取一行；别名 no / total 由上面的 resultMap 映射回 order_no / amount -->
+    <select id="byOrderNo" resultMap="orderView">
+        SELECT id, order_no AS no, user_id, amount AS total FROM ${table} WHERE order_no = #{order_no}
     </select>
 
     <!-- 计数：selectCount 走这条语句，返回第一列的数字 -->

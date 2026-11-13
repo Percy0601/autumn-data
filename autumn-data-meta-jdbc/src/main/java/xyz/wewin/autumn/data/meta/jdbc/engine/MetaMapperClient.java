@@ -8,6 +8,7 @@ import java.util.TreeMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import xyz.wewin.autumn.data.common.mapper.MapperDefinition.ResultMapping;
 import xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementType;
 import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.common.meta.MetaProperty;
@@ -19,6 +20,7 @@ import xyz.wewin.autumn.data.jdbc.runtime.RowMapper;
 import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
 import xyz.wewin.autumn.data.meta.jdbc.MetaQuery;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
+import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityModel;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTable;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
@@ -58,7 +60,7 @@ import xyz.wewin.autumn.data.meta.jdbc.sql.SqlTemplate;
  * </ul>
  *
  * <p><b>唯一的操作对象是 {@link MetaClass}</b>：读出来的行、写进去的行、命名语句的参数都是它。
- * 实例按当前表结构用 FreeMarker 生成源码、运行期编译加载，有真实类型化字段和 getter，
+ * 实例按当前表结构直接生成源码、运行期编译加载，有真实类型化字段和 getter，
  * 类型可以通过 {@link #entityType(String)} 取到；写哪几列看的是实体的变更集
  * （{@link MetaClass#isChanged(String)}），所以「显式置空」和「这一列不动」是两件事，
  * 不需要额外的空值哨兵。完全静态的实体类在运行期建表时做不到，完全动态的 Map 又没有类型，
@@ -207,17 +209,14 @@ public final class MetaMapperClient {
 	 * 造一个当前表结构的空实体（干净、无变更集）。
 	 *
 	 * <p>新增走它：{@code newEntity} → 逐列赋值 → {@link #save(MetaClass)}。查询出来的行已经是
-	 * 同一个类的实例，改几列再 {@link #update(MetaClass)} 就是部分更新。</p>
+	 * 同一个形态的实例，改几列再 {@link #update(MetaClass)} 就是部分更新。</p>
+	 *
+	 * <p>CODE 模式的工厂是生成类里的 {@code NEW}（构造器方法引用），GENERIC 模式直接
+	 * {@code new MetaClass()}；两条路都不需要反射。</p>
 	 */
 	public MetaClass newEntity(String tableName) {
 		MetaTable table = this.registry.require(tableName);
-		Class<? extends MetaClass> type = this.entityRegistry.entityType(table);
-		try {
-			return type.getDeclaredConstructor().newInstance();
-		}
-		catch (ReflectiveOperationException ex) {
-			throw new MetaSqlException("generated entity '" + type.getName() + "' is not instantiable", ex);
-		}
+		return this.entityRegistry.model(table).factory().get();
 	}
 
 	/**
@@ -327,8 +326,9 @@ public final class MetaMapperClient {
 		}
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
-			Bound sql = bind(table, render(table, selectStatement(table, statementId), params));
-			return this.jdbc.query(sql.plan(), sql.args(), mapper(table), limit);
+			SqlTemplate statement = selectStatement(table, statementId);
+			Bound sql = bind(table, render(table, statement, params));
+			return this.jdbc.query(sql.plan(), sql.args(), mapper(table, statement), limit);
 		});
 	}
 
@@ -367,7 +367,7 @@ public final class MetaMapperClient {
 	/**
 	 * 当前表结构对应的动态实体类。
 	 *
-	 * <p>这是 FreeMarker 生成 + javac 编译出来的 {@link MetaClass} 子类：每个列都有真实类型的字段、
+	 * <p>这是运行期生成 + javac 编译出来的 {@link MetaClass} 子类：每个列都有真实类型的字段、
 	 * getter/setter 和 {@code getProperties()} 里的类型描述。调用方可以据此检查字段类型、
 	 * 做校验或走框架集成，而不必面对一个没有类型的 Map。</p>
 	 */
@@ -399,6 +399,58 @@ public final class MetaMapperClient {
 	/** 结果集映射器：来自已编译实体类的 READER，逐行是写死的 setter 调用（零反射）。 */
 	private RowMapper<MetaClass> mapper(MetaTable table) {
 		return this.entityRegistry.model(table).mapper();
+	}
+
+	/**
+	 * 语句带 {@code <resultMap>} 时按映射逐列取值，否则用生成实体的固定列 READER。
+	 *
+	 * <p>{@code property} 允许写元数据列名，也允许写实体字段的驼峰名（{@code orderNo}），
+	 * 后者运行期换成 {@code order_no} 再交给生成类；都对不上时按动态属性处理，
+	 * 留给「SELECT 出一个表达式列、只想在返回对象上挂个名字」这种用法。</p>
+	 */
+	private RowMapper<MetaClass> mapper(MetaTable table, SqlTemplate statement) {
+		List<ResultMapping> mappings = statement.resultMappings();
+		if (mappings.isEmpty()) {
+			return mapper(table);
+		}
+		MetaEntityModel model = this.entityRegistry.model(table);
+		List<MetaMappedRowMapper.Column> columns = new ArrayList<>(mappings.size());
+		for (ResultMapping mapping : mappings) {
+			columns.add(MetaMappedRowMapper.Column.of(mapping.column(), propertyName(table, mapping.property())));
+		}
+		return new MetaMappedRowMapper(model.factory(), columns);
+	}
+
+	private static String propertyName(MetaTable table, String property) {
+		MetaProperty column = table.findColumn(property);
+		if (column != null) {
+			return column.getName();
+		}
+		column = table.findColumn(snakeCase(property));
+		return column == null ? property : column.getName();
+	}
+
+	/** 驼峰 → 下划线：{@code orderNo} → {@code order_no}，{@code userId} → {@code user_id}。 */
+	private static String snakeCase(String name) {
+		if (name == null || name.isEmpty()) {
+			return name;
+		}
+		StringBuilder out = new StringBuilder(name.length() + 4);
+		for (int i = 0; i < name.length(); i++) {
+			char c = name.charAt(i);
+			if (Character.isUpperCase(c)) {
+				boolean previousLower = i > 0 && Character.isLowerCase(name.charAt(i - 1));
+				boolean nextLower = i + 1 < name.length() && Character.isLowerCase(name.charAt(i + 1));
+				if (i > 0 && name.charAt(i - 1) != '_' && (previousLower || nextLower)) {
+					out.append('_');
+				}
+				out.append(Character.toLowerCase(c));
+			}
+			else {
+				out.append(c);
+			}
+		}
+		return out.toString();
 	}
 
 	// ------------------------------------------------------------------

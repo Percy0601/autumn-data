@@ -5,7 +5,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -16,6 +18,7 @@ import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.xml.sax.SAXException;
 
+import xyz.wewin.autumn.data.common.mapper.MapperDefinition.ResultMapping;
 import xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementDefinition;
 import xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementType;
 
@@ -94,6 +97,37 @@ public final class MapperXmlParser {
 			throw new MapperXmlParseException("mapper XML <mapper> requires a 'namespace' attribute");
 		}
 		List<StatementDefinition> statements = new ArrayList<>();
+		// 第一遍：片段与结果映射可以先声明、后使用，和语句出现顺序无关。
+		Map<String, Element> fragments = new LinkedHashMap<>();
+		Map<String, List<ResultMapping>> resultMaps = new LinkedHashMap<>();
+		for (Node child = root.getFirstChild(); child != null; child = child.getNextSibling()) {
+			if (child.getNodeType() != Node.ELEMENT_NODE) {
+				continue;
+			}
+			Element element = (Element) child;
+			switch (element.getTagName()) {
+				case "sql" -> {
+					String id = element.getAttribute("id");
+					if (id.isEmpty()) {
+						throw new MapperXmlParseException("<sql> requires an 'id' attribute");
+					}
+					if (fragments.put(id, element) != null) {
+						throw new MapperXmlParseException("duplicate <sql id=\"" + id + "\"> in mapper XML");
+					}
+				}
+				case "resultMap" -> {
+					String id = element.getAttribute("id");
+					if (id.isEmpty()) {
+						throw new MapperXmlParseException("<resultMap> requires an 'id' attribute");
+					}
+					if (resultMaps.put(id, parseResultMap(element)) != null) {
+						throw new MapperXmlParseException("duplicate <resultMap id=\"" + id + "\"> in mapper XML");
+					}
+				}
+				default -> {
+				}
+			}
+		}
 		for (Node child = root.getFirstChild(); child != null; child = child.getNextSibling()) {
 			if (child.getNodeType() != Node.ELEMENT_NODE) {
 				continue;
@@ -103,12 +137,13 @@ public final class MapperXmlParser {
 			if (type == null) {
 				continue;
 			}
-			statements.add(parseStatement(element, type));
+			statements.add(parseStatement(element, type, fragments, resultMaps));
 		}
 		return new MapperDefinition(namespace, statements);
 	}
 
-	private static StatementDefinition parseStatement(Element element, StatementType type) {
+	private static StatementDefinition parseStatement(Element element, StatementType type,
+			Map<String, Element> fragments, Map<String, List<ResultMapping>> resultMaps) {
 		String id = element.getAttribute("id");
 		if (id.isEmpty()) {
 			throw new MapperXmlParseException(
@@ -116,8 +151,61 @@ public final class MapperXmlParser {
 		}
 		String resultType = element.getAttribute("resultType");
 		String parameterType = element.getAttribute("parameterType");
-		List<TemplateNode> template = TemplateParser.parse(element);
-		return new StatementDefinition(id, type, resultType, parameterType, template);
+		List<ResultMapping> resultMappings = resultMappings(element, resultMaps);
+		List<TemplateNode> template = TemplateParser.parse(element, fragments);
+		return new StatementDefinition(id, type, resultType, parameterType, template, resultMappings);
+	}
+
+	/**
+	 * {@code resultMap="id"} 在解析阶段换成映射清单：运行期与编译期都只看到最终列映射，
+	 * 不需要回头再拿整份 Mapper 上下文。
+	 */
+	private static List<ResultMapping> resultMappings(Element element, Map<String, List<ResultMapping>> resultMaps) {
+		String resultMap = element.getAttribute("resultMap").trim();
+		if (resultMap.isEmpty()) {
+			return List.of();
+		}
+		List<ResultMapping> mappings = resultMaps.get(resultMap);
+		if (mappings == null) {
+			throw new MapperXmlParseException("<" + element.getTagName() + " id=\"" + element.getAttribute("id")
+					+ "\"> references unknown <resultMap id=\"" + resultMap + "\">; available: "
+					+ resultMaps.keySet());
+		}
+		return mappings;
+	}
+
+	/**
+	 * {@code <resultMap id type><id column property/><result column property/></resultMap>}。
+	 *
+	 * <p>{@code type} 在动态层没有意义（实体由表结构在运行期生成），保留属性只是为了兼容
+	 * MyBatis 写法。{@code column} 是结果集里的标签/别名，{@code property} 是 MetaClass 属性名。</p>
+	 */
+	private static List<ResultMapping> parseResultMap(Element element) {
+		List<ResultMapping> mappings = new ArrayList<>();
+		for (Node child = element.getFirstChild(); child != null; child = child.getNextSibling()) {
+			if (child.getNodeType() != Node.ELEMENT_NODE) {
+				continue;
+			}
+			Element column = (Element) child;
+			switch (column.getTagName()) {
+				case "id", "result" -> {
+					String from = column.getAttribute("column").trim();
+					String to = column.getAttribute("property").trim();
+					if (from.isEmpty() || to.isEmpty()) {
+						throw new MapperXmlParseException("<" + column.getTagName() + "> inside <resultMap id=\""
+								+ element.getAttribute("id") + "\"> requires both 'column' and 'property'");
+					}
+					mappings.add(new ResultMapping(from, to));
+				}
+				default -> throw new MapperXmlParseException("unsupported <" + column.getTagName()
+						+ "> inside <resultMap>; supported: id, result");
+			}
+		}
+		if (mappings.isEmpty()) {
+			throw new MapperXmlParseException("<resultMap id=\"" + element.getAttribute("id")
+					+ "\"> declares no <id>/<result> mapping");
+		}
+		return List.copyOf(mappings);
 	}
 
 	private static StatementType statementTypeOf(String tagName) {

@@ -11,7 +11,7 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 | `autumn-data-jdbc-spring-boot-starter` | Spring Boot 集成层（唯一使用方入口） | 约定大于配置：只引这一个依赖 + `spring.datasource.*` 即可用。仿 MyBatis 分层（引擎零 Spring / 集成层依赖 Boot），自动配置 `Dialect` Bean，支持 `autumn.data.jdbc.dialect` 显式指定或按 `DataSource` 元数据自动识别。多库场景可用 `autumn.data.meta.enabled=true` 让 `SpringMetaDataSource`（继承 Spring `AbstractDataSource`）接管数据源，底层交给 `MetaDataSource`。 |
 | `autumn-data-jdbc-compiler` | JSR-269 注解处理器 | 编译期为 `@AutumnRepository` 接口生成 `<名称>Impl`；仅 `annotationProcessorPaths` 使用，**运行时不依赖**。已实现：实体元数据提取（`@Entity`/`@Table`/`@Id`/`@Column`/`@GeneratedValue`/`@OneToMany`）、CRUD + 分页 + 一对多 + 方法名派生查询 SQL **编译期内联为生成类常量**、`RowMapper` 与批量读写/装配代码生成。解析不了的方法在**接口方法声明处**报错，不静默生成半成品。 |
 | `autumn-data-jdbc-spring-boot-starter-using` | 使用方示例（不发布） | **使用驱动开发的主战场**：只引 starter + 挂 compiler 处理器，在这里写后续所有用法（单表、一对多、多对一、派生查询），以用法倒逼核心实现。 |
-| `autumn-data-meta-jdbc` | **完全动态**的轻量基座（低代码平台：表单 / 基础资料的表都是运行期设计出来的） | 与 `autumn-data-jdbc` 的「编译期完全静态」职责分明：本模块**不做编译期 Mapper 注册、不预加载、不用反射代理**，元数据 / SQL / 实体类全部按表名懒加载，缓存一律有界 LRU 弹性伸缩。对标 **MyBatis** 但更轻量，支持**运行时动态加载**：XML 方言与静态实体的编译期 Mapper **同一套**（`#{}` 绑定、`${}` 标识符、`<if>/<choose>/<foreach>/<where>/<trim>`），动态 SQL 运行期解释执行。数据源连接池同样使用 **HikariCP**；方言与解析器复用 `autumn-data-common`。另含 `dynamic` 包：运行期建表后无需重启即可按表名/列名查询、保存、更新（`MetaMapper`，见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)）；**`MetaMapper` 返回 `MetaClass`，其实例是按表结构用 FreeMarker 生成 Java 源码、`javax.tools` 编译加载的实体子类**——有真实类型化字段与 getter，逐行映射零反射；Mapper 文件首次缺失时按表结构生成一份、之后归使用方编辑。 |
+| `autumn-data-meta-jdbc` | **完全动态**的轻量基座（低代码平台：表单 / 基础资料的表都是运行期设计出来的） | 与 `autumn-data-jdbc` 的「编译期完全静态」职责分明：本模块**不做编译期 Mapper 注册、不预加载、不用反射代理**，元数据 / SQL / 实体类全部按表名懒加载，缓存一律有界 LRU 弹性伸缩。对标 **MyBatis** 但更轻量，支持**运行时动态加载**：XML 方言与静态实体的编译期 Mapper **同一套**（`#{}` 绑定、`${}` 标识符、`<if>/<choose>/<foreach>/<where>/<trim>`、`<sql>/<include>` 片段、`<resultMap>/<result>` 字段映射），动态 SQL 运行期解释执行。数据源连接池同样使用 **HikariCP**；方言与解析器复用 `autumn-data-common`。另含 `dynamic` 包：运行期建表后无需重启即可按表名/列名查询、保存、更新（`MetaMapper`，见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)）；**`MetaMapper` 返回 `MetaClass`，其实例是按表结构生成 Java 源码、`javax.tools` 编译加载的实体子类**——有真实类型化字段与 getter，逐行映射零反射；Mapper 文件首次缺失时按表结构生成一份、之后归使用方编辑。 |
 
 各数据访问模块共享 `autumn-data-common` 的多数据库方言（`Dialect`）抽象，至少支持 **MySQL** 与 **PostgreSQL**，并可通过 `DialectResolver` 根据 `DataSource` 的元数据自动识别。
 
@@ -47,8 +47,9 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 - [ ] `autumn-data-meta-jdbc` 同步去 Spring 依赖（同样挪到各自 starter）
 - [x] `autumn-data-meta-jdbc`：动态 Mapper 文件 + 运行期解释器（`MetaStatementStore` 首次访问按表结构生成 `<meta-directory>/mapper/<表名>.xml`，已存在则直接用、永不回头覆盖；`SqlTemplate` 解释执行 common 的同一套 XML 方言，`#{}` 解析期就摘成 JDBC 绑定、`${}` 只放标识符白名单；命名语句走 `sqlFor/selectList/selectOne/selectCount/execute`，参数一律是 `MetaClass`）
 - [x] `autumn-data-meta-jdbc` SQL 三段：抽取（`MarkedSql`：文本 + 每槽列引用 + 本次实参）→ 再转换（`MetaSqlPlan`：类型判断、列查找、setter 一次做完，按形状缓存）→ 执行（零槽走 `Statement`，有槽走 `PreparedStatement`），动态形状也能吃到游标/执行计划复用
-- [x] XML 方言下沉 `autumn-data-common`（`TemplateParser` / `TemplateNode` / `MapperXmlParser`），编译期生成器与动态运行期共用一棵 AST；**动态 SQL 不引模板引擎**（FreeMarker 的 `<#if>` 不是合法 XML，兼容只做在 `test` 表达式层：`name??` / `name?has_content` / `name?size`）
-- [x] `autumn-data-meta-jdbc` 运行期生成实体类：`MetaMapper` 门面统一返回 `MetaClass`，实例是按 `DatabaseMetaData` 用 FreeMarker 模板生成 `.java`、`javax.tools.JavaCompiler` **内存编译**、内存 `ClassLoader` 加载的 `MetaClass` 子类（真实字段/getter/setter + 类型化 `getProperties()`，逐行映射零反射）；不建临时目录、不落 `.class`，类与 ClassLoader 可随缓存淘汰被 GC；结构指纹决定包名，加列 `refresh` 后生成新类、旧实例不受影响；源码可配置落盘以便固化成静态类
+- [x] XML 方言下沉 `autumn-data-common`（`TemplateParser` / `TemplateNode` / `MapperXmlParser`），编译期生成器与动态运行期共用一棵 AST；**动态 SQL 只认 MyBatis 语法**（`<#if>` 这类模板引擎指令本来就不是合法 XML，`test` 表达式也只认 `a != null` / `a == 'x'` / `!a` / `a && b`，不再兼容 `name??` / `name?has_content`）
+- [x] `autumn-data-meta-jdbc` 运行期生成实体类：`MetaMapper` 门面统一返回 `MetaClass`，实例是按 `DatabaseMetaData` 用 `StringBuilder` 直接拼 Java 源码、`javax.tools.JavaCompiler` **内存编译**、内存 `ClassLoader` 加载的 `MetaClass` 子类（真实字段/getter/setter + 类型化 `getProperties()`，逐行映射零反射）；不建临时目录、不落 `.class`，类与 ClassLoader 可随缓存淘汰被 GC；结构指纹决定包名，加列 `refresh` 后生成新类、旧实例不受影响；源码可配置落盘以便固化成静态类（**已移除 FreeMarker 依赖与 `.ftl` 模板**）
+- [x] GraalVM Native Image：`MetaEntityStrategy` 两档，native 里 `auto` 自动退到 **GENERIC**（不生成类、不编译、零反射，行数据直接写通用 `MetaClass`），CRUD / Mapper / resultMap / 分页 / json-path 序列化语义不变；`entity-codegen` 可显式覆盖，native 下强制 `code` 启动即失败；Mapper XML 已声明进镜像资源
 - [x] 按动态定位收口：删除零引用的 `MetaConfiguration`（编译期静态 Mapper 注册、无界 `HashMap`）与 `MetaSqlSession`（JDK 动态代理反射、需预注册）；所有按表 / 按池增长的内存容器（表快照、手工登记覆盖、动态实体类、Mapper AST、池 client）统一走 `BoundedCache` 有界 LRU，默认上限 10_000
 
 ## 依赖策略
@@ -109,12 +110,12 @@ MetaMapper.update(row);                                 // 部分更新：只有
 MetaMapper.of("tenant-a").findList("form_order", MetaQuery.by("status", 1));
 ```
 
-- **返回的 `MetaClass` 是动态生成的实体实例**：首次访问按 `DatabaseMetaData` 的列结构用 FreeMarker 生成 `MetaClass` 子类源码并编译加载，每列有 `Long` / `BigDecimal` / `LocalDateTime` 等真实字段和 getter，结果集映射是生成代码里的直接 setter 调用（逐行零反射）；`getProperties()` 同时保留 `type` / `jdbcType` / 主键 / 可空等描述。完全静态的实体类应付不了运行期建表，全 Map 又丢了类型，这一层就落在两者之间。`MetaMapper.entityType(table)` 可拿到生成出来的类；
+- **返回的 `MetaClass` 是动态生成的实体实例**：首次访问按 `DatabaseMetaData` 的列结构用 `MetaEntitySource` 拼出 `MetaClass` 子类源码并编译加载，每列有 `Long` / `BigDecimal` / `LocalDateTime` 等真实字段和 getter，结果集映射是生成代码里的直接 setter 调用（逐行零反射）；`getProperties()` 同时保留 `type` / `jdbcType` / 主键 / 可空等描述。完全静态的实体类应付不了运行期建表，全 Map 又丢了类型，这一层就落在两者之间。`MetaMapper.entityType(table)` 可拿到生成出来的类；
 - 结构指纹参与包名：加列/改类型后 `MetaMapper.refresh("form_order")` 会生成新类，已取到的旧实例仍可用，不会同名重定义；
-- `autumn.data.meta.mapper.meta-directory=autumn-meta` 是唯一的落盘开关：四类产物分别落在它的 `meta-class/`（元类定义 JSON）、`entity/`（生成的实体 `.java`，可查看也可固化）、`template/`（生成用的 `.ftl`）、`mapper/`（Mapper XML）四个固定子目录里。空串表示纯内存模式；**实体默认全程内存编译**，不建临时目录、不落 `.class`；运行期需要完整 JDK（`javax.tools`），JRE 上会明确报错；
+- `autumn.data.meta.mapper.meta-directory=autumn-meta` 是唯一的落盘开关：三类产物分别落在它的 `meta-class/`（元类定义 JSON）、`entity/`（生成的实体 `.java`，可查看也可固化）、`mapper/`（Mapper XML）三个固定子目录里。空串表示纯内存模式；**实体默认全程内存编译**，不建临时目录、不落 `.class`；运行期需要完整 JDK（`javax.tools`），JRE 上会明确报错；
 - 元数据从 `DatabaseMetaData` 读取，直接填入 `MetaClass` / `MetaProperty`（表名 = `MetaClass.name`、schema = `namespace`、列 = properties）；建表/加列**提交后**调 `MetaMapper.refresh("form_order")` 换快照，不重启；
 - **所有缓存都有界且弹性**：表结构快照、手工登记覆盖、动态实体类、Mapper AST、SQL 执行计划、池 → client 六处各有独立上限（默认 10_000），触顶按 LRU 淘汰最久未访问的冷条目，下次访问自动懒加载重建——包括手工 `register` 的覆盖（淘汰后回源到 `DatabaseMetaData`）和按池名的 client。实现是 JDK 自带的 `LinkedHashMap(accessOrder)` + 锁（`BoundedCache` 接口刻意对齐 Caffeine `Cache` 的方法名与语义，将来换实现只改 `BoundedCaches` 工厂），**不引入任何缓存库、不引入 Spring**；
-- **Mapper 文件按需生成**：命名语句（`selectList/selectOne/selectCount/execute/sqlFor`）的 SQL 来自 `<meta-directory>/mapper/<表名>.xml`（找不到再看 classpath `meta-mappers/`）；文件不存在时按表结构生成一份（逐列 `<if>` + `<where>` + `<trim>`）并落盘，**已存在就直接使用，改表也不会回头覆盖**——文件归使用方所有。`MetaQuery` 驱动的 CRUD 不读文件，SQL 由 `MetaSqlBuilder` 按元数据现拼（条件运算符是开集，固定文件表达不了）；
+- **Mapper 文件按需生成**：命名语句（`selectList/selectOne/selectCount/execute/sqlFor`）的 SQL 来自 `<meta-directory>/mapper/<表名>.xml`（找不到再看 classpath `meta-mappers/`）；文件不存在时按表结构生成一份（`<sql id="allColumns">` + `<include>` 复用列清单、逐列 `<if>` + `<where>` + `<trim>`）并落盘，**已存在就直接使用，改表也不会回头覆盖**——文件归使用方所有。手写文件可以用 `<sql>/<include>` 抽公共片段（解析阶段内联，支持 `refid="namespace.id"`、环检测），用 `<resultMap>/<result>` 声明「结果列名 → MetaClass 属性名」映射；`MetaQuery` 驱动的 CRUD 不读文件，SQL 由 `MetaSqlBuilder` 按元数据现拼（条件运算符是开集，固定文件表达不了）；
 - 自动生成的文件带 `generated-by` 标记；`refresh` 只丢缓存重读文件，要按新结构重来就删文件；手工文件同样原样使用，不会被覆盖；
 - 文件名与列名按**忽略大小写**对齐：H2/Oracle 元数据给的是大写名，手写文件多按 MySQL 习惯写小写，`demo_order.xml` 配 `DEMO_ORDER` 这张表、`#{order_no}` 配 `ORDER_NO` 这一列都能对上；
 - **没有 delete**：应用侧不提供物理删除，作废用一次状态列更新；`deleted_flag` / `del_flag` / `is_deleted` 可自动过滤；
@@ -130,7 +131,23 @@ autumn.data.meta.mapper.table-cache-size=10000          # 各缓存容器的条�
 autumn.data.meta.mapper.default-list-limit=1000         # findList 未显式限行时的上限
 autumn.data.meta.mapper.default-pool-name=default       # 静态门面走的那个池
 autumn.data.meta.mapper.logic-delete-columns=deleted_flag,del_flag,is_deleted
+autumn.data.meta.mapper.entity-codegen=auto            # auto | code | generic（native 里 auto 即 generic）
 ```
+
+### GraalVM Native Image
+
+动态层不靠「把 javac 塞进镜像」硬扛，而是换实体形态：
+
+| `entity-codegen` | 实体 | 反射 | 适用 |
+| --- | --- | --- | --- |
+| `code`（JVM 默认） | 运行期生成的 `MetaClass` 子类，强类型 getter | 只在加载时读 `READER` / `NEW` | 完整 JDK |
+| `generic`（native 默认） | `MetaClass` 本身（属性列表） | 0 | Native Image / JRE |
+
+`auto` 按 `org.graalvm.nativeimage.imagecode` 自动选择；native 里若显式要求 `code`，启动即报错，
+不会等到首次访问表才失败。GENERIC 下 CRUD / Mapper / `<sql>/<include>` / `<resultMap>` / 分页 /
+逻辑删除 / json-path 序列化全部一致，只是 `entityType(table)` 返回 `MetaClass.class`、没有类型化 getter。
+native-image 资源声明已随模块打包（`-H:IncludeResources=meta-mappers/.*`），构建步骤与冒烟入口见
+[docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md#graalvm-native-image)。
 
 完整设计与语义见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)；上层怎么调有两个能直接跑的例子：
 `autumn-data-jdbc-spring-boot-starter-using` 的 `MetaMapperXmlUsingTest`（五段走查：CRUD 不碰文件 →
@@ -142,7 +159,7 @@ autumn.data.meta.mapper.logic-delete-columns=deleted_flag,del_flag,is_deleted
 | `autumn-data-common` | 纯 JDK（`java.sql` / `javax.sql`）+ `com.zaxxer:HikariCP`（optional，仅 `MetaDataSource` 回收检测用，不传递） | — | H2、JUnit 5、Mockito |
 | `autumn-data-jdbc` | `autumn-data-common`、`com.zaxxer:HikariCP`、`org.slf4j:slf4j-api`、`javax.sql.DataSource`（JDK） | `jakarta.persistence:jakarta.persistence-api`（实体注解）、APT（待加） | H2 |
 | `autumn-data-jdbc-spring-boot-starter` | `autumn-data-jdbc`、`autumn-data-common`、`autumn-data-meta-jdbc`、`spring-boot-starter-jdbc`、`spring-boot-autoconfigure` | `spring-boot-configuration-processor`（构建期，不入依赖树） | H2、spring-boot-test |
-| `autumn-data-meta-jdbc` | `autumn-data-common`、`autumn-data-jdbc`、`org.freemarker:freemarker`（实体源码生成）、`com.zaxxer:HikariCP`；有界 LRU 缓存是 JDK 自带实现，无缓存库依赖 | — | H2 |
+| `autumn-data-meta-jdbc` | `autumn-data-common`、`autumn-data-jdbc`、`com.zaxxer:HikariCP`（实体源码用 `StringBuilder` 拼装，无模板引擎依赖）；有界 LRU 缓存是 JDK 自带实现，无缓存库依赖 | — | H2 |
 
 说明：
 - `spring-boot-starter-jdbc` 传递引入 `spring-boot-starter` → `spring-boot` + `snakeyaml` + `logback` + `jsp` 等，以及 `spring-jdbc`/`spring-tx`，对「编译期生成 SQL、运行时零反射」的核心库属于额外负担。
@@ -222,6 +239,6 @@ mvn -B clean install -DskipTests
 - Java 25
 - Spring Boot 4.1.2 父 POM（仅作 BOM 与构建约定）
 - HikariCP（数据源连接池，核心模块直接声明，不经由 `spring-boot-starter-jdbc`）
-- MyBatis 式 XML 方言（`#{}` 绑定 + `${}` 标识符 + `<if>/<choose>/<foreach>/<where>/<trim>`），由 `autumn-data-common` 解析成同一棵 AST：静态实体走编译期生成 Java，动态表走运行期解释（SQL 路径不引模板引擎）
-- FreeMarker 只用于**运行期生成实体类源码**，配合 JDK `javax.tools` 编译加载；与动态 SQL 的 XML 解释器是两条独立的路
-- 目标数据库：MySQL、PostgreSQL（方言可扩展）
+- MyBatis 式 XML 方言（`#{}` 绑定 + `${}` 标识符 + `<if>/<choose>/<foreach>/<where>/<trim>` + `<sql>/<include>` + `<resultMap>/<result>`），由 `autumn-data-common` 解析成同一棵 AST：静态实体走编译期生成 Java，动态表走运行期解释（SQL 路径不引模板引擎）
+- 实体类源码同样不依赖模板引擎：`MetaEntitySource` 直接拼 Java 源码，配合 JDK `javax.tools` 编译加载；与动态 SQL 的 XML 解释器是两条独立的路
+- 目标数据库：MySQL、PostgreSQL（方言可扩展；`db/` 下有两套同构的 schema 与初始化说明）

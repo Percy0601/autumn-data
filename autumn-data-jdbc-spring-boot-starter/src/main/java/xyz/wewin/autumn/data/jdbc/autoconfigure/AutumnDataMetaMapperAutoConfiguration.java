@@ -14,6 +14,7 @@ import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperEngine;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperOptions;
+import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityStrategy;
 
 /**
  * 动态表 CRUD 自动配置：把 {@link MetaMapperEngine} 装进 {@link MetaMapper} 静态门面。
@@ -36,7 +37,8 @@ public class AutumnDataMetaMapperAutoConfiguration {
 			AutumnDataMetaMapperProperties properties) {
 		MetaMapperOptions options = new MetaMapperOptions(properties.getDefaultListLimit(), fetchPolicy,
 				properties.getLogicDeleteColumns(), properties.getMetaDirectory(), properties.isGenerateFiles(),
-				properties.getTableCacheSize());
+				properties.getTableCacheSize(),
+				MetaEntityStrategy.resolve(properties.getEntityCodegen()));
 		MetaMapperEngine engine = MetaMapperEngine.forDataSource(properties.getDefaultPoolName(), dataSource, options);
 		MetaMapper.install(engine);
 		return engine;

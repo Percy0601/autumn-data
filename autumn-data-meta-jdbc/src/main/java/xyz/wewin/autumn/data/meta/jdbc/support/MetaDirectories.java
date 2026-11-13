@@ -8,19 +8,18 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * 动态层的工作目录：一个根目录 + 四个固定子目录，使用方只需要给根。
+ * 动态层的工作目录：一个根目录 + 三个固定子目录，使用方只需要给根。
  *
  * <pre>
  * &lt;root&gt;/
  *   meta-class/   元类定义（JSON）：定义优先，库里多出来的列由运行期补齐
  *   entity/       生成的实体 .java
- *   template/     生成实体用的 .ftl（内置默认在首次使用时落一份，之后归使用方编辑）
  *   mapper/       动态表的 MyBatis 风格 Mapper XML
  * </pre>
  *
- * <p>四类产物遵循同一条规则：<b>文件已经存在就绝不重写</b>——它们一旦落到磁盘就归使用方所有，
+ * <p>三类产物遵循同一条规则：<b>文件已经存在就绝不重写</b>——它们一旦落到磁盘就归使用方所有，
  * 运行期只读；进程内的有界 LRU 负责「同一份文件不重复解析 / 同一份结构不重复编译」。
- * 目录为空串表示纯内存模式：模板退回 classpath 内置那份，产物只在内存里生成，不留盘。</p>
+ * 目录为空串表示纯内存模式：产物只在内存里生成，不留盘。</p>
  *
  * @param rootDirectory 根目录；{@code null} 表示纯内存模式
  */
@@ -34,9 +33,6 @@ public record MetaDirectories(Path rootDirectory) {
 
 	/** 生成的实体源码子目录。 */
 	public static final String ENTITY = "entity";
-
-	/** 实体模板（.ftl）子目录。 */
-	public static final String TEMPLATE = "template";
 
 	/** Mapper XML 子目录。 */
 	public static final String MAPPER = "mapper";
@@ -70,10 +66,6 @@ public record MetaDirectories(Path rootDirectory) {
 
 	public Path entityDirectory() {
 		return directory(ENTITY);
-	}
-
-	public Path templateDirectory() {
-		return directory(TEMPLATE);
 	}
 
 	public Path mapperDirectory() {

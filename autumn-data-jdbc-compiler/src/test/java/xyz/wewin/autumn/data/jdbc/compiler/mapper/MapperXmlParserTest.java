@@ -273,13 +273,95 @@ class MapperXmlParserTest {
 	}
 
 	@Test
+	void parsesSqlFragmentsAndInlinesIncludes() {
+		String xml = """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<mapper namespace="com.example.UserMapper">
+				    <sql id="columns">id, name, status</sql>
+				    <sql id="activeRows">deleted_flag = 0</sql>
+				    <select id="findActive">
+				        SELECT <include refid="columns"/> FROM users
+				        WHERE <include refid="com.example.UserMapper.activeRows"/>
+				        <if test="status != null">AND status = #{status}</if>
+				    </select>
+				</mapper>
+				""";
+
+		MapperDefinition mapper = parse(xml);
+
+		// <sql> 不是语句，只有 <select> 进 statements
+		assertThat(mapper.statements()).hasSize(1);
+		MapperDefinition.StatementDefinition stmt = mapper.statements().get(0);
+		// 片段在解析阶段内联：AST 里只剩文本与参数，没有 include 这一层
+		assertThat(stmt.template()).anyMatch(n -> n instanceof TemplateNode.Text text
+				&& text.content().contains("id, name, status"));
+		assertThat(stmt.template()).anyMatch(n -> n instanceof TemplateNode.Text text
+				&& text.content().contains("deleted_flag = 0"));
+		assertThat(stmt.template()).anyMatch(n -> n instanceof TemplateNode.If ifNode
+				&& ifNode.body().stream().anyMatch(body -> body instanceof TemplateNode.Parameter p
+						&& p.name().equals("status")));
+	}
+
+	@Test
+	void cyclicSqlIncludesAreRejected() {
+		String xml = """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<mapper namespace="com.example.UserMapper">
+				    <sql id="a">SELECT 1 <include refid="b"/></sql>
+				    <sql id="b"><include refid="a"/></sql>
+				    <select id="loop">SELECT <include refid="a"/> FROM users</select>
+				</mapper>
+				""";
+
+		assertThatThrownBy(() -> parse(xml))
+				.isInstanceOf(xyz.wewin.autumn.data.common.mapper.TemplateParseException.class)
+				.hasMessageContaining("cyclic <sql> include")
+				.hasMessageContaining("a -> b -> a");
+	}
+
+	@Test
+	void resultMapIsResolvedOnTheReferencingStatement() {
+		String xml = """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<mapper namespace="com.example.UserMapper">
+				    <resultMap id="userView" type="User">
+				        <id column="uid" property="id"/>
+				        <result column="user_name" property="name"/>
+				        <result column="created_at" property="createdAt"/>
+				    </resultMap>
+				    <select id="findView" resultMap="userView">SELECT * FROM users</select>
+				</mapper>
+				""";
+
+		MapperDefinition mapper = parse(xml);
+		MapperDefinition.StatementDefinition stmt = mapper.statements().get(0);
+
+		assertThat(stmt.resultMappings()).containsExactly(
+				new MapperDefinition.ResultMapping("uid", "id"),
+				new MapperDefinition.ResultMapping("user_name", "name"),
+				new MapperDefinition.ResultMapping("created_at", "createdAt"));
+	}
+
+	@Test
+	void unknownResultMapIsRejected() {
+		String xml = """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<mapper namespace="com.example.UserMapper">
+				    <select id="broken" resultMap="missing">SELECT * FROM users</select>
+				</mapper>
+				""";
+
+		assertThatThrownBy(() -> parse(xml))
+				.isInstanceOf(MapperXmlParseException.class)
+				.hasMessageContaining("unknown <resultMap id=\"missing\">");
+	}
+
+	@Test
 	void conditionTranslation() {
 		assertThat(TemplateCodeGenerator.translateCondition("name != null"))
 				.isEqualTo("params.get(\"name\") != null");
 		assertThat(TemplateCodeGenerator.translateCondition("name == null"))
 				.isEqualTo("params.get(\"name\") == null");
-		assertThat(TemplateCodeGenerator.translateCondition("name??"))
-				.isEqualTo("params.get(\"name\") != null");
 		assertThat(TemplateCodeGenerator.translateCondition("status == 'active'"))
 				.isEqualTo("\"active\".equals(params.get(\"status\"))");
 		assertThat(TemplateCodeGenerator.translateCondition("name != ''"))

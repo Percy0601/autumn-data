@@ -20,7 +20,7 @@ import java.util.Set;
  * <ul>
  *   <li><b>完全动态</b>：直接 {@code new MetaClass()} 后 {@code setProperties(...)}，
  *       {@link #get(String)} / {@link #set(String, Object)} 走属性列表（本质是一个带类型的 Map）；</li>
- *   <li><b>运行期生成的实体</b>：{@code autumn-data-meta-jdbc} 用 FreeMarker 生成
+ *   <li><b>运行期生成的实体</b>：{@code autumn-data-meta-jdbc} 按表结构直接生成
  *       {@code MetaClass} 的子类并编译加载，子类有真实字段与类型化 getter，
  *       覆写 {@link #get(String)} / {@link #getProperties()} 后直接读字段——
  *       <b>逐行映射零反射</b>，静态类型又能保留。</li>

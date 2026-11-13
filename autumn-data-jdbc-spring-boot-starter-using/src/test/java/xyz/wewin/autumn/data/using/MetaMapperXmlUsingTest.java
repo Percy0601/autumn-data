@@ -33,8 +33,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>引擎由 {@code autumn-data-jdbc-spring-boot-starter} 自动装配并装进 {@link MetaMapper} 门面，
  * 使用方只配了数据源（见 {@code src/test/resources/application.properties}）；
  * 工作目录配成 {@code autumn.data.meta.mapper.meta-directory=target/autumn-meta}，
- * 四类产物落在它的固定子目录里（{@code meta-class} 元类定义 / {@code entity} 生成的实体源码 /
- * {@code template} 生成模板 / {@code mapper} Mapper 文件），生成的文件不污染源码目录。</p>
+ * 三类产物落在它的固定子目录里（{@code meta-class} 元类定义 / {@code entity} 生成的实体源码 /
+ * {@code mapper} Mapper 文件），生成的文件不污染源码目录。</p>
  *
  * <p>操作对象始终是 {@link MetaClass}：写用的实体由 {@link MetaMapper#newEntity(String)} 按当前表结构
  * 生成，读回来的行也是同一个类的实例，「读出来 — 改几列 — 写回去」中间不需要任何转换。</p>
@@ -240,7 +240,7 @@ class MetaMapperXmlUsingTest {
 		assertThat(client.selectOne(ORDER, "byOrderNo", params("order_no", "SO-EX-1"))
 				.orElseThrow().get("amount")).isNull();
 
-		// 参数对象也可以是实体本身：列名按元数据对上，其余名字照旧进模板作用域
+		// 参数对象也可以是实体本身：列名按元数据对上，其余名字照旧进语句作用域
 		MetaClass args = MetaMapper.newEntity(ORDER);
 		args.set("user_id", 9001);
 		args.set("orderBy", "amount");

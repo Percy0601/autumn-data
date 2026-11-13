@@ -30,23 +30,30 @@ public class AutumnDataMetaMapperProperties {
 			Set.of("deleted_flag", "del_flag", "is_deleted"));
 
 	/**
-	 * 动态层工作根目录，四类产物在其固定子目录下：{@code meta-class/}（元类定义 JSON）、
-	 * {@code entity/}（生成的实体 .java）、{@code template/}（生成实体用的 .ftl）、{@code mapper/}（Mapper XML）。
-	 * 空串表示纯内存模式：模板用 jar 内置那份，产物一律不落盘。
+	 * 动态层工作根目录，三类产物在其固定子目录下：{@code meta-class/}（元类定义 JSON）、
+	 * {@code entity/}（生成的实体 .java）、{@code mapper/}（Mapper XML）。
+	 * 空串表示纯内存模式：产物一律不落盘。
 	 */
 	private String metaDirectory = "autumn-meta";
 
 	/**
-	 * 子目录里的文件缺失时是否生成一份（元类定义 / 实体源码 / 模板 / Mapper）。
+	 * 子目录里的文件缺失时是否生成一份（元类定义 / 实体源码 / Mapper）。
 	 * 已存在的文件永远不重写，所以关掉它只影响「第一次」。
 	 */
 	private boolean generateFiles = true;
 
 	/**
-	 * 按表缓存（表结构快照 / 动态实体类 / Mapper AST）各自的条目上限，默认一万张表。
+	 * 按表缓存（表结构快照 / 动态实体 / Mapper AST）各自的条目上限，默认一万张表。
 	 * 触顶按 LRU 淘汰冷表，下次访问自动重建，内存不随表数量无限增长。
 	 */
 	private int tableCacheSize = BoundedCache.DEFAULT_MAXIMUM_SIZE;
+
+	/**
+	 * 实体生成模式：{@code auto}（默认，Native Image 里自动退化到 generic）、
+	 * {@code true}/{@code code}（运行期 javac 生成强类型子类，需要完整 JDK）、
+	 * {@code false}/{@code generic}（通用 MetaClass，零反射，可 native 化）。
+	 */
+	private String entityCodegen = "auto";
 
 	public boolean isEnabled() {
 		return this.enabled;
@@ -102,5 +109,13 @@ public class AutumnDataMetaMapperProperties {
 
 	public void setTableCacheSize(int tableCacheSize) {
 		this.tableCacheSize = tableCacheSize;
+	}
+
+	public String getEntityCodegen() {
+		return this.entityCodegen;
+	}
+
+	public void setEntityCodegen(String entityCodegen) {
+		this.entityCodegen = entityCodegen;
 	}
 }

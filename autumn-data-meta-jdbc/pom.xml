@@ -9,7 +9,7 @@
 	</parent>
 	<artifactId>autumn-data-meta-jdbc</artifactId>
 	<name>autumn-data-meta-jdbc</name>
-	<description>轻量动态 SQL 引擎 + 运行期实体类生成：Mapper XML 复用 autumn-data-common 的方言（动态 SQL 运行期解释执行）；MetaMapper 返回的 MetaClass 是按表结构用 FreeMarker 生成 Java 源码、javax.tools 编译加载的实体子类，有真实类型化字段与 getter、逐行映射零反射。方言复用 autumn-data-common，执行层复用 autumn-data-jdbc。</description>
+	<description>轻量动态 SQL 引擎 + 运行期实体类生成：Mapper XML 复用 autumn-data-common 的方言（动态 SQL 运行期解释执行）；MetaMapper 返回的 MetaClass 是按表结构直接生成 Java 源码、javax.tools 编译加载的实体子类，有真实类型化字段与 getter、逐行映射零反射。方言复用 autumn-data-common，执行层复用 autumn-data-jdbc。</description>
 
 	<properties>
 		<project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -28,11 +28,7 @@
 			<groupId>xyz.wewin.autumn</groupId>
 			<artifactId>autumn-data-jdbc</artifactId>
 		</dependency>
-		<!-- 运行期实体类源码生成（版本由 spring-boot-dependencies BOM 管理） -->
-		<dependency>
-			<groupId>org.freemarker</groupId>
-			<artifactId>freemarker</artifactId>
-		</dependency>
+		<!-- 运行期实体类源码直接由 Java 代码拼装，无模板引擎依赖 -->
 
 		<!-- 测试：H2 内存库 -->
 		<dependency>

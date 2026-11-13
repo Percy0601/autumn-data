@@ -45,8 +45,8 @@ import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCaches;
  * 重新读盘，不会重写文件，这样「刷新元数据」和「重写用户文件」两件事就不互相打架了。</p>
  *
  * <p>文件内容是 {@code autumn-data-common} 的那套 XML 方言（{@code #{}} 绑定、{@code ${}} 标识符、
- * {@code <if>/<choose>/<foreach>/<where>/<trim>}），和静态实体的编译期 Mapper 完全同源；
- * 这一层只是把同一棵 AST 解释执行，不引入模板引擎。</p>
+ * {@code <if>/<choose>/<foreach>/<where>/<trim>}、{@code <sql>/<include>}、{@code <resultMap>}），
+ * 和静态实体的编译期 Mapper 完全同源；这一层只是把同一棵 AST 解释执行，不引入模板引擎。</p>
  *
  * <p>每张表一份 AST，同样走有界 LRU：触顶淘汰冷表，下次访问重新读已有的 XML 文件（文件归使用方所有，
  * 不会被重写），内存占用不随表数量线性增长。</p>
@@ -183,7 +183,8 @@ public final class MetaStatementStore {
 		xml.append("<!-- 按表结构生成一次：本文件之后归使用方所有，改表不会回头覆盖它。 -->\n");
 		xml.append("<!-- #{} 走 JDBC 绑定，${} 只允许元数据标识符；test/命名与元数据列名一致。 -->\n");
 		xml.append("<mapper namespace=\"").append(namespace(table)).append("\">\n");
-		appendSelect(xml, table, "selectList", quotedNames(table.columns()), true);
+		xml.append("    <sql id=\"allColumns\">").append(quotedNames(table.columns())).append("</sql>\n\n");
+		appendSelect(xml, table, "selectList", "<include refid=\"allColumns\"/>", true);
 		appendSelect(xml, table, "selectCount", "COUNT(*)", false);
 		appendInsert(xml, table);
 		appendUpdate(xml, table);

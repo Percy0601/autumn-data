@@ -20,13 +20,12 @@ xyz.wewin.autumn.data.meta.jdbc            用户级：MetaMapper 门面 / MetaQ
   ├─ engine      MetaMapperEngine（池 → client，共享实体注册表）/ MetaMapperClient（一次调用的编排）
   │              MetaMapperOptions / PerThreadConnectionSource
   ├─ metadata    MetaTable（列快照）/ MetaTableRegistry（懒读 + 手工覆盖）/ MetaModelStore（元类定义 JSON）
-  ├─ entity      MetaEntityTemplate（FreeMarker 出源码）/ MetaEntityCompiler（内存 javac）
+  ├─ entity      MetaEntitySource（拼 Java 源码）/ MetaEntityCompiler（内存 javac）
   │              MetaEntityRegistry（结构指纹 → 类）/ MetaEntityColumns + MetaEntityReader（结果集映射）
-  │              MetaTemplateStore（.ftl 外置与回落）
   ├─ sql         MetaSqlBuilder（CRUD 现拼）/ MetaStatementStore + SqlTemplate（文件解释）
   │              MarkedSql（抽取产物）/ MetaPlanCompiler + MetaSqlPlan + MetaBindSlot + MetaTypeCoercion（再转换）
   │              MetaPlanCache（形状 → 计划）
-  └─ support     BoundedCache / LruCache / BoundedCaches / MetaDirectories（根目录 + 四个固定子目录）
+  └─ support     BoundedCache / LruCache / BoundedCaches / MetaDirectories（根目录 + 三个固定子目录）
 ```
 
 调用链只有一条：
@@ -68,14 +67,15 @@ properties）、`MetaProperty`（name / type / typeName / value）。动态表�
 后面做校验、转换、序列化时到处要猜。这一版取中间态：
 
 1. 首次访问某张表，从 `DatabaseMetaData` 拿到列快照（`MetaTable`）；
-2. `MetaEntityTemplate` 用 FreeMarker 模板 `meta-class.ftl` 渲染一份 Java 源码：
+2. `MetaEntitySource` 用 `StringBuilder` 直接拼一份 Java 源码（没有模板引擎）：
    每列一个**真实类型**字段 + getter/setter，`extends MetaClass`；
 3. `MetaEntityCompiler` 用 JDK `javax.tools.JavaCompiler` **全程内存编译**：内存源码对象 →
    javac 输出到 `byte[]` → 独立内存 `ClassLoader` 的 `defineClass`。不建临时目录、不落 `.class`，
    因此 LRU 淘汰掉实体模型后，对应的 Class 与 ClassLoader 没有活引用就能被 GC，元空间可回收
    （这一点对「表结构频繁变化」很关键：缓存有界，物理资源也必须同步有界）；
 4. 生成类里的 `READER` 是写死的 `rs.getObject(index)` + 直接 setter 调用，
-   **逐行映射零反射**；反射只在「加载类时取一次静态字段」这一步发生；
+   **逐行映射零反射**；另有 `NEW`（`Supplier<MetaClass>`）供 `<resultMap>` 逐行构造空实体；
+   反射只在「加载类时取一次静态字段」这一步发生；
 5. `getProperties()` 由生成类把真实字段摊成 `MetaProperty`（带 `type` / `jdbcType` /
    主键 / 自增 / 可空），`MetaUtil.toMap/toJson` 与后续类型校验照常可用。
 
@@ -94,7 +94,7 @@ switch，仍用原始列名，业务语义不变。
 同构的表只编译一次，多个数据源池共享一个 `MetaEntityRegistry`。
 
 生成的源码可以落盘（`meta-directory` 的 `entity/` 子目录），产出的是一份可读、可改、能固化成静态实体的
-`.java`；同目录下的 `meta-class/` 放元类定义 JSON，`template/` 放生成源码用的 `.ftl`，`mapper/` 放 Mapper
+`.java`；同目录下的 `meta-class/` 放元类定义 JSON，`mapper/` 放 Mapper
 文件。运行期需要完整 JDK（JRE 上没有 `javax.tools`，会明确报错）。
 
 > **部署注意**：javac 编译生成源码时需要能从 `java.class.path` / `CodeSource` 找到
@@ -103,6 +103,61 @@ switch，仍用原始列名，业务语义不变。
 > 目前会被跳过，javac 会报「找不到依赖类」。这类部署需要把依赖展开到文件系统（例如
 > `PropertiesLauncher` 的 `loader.path`），或后续给编译器补一个从 ClassLoader 读 `.class`
 > 资源的 JavaFileManager。至少不会因为 `jar:` URI 抛 `ExceptionInInitializerError`。
+> **这种部署如果还要跑 native，直接用下面的 GENERIC 策略，不经过 javac。**
+
+## GraalVM Native Image
+
+运行期 javac + `defineClass` 与 Native Image 的 closed-world 模型正面冲突：镜像里没有
+`java.compiler`（`ToolProvider.getSystemJavaCompiler()` 返回 null），进程内也不允许定义新类。
+因此 `MetaEntityStrategy` 给了两档，**native 不是靠配置硬试，而是换一条不产生新类的路径**：
+
+| 策略 | 实体形态 | 反射 | 适用 |
+| --- | --- | --- | --- |
+| `CODE` | 生成的 `MetaClass` 子类，强类型 getter | 仅加载时读 `READER` / `NEW` 两个静态字段 | 普通 JVM（完整 JDK） |
+| `GENERIC` | `MetaClass` 本身（属性列表） | 0 | Native Image、JRE、无 javac 环境 |
+
+`auto`（默认）按系统属性 `org.graalvm.nativeimage.imagecode` 判断：native 里自动选
+`GENERIC`，普通 JVM 选 `CODE`。也可以显式配：
+
+```properties
+# auto（默认）| true/code（强制生成，native 下启动即报错）| false/generic（强制通用实体）
+autumn.data.meta.mapper.entity-codegen=auto
+```
+
+GENERIC 下 `MetaClass` 的 `getProperties()`、`set/get`、`toJson()`（json-path，原生支持
+native）、`MetaQuery`、Mapper `<sql>/<include>`、`<resultMap>`、分页、逻辑删除全部照旧；
+`MetaMapper.entityType(table)` 返回 `MetaClass.class`，`MetaEntityModel.source()` 为 null。
+每行深拷贝一份属性列表（值存放在 `MetaProperty` 上），因此行与行之间不共享状态；
+读出来的行同样 `clearChanged()`，部分更新语义不变。
+
+**native 构建要点**：
+
+- `javax.tools` 不可达：`MetaEntityRegistry` 通过类名反射调用代码生成器，类名在运行期拼装
+  （避免 native-image 把常量 `Class.forName` 自动注册成反射目标），native 下策略是 GENERIC，
+  这段不会执行；构建报告里不应再出现 `jdk.compiler`（实测镜像从 62.7 MiB 降到 48.3 MiB）。
+  不要显式把 `entity-codegen` 配成 `code`。
+- 资源：`autumn-data-meta-jdbc` 自带 `META-INF/native-image/.../native-image.properties`，
+  已声明 `-H:IncludeResources=meta-mappers/.*`，classpath 下的 Mapper XML 会进镜像。
+- 驱动 / 连接池按各自官方的 native 配置准备；H2 自带 `JdbcDataSource`（本次冒烟用的就是它），
+  PostgreSQL 用 `org.postgresql.Driver`。
+
+仓库内有一个不依赖 JUnit / Spring 的冒烟入口
+`autumn-data-meta-jdbc/src/test/java/.../nativeimage/NativeImageSmoke.java`，构建方式：
+
+```bat
+cd autumn-data-meta-jdbc
+mvn -q -am -DskipTests test-compile
+mvn -q dependency:build-classpath -Dmdep.includeScope=test -Dmdep.outputFile=target\native-cp.txt
+
+set /p DEPS=<target\native-cp.txt
+native-image --no-fallback ^
+  -cp "target\classes;target\test-classes;%DEPS%" ^
+  -H:Name=native-smoke -H:Path=target ^
+  xyz.wewin.autumn.data.meta.jdbc.nativeimage.NativeImageSmoke
+
+target\native-smoke.exe
+REM 期望输出 NATIVE_SMOKE_OK strategy=GENERIC type=xyz.wewin.autumn.data.common.meta.MetaClass
+```
 
 ### 投影查询
 
@@ -300,17 +355,27 @@ autumn.data.meta.mapper.table-cache-size=10000
 - `<if test>` / `<choose>/<when>/<otherwise>` / `<foreach collection item separator open close>` /
   `<where>` / `<trim prefix suffix prefixOverrides suffixOverrides>`；`<where>` 是 `<trim>` 的语法糖，
   整段为空时连 `WHERE` 带它的绑定一起退回；
-- `test` 表达式既认 MyBatis 的 `name != null`、`name == 'active'`，也认 FreeMarker 表达式的
-  `name??`、`name?has_content`、`name?size`、`!expr`、`a && b`。FreeMarker 的 `<#if>` 标签本身
-  不是合法 XML（标签名不能以 `#` 开头），DOM 解析阶段就进不来，所以兼容只做在表达式层；
-- 参数实体上的键按元数据归一，`set("ORDER_NO", ...)` 与 `set("order_no", ...)` 都能对上模板里的列名；
+- `test` 表达式只认 MyBatis 写法：`name != null`、`name == 'active'`、`name != ''`、`!expr`、
+  `a && b`（`&&` 需写成 `&amp;&amp;`）。FreeMarker 的 `name??` / `name?has_content` / `name?size`
+  已移除，写了会按未知标识符在解析阶段报错；
+- **SQL 片段**：`<sql id="allColumns">...</sql>` 定义片段，`<include refid="allColumns"/>` 引用；
+  `refid` 支持 `namespace.id`（取最后一段匹配），解析阶段直接内联成 AST，运行期没有额外开销；
+  片段互相引用会做环检测，`a -> b -> a` 直接报错；`<include>` 里的 `<property>` 子标签暂不支持；
+  生成的 Mapper 文件默认就带一个 `allColumns` 片段，`selectList` 用 `<include>` 复用；
+- **字段映射**：`<resultMap id="orderView" type="demo_order">` 下用 `<id column="id" property="id"/>`
+  与 `<result column="no" property="order_no"/>` 声明「结果集列名 → MetaClass 属性名」。
+  property 会按表元数据归一（驼峰自动转下划线，`orderNo` → `order_no`），列名大小写不敏感；
+  有 `resultMap` 的语句逐行 `NEW` 一个空实体、按 properties 直接 setter，最后 `clearChanged()`，
+  读出来的行是「干净」的（后续 `update` 不会把整行都当改动写回）。`<association>` / `<collection>`
+  这类嵌套映射暂不支持，遇到会明确报错；
+- 参数实体上的键按元数据归一，`set("ORDER_NO", ...)` 与 `set("order_no", ...)` 都能对上语句里的列名；
   值按列的 JDBC 类型收口（表单字符串 → Long/BigDecimal/LocalDateTime）；
 - 名字按忽略大小写对齐：`#{}` / `test` 里写的列名、调用方传的键、Mapper 文件名三者都不要求
   和元数据的大小写一致。H2、Oracle 的元数据列名是大写，手写文件多按 MySQL 习惯写小写，
   对不上时 `#{order_no}` 会静默绑成 `null`——所以这里显式做成大小写不敏感。
 
 ```properties
-autumn.data.meta.mapper.meta-directory=autumn-meta             # 空串 = 纯内存，四类产物都不落盘
+autumn.data.meta.mapper.meta-directory=autumn-meta             # 空串 = 纯内存，三类产物都不落盘
 autumn.data.meta.mapper.generate-files=true                    # false 时缺失文件直接报错
 autumn.data.meta.mapper.table-cache-size=10000
 autumn.data.meta.mapper.default-list-limit=1000
@@ -318,8 +383,8 @@ autumn.data.meta.mapper.default-pool-name=default
 autumn.data.meta.mapper.logic-delete-columns=deleted_flag,del_flag,is_deleted
 ```
 
-`meta-directory` 是唯一的工作目录，四类产物落在它的固定子目录里：`meta-class/`（元类定义 JSON）、
-`entity/`（生成的实体 `.java`，留空即全程内存编译）、`template/`（生成实体用的 `.ftl`，缺省时用 jar 内置那份）、
+`meta-directory` 是唯一的工作目录，三类产物落在它的固定子目录里：`meta-class/`（元类定义 JSON）、
+`entity/`（生成的实体 `.java`，留空即全程内存编译）、
 `mapper/`（Mapper XML）。子目录里的文件一旦存在就不再重写，所以 `generate-files=false` 只影响「第一次」：
 缺失时抛 `MetaSqlException`，适合生产环境要求 Mapper 必须预置的场景。`table-cache-size` 是各缓存容器各自的
 条目上限（默认 10000），详见「有界缓存」一节。
@@ -411,7 +476,7 @@ ThreadLocal 最多作为“请求级默认池”的便利糖，不能作为唯�
 
 - 实现：`autumn-data-meta-jdbc/src/main/java/xyz/wewin/autumn/data/meta/jdbc`，外层放用户级 API
   （`MetaMapper` / `MetaQuery` / `MetaSqlException` / `SqlBuild`），内部分五层：
-  `engine`（引擎与 client 的编排）、`metadata`（表结构快照与元类定义）、`entity`（FreeMarker 生成 +
+  `engine`（引擎与 client 的编排）、`metadata`（表结构快照与元类定义）、`entity`（Java 源码拼装 +
   内存 javac + 结果集映射）、`sql`（`MetaSqlBuilder` 现拼、`MetaStatementStore` + `SqlTemplate` 解释文件、
   `MarkedSql` → `MetaPlanCompiler` → `MetaSqlPlan` 三段与 `MetaPlanCache`）、`support`（有界缓存与目录）。
   方言与编译期生成器共用 `autumn-data-common` 的 `TemplateParser` / `TemplateNode`，本层只解释执行。

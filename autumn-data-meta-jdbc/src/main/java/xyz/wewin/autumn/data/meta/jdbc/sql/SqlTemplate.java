@@ -26,9 +26,13 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
  *   <li>{@code ${name}} —— 只用来展开标识符片段，展开结果必须先过
  *       {@link #isIdentifierFragment(String)} 白名单，引号、分号、注释符、比较符一律拒绝，
  *       所以拼接这条路也挡得住入参劫持；</li>
- *   <li>{@code <if>/<choose>/<where>/<foreach>} —— 条件写在 XML 里，测试表达式既认 MyBatis 的
- *       {@code name != null}，也认 FreeMarker 的 {@code name?? / name?has_content / name?size}
- *       （FreeMarker 的 {@code <#if>} 标签本身不是合法 XML，不兼容）。</li>
+ *   <li>{@code <if>/<choose>/<where>/<foreach>} —— 条件写在 XML 里，测试表达式只认 MyBatis 写法
+ *       （{@code name != null}、{@code status == 'paid'} 等），不再提供 FreeMarker 风格的
+ *       {@code name?? / name?has_content}：模板语言只有 MyBatis 这一套。</li>
+ *   <li>{@code <sql>/<include>} —— 片段在解析阶段就内联进语句 AST，运行期解释的仍是一棵树，
+ *       所以额外切片的开销为零；</li>
+ *   <li>{@code <resultMap>/<result>} —— 结果集列名与 {@link xyz.wewin.autumn.data.common.meta.MetaClass}
+ *       属性名的对应关系随语句一起带下来，运行期按这份映射逐列取值。</li>
  * </ul>
  *
  * <p>关键结构约束：SQL 文本和绑定参数在同一次遍历里按同一顺序产出。写坏模板最多让占位符个数
@@ -42,10 +46,13 @@ public final class SqlTemplate {
 
 	private final List<TemplateNode> nodes;
 
+	private final List<MapperDefinition.ResultMapping> resultMappings;
+
 	SqlTemplate(MapperDefinition.StatementDefinition statement) {
 		this.id = statement.id();
 		this.type = statement.type();
 		this.nodes = List.copyOf(statement.template());
+		this.resultMappings = List.copyOf(statement.resultMappings());
 	}
 
 	/** 语句 id，与 XML 里的 {@code id} 属性一致。 */
@@ -56,6 +63,11 @@ public final class SqlTemplate {
 	/** 语句类型，决定走查询还是更新执行。 */
 	public MapperDefinition.StatementType type() {
 		return this.type;
+	}
+
+	/** 语句声明的结果列映射；空表示按生成实体的固定列读取。 */
+	public List<MapperDefinition.ResultMapping> resultMappings() {
+		return this.resultMappings;
 	}
 
 	/**
@@ -221,7 +233,7 @@ public final class SqlTemplate {
 	}
 
 	// ------------------------------------------------------------------
-	// 条件表达式（MyBatis test 写法 + FreeMarker 表达式写法都认）
+	// 条件表达式（只看 MyBatis test 写法）
 	// ------------------------------------------------------------------
 
 	static boolean evaluate(String expression, Map<String, ?> params) {
@@ -291,15 +303,6 @@ public final class SqlTemplate {
 		if (isQuoted(text)) {
 			return text.substring(1, text.length() - 1);
 		}
-		if (text.endsWith("??")) {
-			return params.get(cut(text, "??")) != null;
-		}
-		if (text.endsWith("?has_content")) {
-			return hasContent(params.get(cut(text, "?has_content")));
-		}
-		if (text.endsWith("?size")) {
-			return sizeOf(params.get(cut(text, "?size")));
-		}
 		if (isNumber(text)) {
 			return new BigDecimal(text);
 		}
@@ -307,10 +310,6 @@ public final class SqlTemplate {
 			return Boolean.valueOf(text);
 		}
 		return params.get(text);
-	}
-
-	private static String cut(String text, String suffix) {
-		return text.substring(0, text.length() - suffix.length()).trim();
 	}
 
 	private static boolean truthy(Object value) {
@@ -327,11 +326,6 @@ public final class SqlTemplate {
 			return !list.isEmpty();
 		}
 		return !String.valueOf(value).isEmpty();
-	}
-
-	private static boolean hasContent(Object value) {
-		return value != null && (!"".equals(String.valueOf(value)))
-				&& !(value instanceof Collection<?> list && list.isEmpty());
 	}
 
 	private static boolean equalsLoosely(Object a, Object b) {
@@ -356,13 +350,6 @@ public final class SqlTemplate {
 		}
 		String text = String.valueOf(value);
 		return isNumber(text) ? new BigDecimal(text) : null;
-	}
-
-	private static int sizeOf(Object value) {
-		if (value instanceof Collection<?> list) {
-			return list.size();
-		}
-		return value == null ? 0 : String.valueOf(value).length();
 	}
 
 	/** 返回分隔符下标；在引号或括号内不算顶层。 */

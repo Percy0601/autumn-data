@@ -13,19 +13,25 @@ import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperEngine;
 /**
  * 动态表 CRUD 的静态门面，读写的操作对象一律是 {@link MetaClass}。
  *
- * <p><b>进出都不是通用 Map 容器，而是运行期生成的实体实例</b>：首次访问某张表时，引擎按
- * {@code DatabaseMetaData} 读出的列结构，用 FreeMarker 生成一份 {@code MetaClass} 子类源码，
- * 交给 {@code javax.tools.JavaCompiler} 编译并加载。生成类每列都有真实类型的字段与 getter/setter，
- * 结果集映射是写死的 setter 调用（逐行零反射），同时通过 {@code getProperties()} 保留
- * {@code type / jdbcType / 主键 / 可空} 等类型描述，后续校验、转换、序列化都不用再猜类型。</p>
+ * <p><b>进出都不是通用 Map 容器，而是按表结构确定的实体实例</b>，由 {@code MetaEntityStrategy} 两档实现：</p>
+ * <ul>
+ *   <li>{@code CODE}（普通 JVM 默认）：首次访问某张表时按 {@code DatabaseMetaData} 的列结构生成一份
+ *       {@code MetaClass} 子类源码，交给 {@code javax.tools.JavaCompiler} 编译加载；每列有真实类型的
+ *       字段与 getter/setter，结果集映射是写死的 setter 调用（逐行零反射）；</li>
+ *   <li>{@code GENERIC}（Native Image 默认）：不生成类，逐行写通用 {@code MetaClass}；零反射、零代码生成，
+ *       契约与 API 不变，只是没有类型化 getter，{@link #entityType(String)} 返回 {@code MetaClass.class}。</li>
+ * </ul>
+ *
+ * <p>两档都通过 {@code getProperties()} 保留 {@code type / jdbcType / 主键 / 可空} 等类型描述，
+ * 后续校验、转换、序列化都不用再猜类型。</p>
  *
  * <p>写哪几列由实体的变更集决定（{@link MetaClass#isChanged(String)}）：{@code newEntity} 之后
  * 赋了值的列才进 INSERT，读出来的行改过的列才进 UPDATE，赋 {@code null} 就是真的写 NULL。
  * 因此不需要「传了这个 key 才算改」这类 Map 约定，也没有额外的空值哨兵。</p>
  *
  * <p>这层刻意落在「完全静态」与「完全动态」之间：编译期写死的实体类应付不了运行期建表，
- * 而全 Map 的写法把类型信息丢光；运行期生成类两者兼得。表结构变了 {@link #refresh(String)}
- * 之后会生成新结构对应的新类，旧实例不受影响。</p>
+ * 而全 Map 的写法把类型信息丢光；两种实体形态都保留了列类型。表结构变了 {@link #refresh(String)}
+ * 之后会构建新结构对应的新模型，旧实例不受影响。</p>
  *
  * <pre>{@code
  * MetaMapper.install(MetaMapperEngine.standalone("default"));
@@ -83,7 +89,7 @@ public final class MetaMapper {
 		return engine().defaultClient();
 	}
 
-	/** 当前表结构对应的动态实体类型（FreeMarker 生成 + 运行期编译）。 */
+	/** 当前表结构对应的实体类型：CODE 是运行期生成并加载的子类；GENERIC 恒为 {@link MetaClass}。 */
 	public static Class<? extends MetaClass> entityType(String tableName) {
 		return defaultClient().entityType(tableName);
 	}
