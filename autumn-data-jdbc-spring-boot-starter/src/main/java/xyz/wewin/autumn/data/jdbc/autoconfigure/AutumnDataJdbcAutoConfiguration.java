@@ -22,6 +22,7 @@ import xyz.wewin.autumn.data.common.dialect.PostgreSqlDialect;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.ConnectionSource;
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
+import xyz.wewin.autumn.data.jdbc.runtime.PerThreadConnectionSource;
 import xyz.wewin.autumn.data.jdbc.spring.RepositoryRegistrar;
 import xyz.wewin.autumn.data.jdbc.spring.SpringConnectionSource;
 
@@ -77,12 +78,19 @@ public class AutumnDataJdbcAutoConfiguration {
 		return properties.fetchPolicy();
 	}
 
-	/** 运行期连接与事务的抽象：交给 Spring 的 {@code DataSourceUtils}，让生成代码自动加入 {@code @Transactional}。 */
+	/**
+	 * 运行期连接与事务的抽象：交给 Spring 的 {@code DataSourceUtils}，让生成代码自动加入 {@code @Transactional}。
+	 *
+	 * <p>外面再套一层 {@link PerThreadConnectionSource}：{@link SpringConnectionSource} 持有“当前连接”字段，
+	 * 而容器里注入同一份连接源的 {@link AutumnJdbc} 是单例、被所有仓储实现共用，直接共享会串连接
+	 * （甲线程取连接时把乙线程正在用的那条归还掉）。按线程各持一份之后，事务里的连接仍由
+	 * {@code DataSourceUtils} 按事务绑定，语义不变；非事务时各自借还，互不干扰。</p>
+	 */
 	@Bean
 	@ConditionalOnMissingBean
 	@ConditionalOnSingleCandidate(DataSource.class)
 	public ConnectionSource autumnConnectionSource(DataSource dataSource) {
-		return new SpringConnectionSource(dataSource);
+		return new PerThreadConnectionSource(() -> new SpringConnectionSource(dataSource));
 	}
 
 	/** 生成实现类唯一依赖的运行期门面：SQL 执行 + 方言分页 + 取数上限。 */

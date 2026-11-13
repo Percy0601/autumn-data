@@ -120,7 +120,7 @@ MetaMapper.of("tenant-a").findList("form_order", MetaQuery.by("status", 1));
 - 文件名与列名按**忽略大小写**对齐：H2/Oracle 元数据给的是大写名，手写文件多按 MySQL 习惯写小写，`demo_order.xml` 配 `DEMO_ORDER` 这张表、`#{order_no}` 配 `ORDER_NO` 这一列都能对上；
 - **没有 delete**：应用侧不提供物理删除，作废用一次状态列更新；`deleted_flag` / `del_flag` / `is_deleted` 可自动过滤；
 - `findList` 默认最多 1000 行，多数据源按 pool 绑定句柄而不是 ThreadLocal；
-- 当前版本**不接入 Spring 事务**：单方法内自提交，跨方法 `@Transactional` 待下一版接入（替换连接源即可，门面/SQL 层不动）。
+- **连接池与事务沿用 Spring Boot**：starter 的自动配置把容器里的 `DataSource`（`spring.datasource.*` 建出来的 HikariCP 等）直接交给两条链路——编译期生成的静态仓储和动态层引擎，不自建连接池，连接的创建/回收/调优全归使用方那个池；连接源是 `PerThreadConnectionSource` 包一层 `SpringConnectionSource`（每线程一份，单例 `AutumnJdbc` 才不会串连接），所以语句自动加入 `@Transactional`——事务里调 `MetaMapper`、调 `JdbcTemplate`、调生成的仓储用的是同一条连接，回滚一起回滚。无 Spring 时（`MetaMapperEngine.standalone` / `Autumn.using`）仍是 JDBC 连接源自管、单方法自提交。
 
 Mapper 文件相关配置：
 
@@ -146,7 +146,9 @@ autumn.data.meta.mapper.entity-codegen=auto            # auto | code | generic�
 `auto` 按 `org.graalvm.nativeimage.imagecode` 自动选择；native 里若显式要求 `code`，启动即报错，
 不会等到首次访问表才失败。GENERIC 下 CRUD / Mapper / `<sql>/<include>` / `<resultMap>` / 分页 /
 逻辑删除 / json-path 序列化全部一致，只是 `entityType(table)` 返回 `MetaClass.class`、没有类型化 getter。
-native-image 资源声明已随模块打包（`-H:IncludeResources=meta-mappers/.*`），构建步骤与冒烟入口见
+native 下**不把 Mapper XML 打进镜像**：这些文件按 `autumn.data.meta.mapper.meta-directory`
+在磁盘上读取/生成、归使用方所有（和 `spring-boot-native-samples` 里读 `/data/html/static.html`
+那类示例同理，外部文件留在磁盘上即可），镜像里写死一份反而会过期。构建步骤与冒烟入口见
 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md#graalvm-native-image)。
 
 完整设计与语义见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)；上层怎么调有两个能直接跑的例子：

@@ -47,7 +47,8 @@ MetaSqlSession）已按动态定位移除，SqlBuild 只作为与静态侧共用
 ```
 
 核心模块不依赖 Spring；Spring Boot 集成在 `autumn-data-jdbc-spring-boot-starter` 的
-`AutumnDataMetaMapperAutoConfiguration` 里，只负责把引擎装进静态门面。
+`AutumnDataMetaMapperAutoConfiguration` 里：把引擎装进静态门面，并用 `SpringConnectionSource`
+接上容器里的 `DataSource`（也就是 `spring.datasource.*` 建出来的那个池），见「Spring Boot 连接池与事务」。
 
 ## 为什么复用 MetaClass / MetaProperty
 
@@ -136,8 +137,11 @@ native）、`MetaQuery`、Mapper `<sql>/<include>`、`<resultMap>`、分页、�
   （避免 native-image 把常量 `Class.forName` 自动注册成反射目标），native 下策略是 GENERIC，
   这段不会执行；构建报告里不应再出现 `jdk.compiler`（实测镜像从 62.7 MiB 降到 48.3 MiB）。
   不要显式把 `entity-codegen` 配成 `code`。
-- 资源：`autumn-data-meta-jdbc` 自带 `META-INF/native-image/.../native-image.properties`，
-  已声明 `-H:IncludeResources=meta-mappers/.*`，classpath 下的 Mapper XML 会进镜像。
+- 资源：**不声明** native-image 资源包含。Mapper XML 是使用方的资产，按
+  `autumn.data.meta.mapper.meta-directory` 落在磁盘的 `mapper/` 下，native 运行期直接按路径读
+  （`Files.readString`）、缺失时照样生成一份，和 `spring-boot-native-samples` 里读
+  `/data/html/static.html` 那类外部文件一个路子；把某个版本的 SQL 塞进镜像只会让它过期。
+  确实想内置一批默认语句，再按 `-H:IncludeResources=meta-mappers/.*` 自行声明即可。
 - 驱动 / 连接池按各自官方的 native 配置准备；H2 自带 `JdbcDataSource`（本次冒烟用的就是它），
   PostgreSQL 用 `org.postgresql.Driver`。
 
@@ -460,15 +464,38 @@ autumn.data.meta.mapper.logic-delete-columns=deleted_flag,del_flag,is_deleted
 ThreadLocal 最多作为“请求级默认池”的便利糖，不能作为唯一机制。缓存也按 `(pool, table)` 维度
 各自持有 Registry，不能共用一个全局表缓存。
 
-## 事务现状与后续接入点
+## Spring Boot 连接池与事务
 
-当前版本每次操作取连接、结束归还（`PerThreadConnectionSource` + `JdbcConnectionSource`），
-单方法内部语句自提交；跨方法的 `@Transactional` 暂不生效。
+引擎本身只认 `javax.sql.DataSource` + `ConnectionSource`，不认识 Spring；兼容是靠「换连接源」这一个
+入口做到的（`MetaMapperEngine.forDataSource(name, dataSource, options, connectionSources)`）。
 
-后续接入事务只需要替换 `MetaMapperEngine` 的 client 工厂里的 `ConnectionSource`：
-- Spring 默认池：`SpringConnectionSource`，交给 `DataSourceUtils`；
-- 非默认池：按池取 `DataSource` 后各建一个事务管理器；
-- 写入路径（save/update）本身已经共用同一连接，batch 也在同一操作内完成，不需要改 SQL 层。
+在 Spring Boot 里（引入 starter、保持 `autumn.data.meta.mapper.enabled=true`）：
+
+- **连接池用 Boot 的**：自动配置把容器里那个 `DataSource` 直接交给引擎——就是
+  `spring.datasource.*`（含 `spring.datasource.hikari.*`）配出来、`DataSourceAutoConfiguration`
+  建的 Hikari 池。引擎不自建池、不改池参数，连接从池里借、操作结束 `close()` 归还
+  （`DataSourceUtils.releaseConnection`），不长期霸占一条连接。
+- **事务用 Spring 的**：连接源是 `SpringConnectionSource`（对标 MyBatis 的
+  `SpringManagedTransaction`）。`@Transactional` 里调用时，`DataSourceUtils.getConnection` 给的是
+  事务绑定的同一条连接，动态层的语句与 `JdbcTemplate` / 静态仓储同处一个事务：
+  `begin/commit/rollback` 全部交给 spring-tx，动态层不自己提交。
+- **连接源按线程一份**：`SpringConnectionSource` 持有“当前连接”字段，而两条链路共享的是单例
+  （容器里的 `AutumnJdbc` / 引擎里的 client），所以两处都套了 `PerThreadConnectionSource`。
+  不套就会串连接——甲线程取连接时把乙线程正在用的那条归还掉，事务里的语句也会突然跑到别的连接上。
+- **没有事务时**：每次操作借还连接、单方法自提交，与原生 JDBC 行为一致。
+- **多数据源**：默认池走上面这条；`MetaMapper.of(pool)` 指向的其他池连接来自
+  `MetaDataSource` 注册表，事务要按池自建 `DataSourceTransactionManager`（Spring 事务只绑默认池）。
+- 想换成自己的连接源（连接加密、影子库、压测桩等），定义自己的 `MetaMapperEngine` Bean 即可，
+  自动配置 `@ConditionalOnMissingBean` 会退让。
+
+非 Spring 场景（`MetaMapperEngine.standalone` / 三参 `forDataSource`）保持原样：
+`PerThreadConnectionSource` + `JdbcConnectionSource`，单方法内部语句自提交，跨方法的
+`@Transactional` 不生效（没有 Spring 的意思）。
+
+验证见两个测试：
+- `AutumnDataMetaMapperSpringPoolTests`：Hikari 池名与「操作后活跃连接归零」、`@Transactional`
+  回滚把动态层的写入一起撤回、提交则落库；
+- `AutumnDataJdbcSpringConnectionTests`：静态仓储链路同样加入事务，以及「两个线程各持一条连接」。
 
 ## 代码与测试
 

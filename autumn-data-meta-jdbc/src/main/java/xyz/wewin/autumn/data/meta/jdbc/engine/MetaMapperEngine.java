@@ -11,6 +11,7 @@ import xyz.wewin.autumn.data.common.dialect.DialectResolver;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.ConnectionSource;
 import xyz.wewin.autumn.data.jdbc.runtime.JdbcConnectionSource;
+import xyz.wewin.autumn.data.jdbc.runtime.PerThreadConnectionSource;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaModelStore;
@@ -33,8 +34,10 @@ import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
  * 触顶淘汰冷池，下次访问按需重建（旧 client 上正在执行的操作持有引用，不受影响）。</p>
  *
  * <p>核心模块不依赖 Spring：{@link #standalone(String)} 用 {@link MetaDataSource} 注册表 +
- * JDBC 连接源；Spring 集成层可以传入自己的 client 工厂（例如把连接交给
- * {@code SpringConnectionSource} 以加入事务）。</p>
+ * JDBC 连接源；连接源本身可以替换（{@link #forDataSource(String, DataSource, MetaMapperOptions,
+ * Function)}），Spring 集成层就是靠这个入口把连接交给 {@code SpringConnectionSource}——
+ * 于是连接来自 Spring 的连接池（{@code spring.datasource.*} 配出来的那个），语句也自动加入
+ * {@code @Transactional}。</p>
  */
 public final class MetaMapperEngine {
 
@@ -87,7 +90,7 @@ public final class MetaMapperEngine {
 			catch (IllegalArgumentException ex) {
 				throw new MetaSqlException("no data source registered under pool name '" + poolName + "'", ex);
 			}
-			return createClient(poolName, dataSource, options, entities);
+			return createClient(poolName, dataSource, options, entities, JdbcConnectionSource::new);
 		}, entities, options.tableCacheSize());
 	}
 
@@ -95,8 +98,9 @@ public final class MetaMapperEngine {
 	 * 单数据源引导：默认池直接用传入的 {@link DataSource}，不要求先注册进
 	 * {@link MetaDataSource}；其他池名仍然从注册表取。
 	 *
-	 * <p>这一版不处理跨方法事务：每次操作取连接、结束归还。后续接入 Spring 事务时，
-	 * 只需替换 client 工厂里的连接源（{@code SpringConnectionSource}），门面与 SQL 层不用动。</p>
+	 * <p>连接源默认是 {@link JdbcConnectionSource}（自己持有连接、操作结束归还）：每次操作取一条连接、
+	 * 方法内多条语句共用它，因此单方法自提交、跨方法的 {@code @Transactional} 不生效。
+	 * 需要加入 Spring 事务时用四参重载，把连接源换成 {@code SpringConnectionSource}。</p>
 	 */
 	public static MetaMapperEngine forDataSource(String defaultPoolName, DataSource dataSource) {
 		return forDataSource(defaultPoolName, dataSource, MetaMapperOptions.defaults());
@@ -104,13 +108,30 @@ public final class MetaMapperEngine {
 
 	public static MetaMapperEngine forDataSource(String defaultPoolName, DataSource dataSource,
 			MetaMapperOptions options) {
+		return forDataSource(defaultPoolName, dataSource, options, JdbcConnectionSource::new);
+	}
+
+	/**
+	 * 可替换连接源的引导：{@code connectionSources} 按「线程 → 连接源」实例化（每个线程一份，
+	 * 因为连接源大多持有“当前连接”字段，共享会串连接）。
+	 *
+	 * <p>Spring 集成层传 {@code SpringConnectionSource::new}：连接交给
+	 * {@code DataSourceUtils} 取，因此用的是 Spring Boot 按 {@code spring.datasource.*} 建好的
+	 * 连接池（Hikari 等），已处于事务中时取到的还是事务绑定的那条连接，生成/解释的语句自动
+	 * 加入 {@code @Transactional}。核心模块只把它当成一个工厂，不引入 Spring 依赖。</p>
+	 */
+	public static MetaMapperEngine forDataSource(String defaultPoolName, DataSource dataSource,
+			MetaMapperOptions options, Function<DataSource, ConnectionSource> connectionSources) {
 		if (dataSource == null) {
 			throw new IllegalArgumentException("dataSource must not be null");
+		}
+		if (connectionSources == null) {
+			throw new IllegalArgumentException("connectionSources must not be null");
 		}
 		MetaEntityRegistry entities = entityRegistry(options);
 		return new MetaMapperEngine(defaultPoolName, poolName -> {
 			DataSource target = poolName.equals(defaultPoolName) ? dataSource : MetaDataSource.get(poolName);
-			return createClient(poolName, target, options, entities);
+			return createClient(poolName, target, options, entities, connectionSources);
 		}, entities, options.tableCacheSize());
 	}
 
@@ -121,10 +142,10 @@ public final class MetaMapperEngine {
 	}
 
 	private static MetaMapperClient createClient(String poolName, DataSource dataSource, MetaMapperOptions options,
-			MetaEntityRegistry entities) {
+			MetaEntityRegistry entities, Function<DataSource, ConnectionSource> connectionSources) {
 		Dialect dialect = DialectResolver.resolve(dataSource);
 		ConnectionSource connectionSource = new PerThreadConnectionSource(
-				() -> new JdbcConnectionSource(dataSource));
+				() -> connectionSources.apply(dataSource));
 		AutumnJdbc jdbc = new AutumnJdbc(connectionSource, dialect, options.fetchPolicy());
 		MetaDirectories directories = options.directories();
 		MetaModelStore models = new MetaModelStore(directories.metaClassDirectory(), options.generateFiles(),
