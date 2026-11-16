@@ -1,14 +1,17 @@
 package xyz.wewin.autumn.data.meta.jdbc;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
+import xyz.wewin.autumn.data.common.mapper.MapperDefinition;
 import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.jdbc.page.Page;
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperClient;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperEngine;
+import xyz.wewin.autumn.data.meta.jdbc.sql.MarkedSql;
 
 /**
  * 动态表 CRUD 的静态门面，读写的操作对象一律是 {@link MetaClass}。
@@ -158,5 +161,119 @@ public final class MetaMapper {
 	/** 表结构变化后刷新默认池的元数据快照、动态实体类与 Mapper 语句缓存。 */
 	public static void refresh(String tableName) {
 		defaultClient().refresh(tableName);
+	}
+
+	// ------------------------------------------------------------------
+	// 手写 SQL / 自定义语句（默认池）
+	// ------------------------------------------------------------------
+
+	/**
+	 * 直接执行一段手写 SQL（{@code #{}} 绑定、{@code ${}} 标识符），不建 Mapper 文件。
+	 * 与命名语句共用一条执行路径：绑定、类型收口、计划缓存都一样。
+	 */
+	public static List<MetaClass> findListBySql(String tableName, String sql, MetaClass params) {
+		return defaultClient().findListBySql(tableName, sql, params);
+	}
+
+	public static List<MetaClass> findListBySql(String tableName, String sql, MetaClass params, long limit) {
+		return defaultClient().findListBySql(tableName, sql, params, limit);
+	}
+
+	public static Optional<MetaClass> findOneBySql(String tableName, String sql, MetaClass params) {
+		return defaultClient().findOneBySql(tableName, sql, params);
+	}
+
+	public static long countBySql(String tableName, String sql, MetaClass params) {
+		return defaultClient().countBySql(tableName, sql, params);
+	}
+
+	/** 手写 SQL 分页；{@code countSql} 为空时自动包一层子查询计数。 */
+	public static Page<MetaClass> findPageBySql(String tableName, String sql, String countSql, MetaClass params,
+			Pageable pageable) {
+		return defaultClient().findPageBySql(tableName, sql, countSql, params, pageable);
+	}
+
+	/** 手写 INSERT / UPDATE，返回影响行数。 */
+	public static int executeBySql(String tableName, String sql, MetaClass params) {
+		return defaultClient().executeBySql(tableName, sql, params);
+	}
+
+	/** 只抽取不执行：查看手写 SQL 最终拼成的文本与绑定的实参。 */
+	public static MarkedSql sqlForText(String tableName, String sql, MetaClass params) {
+		return defaultClient().sqlForText(tableName, sql, params);
+	}
+
+	/** 把一段手写 SQL 注册成默认池的命名语句（同 id 覆盖，{@code refresh} 不会撤销）。 */
+	public static MetaMapperClient registerStatement(String tableName, String statementId,
+			MapperDefinition.StatementType type, String sql) {
+		return defaultClient().registerStatement(tableName, statementId, type, sql);
+	}
+
+	public static MetaMapperClient registerStatement(String tableName, String statementId, String sql) {
+		return defaultClient().registerStatement(tableName, statementId, sql);
+	}
+
+	public static boolean unregisterStatement(String tableName, String statementId) {
+		return defaultClient().unregisterStatement(tableName, statementId);
+	}
+
+	public static List<String> statementIds(String tableName) {
+		return defaultClient().statementIds(tableName);
+	}
+
+	// ------------------------------------------------------------------
+	// 缓存：分级清理 / 重新加载 / 诊断（默认池）
+	// ------------------------------------------------------------------
+
+	/** 只清该表的表结构快照（{@code MetaTable}），实体类与语句不动。 */
+	public static void clearTableCache(String tableName) {
+		defaultClient().clearTableCache(tableName);
+	}
+
+	public static void clearTableCache() {
+		defaultClient().clearTableCache();
+	}
+
+	/** 只清该表运行期编译的实体类（{@code MetaClass} 子类），表结构快照不动。 */
+	public static void clearEntityCache(String tableName) {
+		defaultClient().clearEntityCache(tableName);
+	}
+
+	public static void clearEntityCache() {
+		defaultClient().clearEntityCache();
+	}
+
+	/** 只清 Mapper 语句 AST 与执行计划缓存。 */
+	public static void clearStatementCache(String tableName) {
+		defaultClient().clearStatementCache(tableName);
+	}
+
+	public static void clearStatementCache() {
+		defaultClient().clearStatementCache();
+	}
+
+	/** 清掉该表的全部派生缓存（元数据 + 实体类 + 语句 + 计划）。 */
+	public static void clearCache(String tableName) {
+		defaultClient().clearCache(tableName);
+	}
+
+	/** 清掉所有已创建池的派生缓存；代码注册的语句保留。 */
+	public static void clearAllCaches() {
+		engine().clearCaches();
+	}
+
+	/** 清缓存并立即重建（元数据当场回读、实体类当场编译），失败就在这一行暴露。 */
+	public static MetaClass reload(String tableName) {
+		return defaultClient().reload(tableName);
+	}
+
+	/** 默认池里已有快照的表全部重读一遍。 */
+	public static void reloadAll() {
+		defaultClient().reloadAll();
+	}
+
+	/** 默认池各级缓存的条目数与上限。 */
+	public static Map<String, Object> cacheStats() {
+		return defaultClient().cacheStats();
 	}
 }

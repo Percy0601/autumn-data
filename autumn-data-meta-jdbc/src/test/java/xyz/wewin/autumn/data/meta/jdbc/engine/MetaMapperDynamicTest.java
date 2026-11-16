@@ -11,6 +11,7 @@ import java.sql.Types;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -25,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import xyz.wewin.autumn.data.common.dialect.H2Dialect;
+import xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementType;
 import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.common.meta.MetaProperty;
 import xyz.wewin.autumn.data.jdbc.page.Page;
@@ -965,6 +967,186 @@ class MetaMapperDynamicTest {
 			assertThat(snapshots.get(i).getString("order_no")).isEqualTo("EV1");
 			assertThat(snapshots.get(i).getString("col_" + (i + 1))).isEqualTo("v" + (i + 1));
 		}
+	}
+
+	// ------------------------------------------------------------------
+	// 手写 SQL / 代码注册语句 / 缓存分级清理
+	// ------------------------------------------------------------------
+
+	@Test
+	void rawSqlBindsValuesAndExpandsOnlyTheTableIdentifier() {
+		this.client.save(row("form_order", "order_no", "RS-1", "amount", "88.00", "status", 1));
+		this.client.save(row("form_order", "order_no", "RS-2", "amount", "12.00", "status", 2));
+		MetaClass query = params("status", 1, "minAmount", new BigDecimal("50.00"));
+
+		MarkedSql marked = this.client.sqlForText("form_order",
+				"SELECT id, order_no, amount FROM ${table} "
+						+ "WHERE status = #{status} AND amount >= #{minAmount}", query);
+		assertThat(marked.sql()).contains("\"form_order\"").doesNotContain("88.00").doesNotContain("50.00");
+		assertThat(marked.values()).containsExactly(1, new BigDecimal("50.00"));
+
+		List<MetaClass> rows = this.client.findListBySql("form_order",
+				"SELECT id, order_no, amount FROM ${table} "
+						+ "WHERE status = #{status} AND amount >= #{minAmount} ORDER BY amount DESC", query, 10);
+		assertThat(rows).hasSize(1);
+		assertThat(rows.get(0).getString("order_no")).isEqualTo("RS-1");
+		assertThat(rows.get(0).getBigDecimal("amount")).isEqualByComparingTo("88.00");
+
+		// ${} 只放标识符片段：参数化的列名照样过白名单，注入串不会进 SQL
+		assertThatThrownBy(() -> this.client.findListBySql("form_order",
+				"SELECT id FROM ${table} WHERE ${column} = 1", params("column", "status; DROP TABLE form_order")))
+				.isInstanceOf(MetaSqlException.class)
+				.hasMessageContaining("not an identifier fragment");
+	}
+
+	@Test
+	void rawSqlPagingSupportsExplicitAndDerivedCount() {
+		for (int i = 1; i <= 3; i++) {
+			this.client.save(row("form_order", "order_no", "RP-" + i, "amount", String.valueOf(i * 10),
+					"status", 1));
+		}
+		MetaClass query = params("status", 1);
+		String selectSql = "SELECT id, order_no, amount FROM ${table} WHERE status = #{status}";
+
+		// 不给计数语句：自动包一层 SELECT COUNT(*) FROM (...)
+		Page<MetaClass> derived = this.client.findPageBySql("form_order", selectSql, null, query, Pageable.of(0, 2));
+		assertThat(derived.total()).isEqualTo(3);
+		assertThat(derived.content()).hasSize(2);
+		assertThat(derived.totalPages()).isEqualTo(2);
+
+		// 自己给计数语句：内容与计数各按各的占位符顺序绑定
+		String orderedSql = selectSql + " ORDER BY id";
+		String countSql = "SELECT COUNT(*) FROM ${table} WHERE status = #{status} AND amount < #{limit}";
+		Page<MetaClass> explicit = this.client.findPageBySql("form_order", orderedSql, countSql,
+				params("status", 1, "limit", new BigDecimal("25.00")), Pageable.of(1, 2));
+		assertThat(explicit.total()).isEqualTo(2);
+		assertThat(explicit.content()).hasSize(1);
+		assertThat(explicit.content().get(0).getString("order_no")).isEqualTo("RP-3");
+	}
+
+	@Test
+	void rawSqlRejectsBareQuestionMarksAndPhysicalDeletes() {
+		assertThatThrownBy(() -> this.client.findListBySql("form_order",
+				"SELECT id FROM ${table} WHERE status = ?", params("status", 1)))
+				.isInstanceOf(MetaSqlException.class)
+				.hasMessageContaining("bare '?'");
+
+		assertThatThrownBy(() -> this.client.executeBySql("form_order",
+				"SELECT id FROM ${table}", params()))
+				.isInstanceOf(MetaSqlException.class)
+				.hasMessageContaining("INSERT/UPDATE");
+
+		assertThatThrownBy(() -> this.client.executeBySql("form_order",
+				"DELETE FROM ${table} WHERE id = #{id}", params("id", 1)))
+				.isInstanceOf(MetaSqlException.class)
+				.hasMessageContaining("physical deletes");
+
+		assertThatThrownBy(() -> this.client.registerStatement("form_order", "deleteRow",
+				StatementType.DELETE, "DELETE FROM ${table}"))
+				.isInstanceOf(MetaSqlException.class)
+				.hasMessageContaining("physical deletes");
+
+		assertThatThrownBy(() -> this.client.registerStatement("form_order", "bad id", "SELECT 1 FROM ${table}"))
+				.isInstanceOf(MetaSqlException.class)
+				.hasMessageContaining("invalid statement id");
+	}
+
+	@Test
+	void rawSqlInsertUpdateCountAndFindOne() {
+		int inserted = this.client.executeBySql("form_order",
+				"INSERT INTO ${table} (order_no, amount, status) VALUES (#{order_no}, #{amount}, #{status})",
+				params("order_no", "RW-1", "amount", "7.70", "status", 9));
+		assertThat(inserted).isEqualTo(1);
+
+		long counted = this.client.countBySql("form_order",
+				"SELECT COUNT(*) FROM ${table} WHERE status = #{status}", params("status", 9));
+		assertThat(counted).isEqualTo(1);
+
+		int updated = this.client.executeBySql("form_order",
+				"UPDATE ${table} SET amount = #{amount} WHERE order_no = #{order_no}",
+				params("amount", "9.90", "order_no", "RW-1"));
+		assertThat(updated).isEqualTo(1);
+
+		MetaClass row = this.client.findOneBySql("form_order",
+				"SELECT id, order_no, amount FROM ${table} WHERE order_no = #{order_no}",
+				params("order_no", "RW-1")).orElseThrow();
+		assertThat(row.getBigDecimal("amount")).isEqualByComparingTo("9.90");
+		assertThat(this.client.findOneBySql("form_order",
+				"SELECT id FROM ${table} WHERE order_no = #{order_no}", params("order_no", "NOPE"))).isEmpty();
+	}
+
+	@Test
+	void registeredStatementsWinOverFilesAndSurviveRefresh() {
+		this.client.save(row("form_order", "order_no", "RG-1", "amount", "30.00", "status", 1));
+		this.client.save(row("form_order", "order_no", "RG-2", "amount", "60.00", "status", 1));
+
+		this.client.registerStatement("form_order", "rawHot",
+				"SELECT id, order_no, amount FROM ${table} WHERE status = #{status} ORDER BY amount DESC");
+		MarkedSql preview = this.client.sqlFor("form_order", "rawHot", params("status", 1));
+		assertThat(preview.sql()).contains("ORDER BY amount DESC").doesNotContain("30.00");
+		assertThat(this.client.statementIds("form_order")).contains("rawHot");
+
+		this.client.refresh("form_order");
+		List<MetaClass> rows = this.client.selectList("form_order", "rawHot", params("status", 1));
+		assertThat(rows).hasSize(2);
+		assertThat(rows.get(0).getString("order_no")).isEqualTo("RG-2");
+
+		assertThat(this.client.unregisterStatement("form_order", "rawHot")).isTrue();
+		assertThat(this.client.statementIds("form_order")).doesNotContain("rawHot");
+		assertThatThrownBy(() -> this.client.selectList("form_order", "rawHot", params("status", 1)))
+				.isInstanceOf(MetaSqlException.class)
+				.hasMessageContaining("rawHot");
+	}
+
+	@Test
+	void tableAndEntityCachesClearIndependently() {
+		Class<? extends MetaClass> original = this.client.entityType("form_order");
+
+		this.client.clearTableCache("form_order");
+		Class<? extends MetaClass> afterTable = this.client.entityType("form_order");
+		assertThat(afterTable).isSameAs(original); // 只清结构快照，不动已编译的类
+
+		this.client.clearEntityCache("form_order");
+		Class<? extends MetaClass> afterEntity = this.client.entityType("form_order");
+		assertThat(afterEntity).isNotSameAs(afterTable);
+		assertThat(afterEntity.getSimpleName()).isEqualTo(afterTable.getSimpleName());
+
+		this.client.clearStatementCache("form_order");
+		assertThat(this.client.entityType("form_order")).isSameAs(afterEntity);
+
+		MetaClass saved = this.client.save(row("form_order", "order_no", "CC-1", "status", 1));
+		assertThat(saved.getClass()).isSameAs(afterEntity);
+	}
+
+	@Test
+	void reloadRebuildsImmediatelyAndFailsForDroppedTable() throws Exception {
+		Class<? extends MetaClass> before = this.client.entityType("form_order");
+		MetaClass rebuilt = this.client.reload("form_order");
+		assertThat(rebuilt.getClass()).isNotSameAs(before);
+		assertThat(rebuilt.getProperties().stream().map(MetaProperty::getName).toList())
+				.contains("order_no", "amount");
+		assertThat(this.client.entityType("form_order")).isSameAs(rebuilt.getClass());
+
+		try (Connection connection = this.dataSource.getConnection();
+				Statement statement = connection.createStatement()) {
+			statement.execute("DROP TABLE form_order");
+		}
+		assertThatThrownBy(() -> this.client.reload("form_order"))
+				.isInstanceOf(MetaSqlException.class)
+				.hasMessageContaining("table not found");
+	}
+
+	@Test
+	void cacheStatsReportsEveryBoundedLayer() {
+		this.client.entityType("form_order");
+		this.client.registerStatement("form_order", "rawStats", "SELECT id FROM ${table}");
+		Map<String, Object> stats = this.client.cacheStats();
+		assertThat(stats).containsEntry("pool", "test")
+				.containsKeys("tables", "entityModels", "statementTables", "registeredStatements", "compiledShapes",
+						"tableLimit", "entityLimit", "statementLimit", "planLimit");
+		assertThat(((Number) stats.get("tables")).longValue()).isGreaterThanOrEqualTo(1);
+		assertThat(((Number) stats.get("entityModels")).longValue()).isGreaterThanOrEqualTo(1);
+		assertThat(((Number) stats.get("registeredStatements")).longValue()).isGreaterThanOrEqualTo(1);
 	}
 
 	private static MetaTable tableWithColumns(String name, String... columnNames) {

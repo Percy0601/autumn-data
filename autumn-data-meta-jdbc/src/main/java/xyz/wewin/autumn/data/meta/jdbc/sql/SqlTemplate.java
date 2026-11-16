@@ -49,10 +49,30 @@ public final class SqlTemplate {
 	private final List<MapperDefinition.ResultMapping> resultMappings;
 
 	SqlTemplate(MapperDefinition.StatementDefinition statement) {
-		this.id = statement.id();
-		this.type = statement.type();
-		this.nodes = List.copyOf(statement.template());
-		this.resultMappings = List.copyOf(statement.resultMappings());
+		this(statement.id(), statement.type(), statement.template(), statement.resultMappings());
+	}
+
+	private SqlTemplate(String id, MapperDefinition.StatementType type, List<TemplateNode> nodes,
+			List<MapperDefinition.ResultMapping> resultMappings) {
+		this.id = id;
+		this.type = type;
+		this.nodes = List.copyOf(nodes);
+		this.resultMappings = resultMappings == null ? List.of() : List.copyOf(resultMappings);
+	}
+
+	/**
+	 * 手写 SQL 文本 → 模板：只认 {@code #{}} / {@code ${}} 占位，没有 XML 标签。
+	 *
+	 * <p>解析结果与 Mapper 文件里的 {@code <select>} 在运行期是<b>同一种东西</b>：同一个
+	 * {@link #render(Map)} 产出 {@link MarkedSql}，同一套 {@code MetaPlanCompiler} 编计划，
+	 * 所以手写 SQL 也能吃到绑定、类型收口与形状缓存，不需要第二个执行路径。</p>
+	 *
+	 * @param id     语句 id（用于错误信息；临时 SQL 用 {@code custom-sql} 即可）
+	 * @param type   语句类型；手写查询传 {@code SELECT}，写操作传 {@code INSERT} / {@code UPDATE}
+	 * @param sql    手写 SQL 文本
+	 */
+	public static SqlTemplate ofText(String id, MapperDefinition.StatementType type, String sql) {
+		return new SqlTemplate(id, type, SqlTextParser.parse(sql), List.of());
 	}
 
 	/** 语句 id，与 XML 里的 {@code id} 属性一致。 */

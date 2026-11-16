@@ -13,12 +13,14 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import xyz.wewin.autumn.data.common.dialect.Dialect;
 import xyz.wewin.autumn.data.common.mapper.MapperDefinition;
 import xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementDefinition;
+import xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementType;
 import xyz.wewin.autumn.data.common.mapper.MapperXmlParser;
 import xyz.wewin.autumn.data.common.meta.MetaProperty;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
@@ -50,6 +52,11 @@ import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCaches;
  *
  * <p>每张表一份 AST，同样走有界 LRU：触顶淘汰冷表，下次访问重新读已有的 XML 文件（文件归使用方所有，
  * 不会被重写），内存占用不随表数量线性增长。</p>
+ *
+ * <p><b>代码注册的手写语句</b>（{@link #register(String, String, StatementType, String)}）放在文件之上：
+ * 同一个 id 优先用注册的版本，文件里没有这张表也能跑。它们由代码持有，{@link #refresh(String)} /
+ * {@link #refreshAll()} 只丢文件解析缓存、不会顺手删掉；要撤销就显式 {@link #unregister}。
+ * 注册层自身也走有界 LRU，与「表是运行期产物」的定位一致。</p>
  */
 public final class MetaStatementStore {
 
@@ -58,6 +65,10 @@ public final class MetaStatementStore {
 	private static final String GENERATED_MARKER = "generated-by: autumn-data-meta-jdbc";
 
 	private static final String CLASSPATH_DIRECTORY = "meta-mappers/";
+
+	/** 语句 id 的允许写法：字母开头，字母/数字/下划线/点/横线。 */
+	private static final java.util.regex.Pattern STATEMENT_ID = java.util.regex.Pattern
+			.compile("[A-Za-z_][A-Za-z0-9_.-]*");
 
 	private final Path directory;
 
@@ -68,6 +79,9 @@ public final class MetaStatementStore {
 	private final Dialect dialect;
 
 	private final BoundedCache<String, Map<String, SqlTemplate>> cache;
+
+	/** 代码里注册的手写语句（表名 → id → 模板）；和文件缓存分开，refresh 不动它。 */
+	private final BoundedCache<String, Map<String, SqlTemplate>> declared;
 
 	public MetaStatementStore(Path directory, boolean generateFiles, Dialect dialect) {
 		this(directory, generateFiles, dialect, defaultClassLoader(), BoundedCache.DEFAULT_MAXIMUM_SIZE);
@@ -96,25 +110,115 @@ public final class MetaStatementStore {
 		this.dialect = dialect;
 		this.classLoader = classLoader == null ? defaultClassLoader() : classLoader;
 		this.cache = BoundedCaches.lru(maximumSize);
+		this.declared = BoundedCaches.lru(maximumSize);
 	}
 
-	/** 按语句 id 取模板；不存在时给出该文件里可用的 id。 */
+	/** 按语句 id 取模板：代码注册的优先，其次才是文件里的；不存在时给出该表可用的 id。 */
 	public SqlTemplate statement(MetaTable table, String statementId) {
-		Map<String, SqlTemplate> statements = statements(table);
+		SqlTemplate custom = declaredOrEmpty(table.name()).get(statementId);
+		if (custom != null) {
+			return custom;
+		}
+		Map<String, SqlTemplate> statements;
+		try {
+			statements = statements(table);
+		}
+		catch (MetaSqlException ex) {
+			// 文件缺失且不生成：只要代码里注册过语句，就按注册的 id 列表报错，而不是抛「文件找不到」
+			Set<String> available = new LinkedHashSet<>(declaredIds(table.name()));
+			if (available.isEmpty()) {
+				throw ex;
+			}
+			throw new MetaSqlException("table '" + table.name() + "' has no statement '" + statementId
+					+ "' (no mapper file, only code-registered statements); available from register: " + available,
+					ex);
+		}
 		SqlTemplate statement = statements.get(statementId);
 		if (statement == null) {
+			Set<String> available = new LinkedHashSet<>(declaredIds(table.name()));
+			available.addAll(statements.keySet());
 			throw new MetaSqlException("mapper file '" + fileName(table) + "' for table '" + table.name()
-					+ "' has no statement '" + statementId + "'; available: " + statements.keySet());
+					+ "' has no statement '" + statementId + "'; available: " + available);
 		}
 		return statement;
 	}
 
-	/** 该表可见的全部语句（首次访问时读盘或生成）。 */
+	/** 该表文件里的全部语句（首次访问时读盘或生成）；代码注册的不在这里。 */
 	public Map<String, SqlTemplate> statements(MetaTable table) {
 		return this.cache.get(normalize(table.name()), ignored -> load(table));
 	}
 
-	/** 丢掉某张表的 AST 缓存，下次访问重新读文件；不重写文件。 */
+	// ------------------------------------------------------------------
+	// 代码注册的手写语句
+	// ------------------------------------------------------------------
+
+	/**
+	 * 注册一条手写 SQL 作为该表的命名语句：之后 {@code sqlFor/selectList/selectOne/selectCount/execute}
+	 * 用同一个 id 即可，等价于在 Mapper 文件里写一条 {@code <select id="...">}，但不需要建文件。
+	 *
+	 * <p>同一 id 重复注册就是覆盖（幂等），因此配置变更或热更新代码后可以直接再注册一次。
+	 * {@code sql} 里的 {@code #{}} / {@code ${}} 与文件里的语义完全一致。</p>
+	 *
+	 * @param tableName  表名（只做缓存键，不要求此刻已存在：低代码平台的表可能稍后才建）
+	 * @param statementId 语句 id
+	 * @param type        语句类型；{@code DELETE} 会被拒绝（动态层不执行物理删除）
+	 * @param sql         手写 SQL 文本
+	 */
+	public SqlTemplate register(String tableName, String statementId, StatementType type, String sql) {
+		if (tableName == null || tableName.isBlank()) {
+			throw new MetaSqlException("table name must not be blank");
+		}
+		if (statementId == null || !STATEMENT_ID.matcher(statementId).matches()) {
+			throw new MetaSqlException("invalid statement id '" + statementId
+					+ "'; use letters/digits/underscore/dot/dash and start with a letter or underscore");
+		}
+		if (type == null) {
+			throw new MetaSqlException("statement type must not be null");
+		}
+		if (type == StatementType.DELETE) {
+			throw new MetaSqlException("the dynamic layer does not run physical deletes; "
+					+ "register a <select>/<insert>/<update> instead");
+		}
+		SqlTemplate template = SqlTemplate.ofText(statementId, type, sql);
+		declared(tableName).put(statementId, template);
+		return template;
+	}
+
+	/** 撤销一条代码注册的语句；返回 false 表示本来就没有。 */
+	public boolean unregister(String tableName, String statementId) {
+		Map<String, SqlTemplate> statements = this.declared.getIfPresent(normalize(tableName));
+		return statements != null && statements.remove(statementId) != null;
+	}
+
+	/** 该表代码注册的语句 id（只读快照，诊断用；不会因为查询而给该表建一个空条目）。 */
+	public List<String> declaredIds(String tableName) {
+		return List.copyOf(declaredOrEmpty(tableName).keySet());
+	}
+
+	/** 该表全部可见的语句 id：代码注册的在前，文件里的在后（文件缺失时只有注册的）。 */
+	public List<String> statementIds(MetaTable table) {
+		Set<String> ids = new LinkedHashSet<>(declaredIds(table.name()));
+		try {
+			ids.addAll(statements(table).keySet());
+		}
+		catch (MetaSqlException ex) {
+			// 文件缺失且不生成：这只是诊断接口，不应因为「还没建文件」而失败
+			LOG.log(Level.FINE, "no mapper file for table ''{0}'': {1}", new Object[] { table.name(),
+					ex.getMessage() });
+		}
+		return List.copyOf(ids);
+	}
+
+	/** 已注册语句的条数（跨表求和，诊断用）。 */
+	public long declaredCount() {
+		long count = 0;
+		for (Map<String, SqlTemplate> statements : this.declared.asMap().values()) {
+			count += statements.size();
+		}
+		return count;
+	}
+
+	/** 丢掉某张表的 AST 缓存，下次访问重新读文件；不重写文件，也不动代码注册的语句。 */
 	public void refresh(String tableName) {
 		this.cache.invalidate(normalize(tableName));
 	}
@@ -131,6 +235,17 @@ public final class MetaStatementStore {
 	/** 缓存上限（诊断用）。 */
 	public int maximumSize() {
 		return this.cache.maximumSize();
+	}
+
+	/** 代码注册层的可写视图：并发注册/撤销与查询共用同一张表级映射。 */
+	private Map<String, SqlTemplate> declared(String tableName) {
+		return this.declared.get(normalize(tableName), ignored -> new ConcurrentHashMap<>());
+	}
+
+	/** 只读视图：没注册过的表不建空条目，避免诊断时把「查过语句」当成「注册过语句」。 */
+	private Map<String, SqlTemplate> declaredOrEmpty(String tableName) {
+		Map<String, SqlTemplate> statements = this.declared.getIfPresent(normalize(tableName));
+		return statements == null ? Map.of() : statements;
 	}
 
 	private Map<String, SqlTemplate> load(MetaTable table) {

@@ -11,6 +11,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -118,6 +119,13 @@ public final class MetaTableRegistry {
 	/** 已缓存的表数（元数据快照 + 手工覆盖，诊断用）。 */
 	public long size() {
 		return this.cache.estimatedSize() + this.overrides.estimatedSize();
+	}
+
+	/** 当前有快照的表名（诊断 / {@code reloadAll} 用；手工登记覆盖也算，可能大小写不统一）。 */
+	public List<String> tableNames() {
+		Set<String> names = new LinkedHashSet<>(this.cache.asMap().keySet());
+		names.addAll(this.overrides.asMap().keySet());
+		return List.copyOf(names);
 	}
 
 	/** 缓存上限（诊断用）。 */

@@ -51,10 +51,13 @@ import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
  *
  * <p>推荐调用顺序：{@code POST /metadata/init} → {@code GET /metadata/schema} →
  * {@code POST /metadata/rows} → {@code GET /metadata/rows} → {@code POST /metadata/column} →
- * {@code GET /metadata/statements} → {@code GET /metadata/safety} → {@code DELETE /metadata/drop}。</p>
+ * {@code GET /metadata/statements} → {@code GET /metadata/query/sql} →
+ * {@code POST /metadata/statements/custom} → {@code GET /metadata/cache} →
+ * {@code GET /metadata/safety} → {@code DELETE /metadata/drop}。</p>
  *
  * <p>覆盖的能力：运行期建表不重启即 CRUD、按表结构运行期生成强类型实体（entityClass）、
  * 加列后 refresh 换实体类、MetaQuery 运算符开集与分页、命名语句 Mapper XML 的读/写、
+ * 手写 SQL（不落文件即查即写）与代码注册语句、表结构 / 实体类 / 语句三级缓存的分开清理与重载、
  * 逻辑删除自动过滤、列名与标识符白名单（防注入）、按池绑定的客户端与缓存诊断。</p>
  *
  * <p>启动：{@code mvn spring-boot:run -Dspring-boot.run.profiles=demo}（连本地 H2）。
@@ -386,6 +389,126 @@ public class MetaDataController {
 				"entityClass", MetaMapper.entityType(TABLE).getName());
 	}
 
+	// ==================================================================
+	// 四、手写 SQL / 代码注册语句 / 缓存分级清理
+	// ==================================================================
+
+	/**
+	 * 手写 SQL：不建 Mapper 文件、不注册，直接把一段 SQL 交给 MetaMapper 执行。
+	 *
+	 * <p>{@code #{}} 走绑定、{@code ${table}} 由方言填表名；返回里 {@code valueInSqlText=false}
+	 * 说明参数确实没进 SQL 文本。分页可以给 countSql，也可以留空自动包子查询计数。</p>
+	 */
+	@GetMapping("/query/sql")
+	public Map<String, Object> rawSqlQuery(@RequestParam(defaultValue = "1") int status,
+			@RequestParam(defaultValue = "50") BigDecimal minAmount,
+			@RequestParam(defaultValue = "0") int page,
+			@RequestParam(defaultValue = "5") int size) {
+		requireInitialized();
+		if (page < 0 || size < 1 || size > 50) {
+			throw new IllegalArgumentException("page must be >= 0 and size between 1 and 50");
+		}
+		String sql = "SELECT id, form_no, title, amount, status FROM ${table} "
+				+ "WHERE status = #{status} AND amount >= #{minAmount} ORDER BY amount DESC";
+		String countSql = "SELECT COUNT(*) FROM ${table} WHERE status = #{status} AND amount >= #{minAmount}";
+		MetaClass query = params("status", status, "minAmount", minAmount);
+
+		MarkedSql preview = MetaMapper.sqlForText(TABLE, sql, query);
+		List<MetaClass> rows = MetaMapper.findListBySql(TABLE, sql, query, 50);
+		long total = MetaMapper.countBySql(TABLE, countSql, query);
+		Page<MetaClass> firstPage = MetaMapper.findPageBySql(TABLE, sql, countSql, query, Pageable.of(page, size));
+		Page<MetaClass> derivedPage = MetaMapper.findPageBySql(TABLE, sql, null, query, Pageable.of(page, size));
+
+		String formNo = "RAW-" + System.nanoTime();
+		MetaClass insertParams = params("form_no", formNo, "title", "手写 SQL 插入", "amount", "9.90", "status", 3);
+		int inserted = MetaMapper.executeBySql(TABLE,
+				"INSERT INTO ${table} (form_no, title, amount, status, create_time) "
+						+ "VALUES (#{form_no}, #{title}, #{amount}, #{status}, #{create_time})",
+				insertParams);
+		int updated = MetaMapper.executeBySql(TABLE,
+				"UPDATE ${table} SET remark = #{remark} WHERE form_no = #{formNo}",
+				params("remark", "手写 SQL 改的", "formNo", formNo));
+		MetaClass reread = MetaMapper.findOneBySql(TABLE,
+				"SELECT id, form_no, remark FROM ${table} WHERE form_no = #{formNo}", params("formNo", formNo))
+				.orElseThrow();
+
+		return linked("sql", preview.sql(), "boundValues", preview.values(),
+				"payloadInSqlText", preview.sql().contains(String.valueOf(minAmount)),
+				"rows", maps(rows), "countBySql", total,
+				"pageTotal", firstPage.total(), "pageRows", maps(firstPage.content()),
+				"derivedCountPageTotal", derivedPage.total(),
+				"insertedParams", insertParams, "insertedRows", inserted, "updatedRows", updated,
+				"rereadRemark", reread.getString("remark"));
+	}
+
+	/**
+	 * 代码注册语句：同一段手写 SQL 注册成命名语句后，{@code selectList/selectOne/sqlFor} 按 id 复用；
+	 * 注册不要求表此刻存在，{@code refresh} 不会撤销，只有 {@code unregisterStatement} 才会。
+	 */
+	@PostMapping("/statements/custom")
+	public Map<String, Object> customStatement(@RequestParam(defaultValue = "1") int status) {
+		requireInitialized();
+		MetaMapperClient client = MetaMapper.defaultClient();
+		String id = "customHotRows";
+		MetaMapper.registerStatement(TABLE, id,
+				"SELECT id, form_no, amount, status FROM ${table} WHERE status = #{status} ORDER BY amount DESC");
+		MetaClass query = params("status", status);
+		MarkedSql preview = client.sqlFor(TABLE, id, query);
+		List<MetaClass> rows = client.selectList(TABLE, id, query);
+		List<String> idsWithCustom = client.statementIds(TABLE);
+		MetaClass first = client.selectOne(TABLE, id, query).orElse(null);
+		boolean removed = MetaMapper.unregisterStatement(TABLE, id);
+		List<String> idsAfterRemove = client.statementIds(TABLE);
+		return linked("statementId", id, "sql", preview.sql(), "boundValues", preview.values(),
+				"matchedRows", maps(rows), "firstRow", first == null ? null : rowMap(first),
+				"idsWithCustom", idsWithCustom, "unregistered", removed, "idsAfterRemove", idsAfterRemove);
+	}
+
+	/** 各级缓存条目与上限：表结构、实体类、语句、执行计划、代码注册语句分别有界。 */
+	@GetMapping("/cache")
+	public Map<String, Object> cache() {
+		requireInitialized();
+		return linked("stats", MetaMapper.cacheStats(), "entityClass", MetaMapper.entityType(TABLE).getName());
+	}
+
+	/**
+	 * 分级清理：{@code scope=table} 只丢表结构快照、{@code entity} 只丢编译出来的实体类、
+	 * {@code statement} 只丢语句与执行计划、{@code all} 四件套一起丢。
+	 *
+	 * <p>{@code entityClassReused=true} 说明这次清理没有连带换类，正好验证两套缓存是分开的。</p>
+	 */
+	@PostMapping("/cache/clear")
+	public Map<String, Object> clearCache(@RequestParam(defaultValue = "table") String scope) {
+		requireInitialized();
+		Class<? extends MetaClass> before = MetaMapper.entityType(TABLE);
+		switch (scope) {
+			case "table" -> MetaMapper.clearTableCache(TABLE);
+			case "entity" -> MetaMapper.clearEntityCache(TABLE);
+			case "statement" -> MetaMapper.clearStatementCache(TABLE);
+			case "all" -> MetaMapper.clearCache(TABLE);
+			default -> throw new IllegalArgumentException(
+					"scope must be table | entity | statement | all, got: " + scope);
+		}
+		Class<? extends MetaClass> after = MetaMapper.entityType(TABLE);
+		return linked("scope", scope, "entityClass", after.getName(), "entityClassReused", before == after,
+				"columnCount", MetaMapper.newEntity(TABLE).getProperties().size(),
+				"stats", MetaMapper.cacheStats());
+	}
+
+	/**
+	 * 重新加载：清缓存 + 当场回读元数据 + 当场重编实体类，而不是等下一次查询才懒加载。
+	 * 表已被删掉时这里就会直接报错，不会留到业务请求才炸。
+	 */
+	@PostMapping("/reload")
+	public Map<String, Object> reload() {
+		requireInitialized();
+		Class<? extends MetaClass> before = MetaMapper.entityType(TABLE);
+		MetaClass rebuilt = MetaMapper.reload(TABLE);
+		return linked("table", TABLE, "columns", rebuilt.getProperties().stream().map(MetaProperty::getName).toList(),
+				"entityClass", rebuilt.getClass().getName(), "entityClassReused", before == rebuilt.getClass(),
+				"stats", MetaMapper.cacheStats());
+	}
+
 	/** 概览 + 端点索引，方便直接照着敲 URL 手工验证。 */
 	@GetMapping("/summary")
 	public Map<String, Object> summary() {
@@ -405,7 +528,10 @@ public class MetaDataController {
 				"POST /metadata/rows?count=2", "GET /metadata/rows?status=1&minAmount=50&page=0&size=5",
 				"GET /metadata/rows/1", "PUT /metadata/rows/1?remark=加急&status=2",
 				"POST /metadata/rows/1/void", "GET /metadata/query/operators",
-				"GET /metadata/statements", "GET /metadata/safety", "GET /metadata/engine"));
+				"GET /metadata/statements", "GET /metadata/query/sql?status=1&minAmount=50&page=0&size=5",
+				"POST /metadata/statements/custom?status=1", "GET /metadata/cache",
+				"POST /metadata/cache/clear?scope=table", "POST /metadata/reload",
+				"GET /metadata/safety", "GET /metadata/engine"));
 		return out;
 	}
 

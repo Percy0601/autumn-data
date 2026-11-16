@@ -212,6 +212,35 @@ client.selectOne("form_order", "byOrderNo", params);
 client.selectCount("form_order", "countDraft", params);
 client.execute("form_order", "voidByNo", params);
 MarkedSql sql = client.sqlFor("form_order", "selectList", params);        // 只看文本与绑定值，不执行
+
+// 手写 SQL：不建文件、不注册，即查即写（#{...} 绑定、${table} 由方言填表名）
+MetaClass q = new MetaClass();
+q.set("status", 1);
+q.set("minAmount", new BigDecimal("50"));
+List<MetaClass> rows = MetaMapper.findListBySql("form_order",
+        "SELECT id, order_no, amount FROM ${table} "
+        + "WHERE status = #{status} AND amount >= #{minAmount} ORDER BY amount DESC", q);
+Page<MetaClass> page = MetaMapper.findPageBySql("form_order",
+        "SELECT id, order_no, amount FROM ${table} WHERE status = #{status}", null, q, Pageable.of(0, 20));
+long total = MetaMapper.countBySql("form_order",
+        "SELECT COUNT(*) FROM ${table} WHERE status = #{status}", q);
+int updated = MetaMapper.executeBySql("form_order",
+        "UPDATE ${table} SET remark = #{remark} WHERE id = #{id}", q);
+MarkedSql preview = MetaMapper.sqlForText("form_order", "SELECT * FROM ${table} WHERE id = #{id}", q);
+
+// 也可以把手写 SQL 注册成命名语句，之后按 id 复用（同 id 覆盖，refresh 不撤销）
+client.registerStatement("form_order", "hotOrders",
+        "SELECT id, order_no, amount FROM ${table} WHERE status = #{status} ORDER BY amount DESC");
+client.selectList("form_order", "hotOrders", params);
+client.unregisterStatement("form_order", "hotOrders");
+
+// 缓存分级清理与重新加载
+MetaMapper.clearTableCache("form_order");       // 只丢 MetaTable 快照，下次访问回源 DatabaseMetaData
+MetaMapper.clearEntityCache("form_order");      // 只丢编译出来的 MetaClass 子类，下次重新生成 + 编译
+MetaMapper.clearStatementCache("form_order");   // 只丢语句 AST 与执行计划
+MetaMapper.clearCache("form_order");            // 三样一起清（= 老 refresh 的语义）
+MetaClass rebuilt = MetaMapper.reload("form_order");  // 清缓存 + 立即回读 + 立即重编（失败当场暴露）
+MetaMapper.cacheStats();                        // 各级条目数与上限，运维巡检用
 ```
 
 列以外的东西（`<if test>` 的开关、`<foreach>` 的集合、`${orderBy}` 的排序字段）照样写在同一个参数实体上：
@@ -226,8 +255,21 @@ MarkedSql sql = client.sqlFor("form_order", "selectList", params);        // 只
 - 首次访问某张表时从 `DatabaseMetaData` 读取列、主键、自增、可空、默认值，直接构造
   `MetaClass`（`name` = 表名、`namespace` = schema、`metaType = ENTITY`、`properties` = 列）；
 - `MetaTable` 不可变，缓存键大小写不敏感；
-- 建表/加列/删列**提交后**调 `client.refresh(table)` 或 `MetaMapper.refresh(table)`：
-  元数据快照、该表已编译的实体类、Mapper 文件 AST 缓存一起换新；
+- 缓存是**分级的**，改完表之后按需要清哪一层就清哪一层，不必每次都把实体类换掉：
+
+| 入口 | 清掉什么 | 何时用 |
+| --- | --- | --- |
+| `clearTableCache(table)` | 只清 `MetaTable` 快照（含手工覆盖），下次访问回源 `DatabaseMetaData` | 怀疑结构读错了 / 表刚被重建，但不想让所有行换 Class |
+| `clearEntityCache(table)` | 只清该表编译出的 `MetaClass` 子类，下次访问重新生成 + 编译 | 换了代码生成器 / 想强制重编一次 |
+| `clearStatementCache(table)` | 只清 Mapper 语句 AST 与执行计划 | 改了 Mapper 文件、想丢掉旧 AST；不动结构与实体类 |
+| `clearCache(table)` | 以上三样一起清（`refresh(table)` 是它的别名） | 建表 / 加列 / 删列提交之后的标准动作 |
+| `reload(table)` | 先清三样，再**立即**回读元数据并重编实体类 | 需要“现在就成功”：表被删、元数据读失败、javac 编译失败会当场抛出，而不是等下一次查询 |
+| `reloadAll()` | 当前池里已有快照的表逐张 `reload` | 批量改表之后的一次性重建 |
+| `cacheStats()` | —（只读诊断） | 打印各级条目数与上限 |
+
+`MetaMapper` 静态门面提供同名方法（默认池）；`MetaMapper.clearAllCaches()` 走引擎、清掉所有已实例化池的缓存。
+代码里 `registerStatement` 注册的语句由代码持有，以上任何清理（包括 `refresh`）都不会撤销它们。
+
 - 旧快照与旧生成类上正在执行的语句不受刷新影响，刷新只影响下一次解析。
 
 ## 有界缓存（表数量无上限）
@@ -239,7 +281,8 @@ MarkedSql sql = client.sqlFor("form_order", "selectList", params);        // 只
 | `MetaTableRegistry.cache` | 表名（大小写不敏感） | 一份不可变列快照 | 重读一次 `DatabaseMetaData` |
 | `MetaTableRegistry.overrides` | 表名 | 使用方手工登记的结构覆盖 | 回源到 `DatabaseMetaData`；需长期保真就调大上限或重新 `register` |
 | `MetaEntityRegistry` | 表名 + 结构指纹 | 一个编译出的 `Class` + 内存 ClassLoader | 重新生成/编译一份同类名的类（新 ClassLoader） |
-| `MetaStatementStore` | 表名 | 一棵 Mapper XML AST | 重读已有的 XML 文件（**不会重写**） |
+| `MetaStatementStore.cache` | 表名 | 一棵 Mapper XML AST | 重读已有的 XML 文件（**不会重写**） |
+| `MetaStatementStore.declared` | 表名 → 语句 id | 一条代码注册的手写语句 AST | 丢失后需代码重新 `registerStatement`（不落盘、无文件可回源） |
 | `MetaMapperEngine.clients` | 池名 | 一套 Registry + 连接源 | 按需重建 client（旧 client 上执行中的操作持有引用，不受影响） |
 
 其中实体类缓存最重，只堵表结构快照没有意义。以上统一走 `BoundedCache`，默认上限
@@ -290,12 +333,47 @@ autumn.data.meta.mapper.table-cache-size=10000
 
 `client.refresh(table)` 与“重写用户文件”是两件事，故意不联动——否则用户改过的语句会被表结构冲掉。
 
+### 手写 SQL（不落文件）
+
+低代码平台里很多查询是一次性的（设计器里临时拼条件、报表按客户要求改一版），为它们各建一个
+XML 文件并不划算。`MetaMapper` 因此补了一条「直接给一段 SQL」的入口：**解析、绑定、类型收口、
+计划缓存与文件里的 `<select>` 完全共用一套**，只是没有 XML 标签。
+
+```java
+// 一次性：不建文件、不注册
+MetaMapper.findListBySql("form_order",
+        "SELECT id, order_no, amount FROM ${table} WHERE status = #{status}", params);
+MetaMapper.findPageBySql("form_order",
+        "SELECT id, order_no, amount FROM ${table} WHERE status = #{status}", null, params, Pageable.of(0, 20));
+MetaMapper.countBySql("form_order", "SELECT COUNT(*) FROM ${table} WHERE status = #{status}", params);
+MetaMapper.executeBySql("form_order", "UPDATE ${table} SET status = #{status} WHERE id = #{id}", params);
+
+// 命名：注册后可以按 id 复用，也可以被 selectList/selectOne/sqlFor 看到
+client.registerStatement("form_order", "hotOrders",
+        "SELECT id, order_no, amount FROM ${table} WHERE status = #{status} ORDER BY amount DESC");
+```
+
+语义与坑位：
+
+- `#{name}` → JDBC `?`（值永不进 SQL 文本）；`${name}` → 标识符片段，展开结果仍过白名单，
+  `${table}` 由客户端按方言填成 `"form_order"`；
+- **不接受裸 `?`**：没有名字的槽判不了列类型、进不了计划缓存，解析阶段就直接报错并提示改
+  `#{name}`（而不是等驱动报「占位符个数对不上」）；
+- 注释（`--` / `/* */`）与单引号字面量里的 `#{...}` 不当占位符；
+- 开头关键字决定入口：查询入口只收 `SELECT` / `WITH`，写入口只收 `INSERT` / `UPDATE`，
+  `DELETE` 一律拒绝（动态层不做物理删除）；
+- 分页时 `countSql` 留空会自动包成 `SELECT COUNT(*) FROM (原查询) autumn_page_count`；
+  内容与计数各自按自己的占位符顺序绑定，所以 `countSql` 不必与内容查询参数顺序一致；
+- 注册语句由代码持有，`refresh` / `clearCache` 不会撤销；同 id 重复注册即覆盖；
+  注册本身不要求表已存在（表可能是稍后才被设计出来的）。
+
 ### 谁读文件、谁不读
 
 | 入口 | SQL 来源 | 说明 |
 | --- | --- | --- |
 | `findById` / `findByKey` / `findList` / `findPage` / `count` / `save` / `saveAll` / `update` … | `MetaSqlBuilder` 现拼 | 条件运算符是开集（`>` / `LIKE` / `IN` / `BETWEEN` / 排序…），固定文件表达不了，因此这条路**完全不读文件** |
-| `sqlFor` / `selectList` / `selectOne` / `selectCount` / `execute` | Mapper 文件的命名语句 | 语句 id 就是 XML 里的 `id`；`<select>` 走查询，`<insert>`/`<update>` 走 `execute`，`<delete>` 拒绝执行 |
+| `sqlFor` / `selectList` / `selectOne` / `selectCount` / `execute` | 代码注册的语句优先，其次 Mapper 文件 | 语句 id 就是注册时的 id / XML 里的 `id`；`<select>` 走查询，`<insert>`/`<update>` 走 `execute`，`<delete>` 拒绝执行 |
+| `findListBySql` / `findOneBySql` / `findPageBySql` / `countBySql` / `executeBySql` / `sqlForText` | 调用方当场给的文本 | 不读文件、不注册；`#{...}` / `${...}` 语义与文件一致 |
 
 生成的文件本身就是一份可跑的样例语句（`selectList` / `selectCount` / `insert` / `updateByKey`），
 逐列展开成 `<if>`；投影、排序、运算符想改就直接改这份文件。下面是生成内容的节选：
@@ -507,14 +585,18 @@ ThreadLocal 最多作为“请求级默认池”的便利糖，不能作为唯�
   内存 javac + 结果集映射）、`sql`（`MetaSqlBuilder` 现拼、`MetaStatementStore` + `SqlTemplate` 解释文件、
   `MarkedSql` → `MetaPlanCompiler` → `MetaSqlPlan` 三段与 `MetaPlanCache`）、`support`（有界缓存与目录）。
   方言与编译期生成器共用 `autumn-data-common` 的 `TemplateParser` / `TemplateNode`，本层只解释执行。
-- 用例（共 57 个）：`engine/MetaMapperDynamicTest` 35 个（建表 → 不重启 CRUD → 加列 refresh → 逻辑删除 →
+- 用例（共 76 个）：`engine/MetaMapperDynamicTest` 47 个（建表 → 不重启 CRUD → 加列 refresh → 逻辑删除 →
   复合主键 → Mapper 文件生成一次/改表不重写 → 手工文件优先 → 名字忽略大小写对齐 → 空值判断方法 →
   `#{}` 绑定与注入拒绝 → `${}` 白名单 → `<foreach>` / `<trim>` / `<delete>` 拒绝，以及生成类的真实字段类型 /
   零反射源码 / 加列后生成新类 / 源码落盘 / 投影缺列 / 各缓存淘汰后可重建 / 手工登记也参与淘汰后回源 /
   池 client 淘汰重建 / 内存编译无临时目录 / 默认上限 10000 / 列名撞基类契约 / 关键字与中文列名 /
-  并发单飞 / 连续改表）；`sql/MetaSqlPlanTest` 6 个（形状与数据分离、槽位类型、写过的列决定 INSERT 形状、
-  字面量问号不算槽）；`entity/MetaEntityCompilerTest` 1 个（`jar:` CodeSource 兜底）；
+  并发单飞 / 连续改表，以及**手写 SQL 的绑定与 `${table}` 展开、分页（显式/自动计数）、裸 `?` 与物理删除拒绝、
+  注册语句跨 refresh 复用与撤销、表/实体/语句三级缓存分开清理、`reload` 立即重建与表已删报错、`cacheStats`**）；
+  `sql/MetaSqlPlanTest` 6 个（形状与数据分离、槽位类型、写过的列决定 INSERT 形状、字面量问号不算槽）；
+  `entity/MetaEntityCompilerTest` 1 个（`jar:` CodeSource 兜底）；
   `support/BoundedCacheTest` 15 个（LRU 顺序、上限、并发单飞、加载在锁外、失败不缓存、失效语义、
-  `asMap` 只读快照、refresh 与在途加载竞态、并发读写不越界）。
+  `asMap` 只读快照、refresh 与在途加载竞态、并发读写不越界）；另有 `engine/MetaEntityGenericModeTest` 1 个
+  （GENERIC 实体）、`engine/MetaMapperDialectTest` 2 个（方言差异）、`entity/MetaEntityStrategyTest` 4 个
+  （CODE / GENERIC 两档策略）。
   starter 装配 2 个；using 模块端到端 1 个 + 上层用法示例 5 个。
 - 全 reactor：`mvn -B test`，starter / using / compiler / common 全绿。
