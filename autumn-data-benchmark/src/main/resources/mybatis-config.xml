@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE configuration PUBLIC "-//mybatis.org//DTD Config 3.0//EN" "https://mybatis.org/dtd/mybatis-3-config.dtd">
+<configuration>
+	<!-- 贴近生产默认：不做二级缓存，一级缓存按语句失效；其余保持 MyBatis 出厂设置 -->
+	<settings>
+		<setting name="cacheEnabled" value="false"/>
+		<setting name="localCacheScope" value="STATEMENT"/>
+		<setting name="mapUnderscoreToCamelCase" value="true"/>
+	</settings>
+	<environments default="bench">
+		<environment id="bench">
+			<transactionManager type="JDBC"/>
+			<!-- 共用 BenchDatabase 的那一个 HikariCP 池，避免连接建立成本只压在 MyBatis 一侧 -->
+			<dataSource type="xyz.wewin.autumn.data.bench.HikariBenchDataSourceFactory"/>
+		</environment>
+	</environments>
+	<mappers>
+		<mapper resource="mapper/BenchMapper.xml"/>
+	</mappers>
+</configuration>

@@ -1,0 +1,1583 @@
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.InsertBenchmark.insert
+# Parameters: (impl = jdbc)
+
+# Run progress: 0.00% complete, ETA 00:09:32
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@1082633b]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@7a5760d8]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@1082633b]
+# Warmup Iteration   1: 8.901 us/op
+# Warmup Iteration   2: 5.324 us/op
+# Warmup Iteration   3: 4.612 us/op
+# Warmup Iteration   4: 4.314 us/op
+# Warmup Iteration   5: 4.443 us/op
+Iteration   1: 4.529 us/op
+Iteration   2: 4.237 us/op
+Iteration   3: 4.433 us/op
+Iteration   4: 4.427 us/op
+Iteration   5: 4.232 us/op
+Iteration   6: 4.240 us/op
+Iteration   7: 4.128 us/op
+Iteration   8: 4.355 us/op
+
+# Run progress: 2.27% complete, ETA 00:10:07
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@7910dfb1]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@5675cd8f]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@7910dfb1]
+# Warmup Iteration   1: 9.325 us/op
+# Warmup Iteration   2: 5.405 us/op
+# Warmup Iteration   3: 4.705 us/op
+# Warmup Iteration   4: 4.646 us/op
+# Warmup Iteration   5: 4.914 us/op
+Iteration   1: 5.048 us/op
+Iteration   2: 4.393 us/op
+Iteration   3: 4.300 us/op
+Iteration   4: 4.431 us/op
+Iteration   5: 4.593 us/op
+Iteration   6: 4.329 us/op
+Iteration   7: 4.372 us/op
+Iteration   8: 4.337 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.InsertBenchmark.insert":
+  4.399 ±(99.9%) 0.212 us/op [Average]
+  (min, avg, max) = (4.128, 4.399, 5.048), stdev = 0.209
+  CI (99.9%): [4.187, 4.611] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.InsertBenchmark.insert
+# Parameters: (impl = mybatis-per-call)
+
+# Run progress: 4.55% complete, ETA 00:09:50
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@7910dfb1]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@5675cd8f]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@7910dfb1]
+# Warmup Iteration   1: 49.174 us/op
+# Warmup Iteration   2: 10.791 us/op
+# Warmup Iteration   3: 10.316 us/op
+# Warmup Iteration   4: 7.505 us/op
+# Warmup Iteration   5: 7.151 us/op
+Iteration   1: 5.588 us/op
+Iteration   2: 5.228 us/op
+Iteration   3: 5.003 us/op
+Iteration   4: 4.928 us/op
+Iteration   5: 4.925 us/op
+Iteration   6: 4.881 us/op
+Iteration   7: 5.001 us/op
+Iteration   8: 4.835 us/op
+
+# Run progress: 6.82% complete, ETA 00:09:44
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@1082633b]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@7a5760d8]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@1082633b]
+# Warmup Iteration   1: 15.743 us/op
+# Warmup Iteration   2: 5.729 us/op
+# Warmup Iteration   3: 5.135 us/op
+# Warmup Iteration   4: 5.010 us/op
+# Warmup Iteration   5: 4.916 us/op
+Iteration   1: 4.863 us/op
+Iteration   2: 4.969 us/op
+Iteration   3: 5.233 us/op
+Iteration   4: 4.982 us/op
+Iteration   5: 4.955 us/op
+Iteration   6: 4.907 us/op
+Iteration   7: 4.986 us/op
+Iteration   8: 4.977 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.InsertBenchmark.insert":
+  5.016 ±(99.9%) 0.192 us/op [Average]
+  (min, avg, max) = (4.835, 5.016, 5.588), stdev = 0.188
+  CI (99.9%): [4.825, 5.208] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.InsertBenchmark.insert
+# Parameters: (impl = mybatis-shared)
+
+# Run progress: 9.09% complete, ETA 00:09:25
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@1082633b]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@7a5760d8]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@1082633b]
+# Warmup Iteration   1: 13.569 us/op
+# Warmup Iteration   2: 5.168 us/op
+# Warmup Iteration   3: 4.437 us/op
+# Warmup Iteration   4: 4.387 us/op
+# Warmup Iteration   5: 4.464 us/op
+Iteration   1: 4.323 us/op
+Iteration   2: 4.377 us/op
+Iteration   3: 4.499 us/op
+Iteration   4: 4.992 us/op
+Iteration   5: 4.748 us/op
+Iteration   6: 4.604 us/op
+Iteration   7: 4.595 us/op
+Iteration   8: 4.654 us/op
+
+# Run progress: 11.36% complete, ETA 00:09:09
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@1082633b]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@7a5760d8]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@1082633b]
+# Warmup Iteration   1: 17.141 us/op
+# Warmup Iteration   2: 5.765 us/op
+# Warmup Iteration   3: 5.080 us/op
+# Warmup Iteration   4: 4.578 us/op
+# Warmup Iteration   5: 4.530 us/op
+Iteration   1: 4.449 us/op
+Iteration   2: 4.475 us/op
+Iteration   3: 4.534 us/op
+Iteration   4: 4.731 us/op
+Iteration   5: 4.567 us/op
+Iteration   6: 4.867 us/op
+Iteration   7: 4.665 us/op
+Iteration   8: 4.468 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.InsertBenchmark.insert":
+  4.597 ±(99.9%) 0.180 us/op [Average]
+  (min, avg, max) = (4.323, 4.597, 4.992), stdev = 0.177
+  CI (99.9%): [4.417, 4.777] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.InsertBenchmark.insert
+# Parameters: (impl = meta-code)
+
+# Run progress: 13.64% complete, ETA 00:08:54
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@1082633b]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@7a5760d8]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@1082633b]
+# Warmup Iteration   1: 16.936 us/op
+# Warmup Iteration   2: 6.555 us/op
+# Warmup Iteration   3: 6.153 us/op
+# Warmup Iteration   4: 5.684 us/op
+# Warmup Iteration   5: 5.488 us/op
+Iteration   1: 5.670 us/op
+Iteration   2: 5.566 us/op
+Iteration   3: 5.555 us/op
+Iteration   4: 5.496 us/op
+Iteration   5: 5.526 us/op
+Iteration   6: 5.570 us/op
+Iteration   7: 5.704 us/op
+Iteration   8: 5.543 us/op
+
+# Run progress: 15.91% complete, ETA 00:08:44
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@1082633b]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@7a5760d8]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@1082633b]
+# Warmup Iteration   1: 17.816 us/op
+# Warmup Iteration   2: 6.473 us/op
+# Warmup Iteration   3: 5.957 us/op
+# Warmup Iteration   4: 5.741 us/op
+# Warmup Iteration   5: 5.929 us/op
+Iteration   1: 5.825 us/op
+Iteration   2: 5.841 us/op
+Iteration   3: 5.665 us/op
+Iteration   4: 5.870 us/op
+Iteration   5: 6.188 us/op
+Iteration   6: 8.392 us/op
+Iteration   7: 9.566 us/op
+Iteration   8: 9.349 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.InsertBenchmark.insert":
+  6.333 ±(99.9%) 1.429 us/op [Average]
+  (min, avg, max) = (5.496, 6.333, 9.566), stdev = 1.404
+  CI (99.9%): [4.904, 7.762] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.InsertBenchmark.insert
+# Parameters: (impl = meta-generic)
+
+# Run progress: 18.18% complete, ETA 00:08:33
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@7910dfb1]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@5675cd8f]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@7910dfb1]
+# Warmup Iteration   1: 14.234 us/op
+# Warmup Iteration   2: 6.045 us/op
+# Warmup Iteration   3: 7.621 us/op
+# Warmup Iteration   4: 8.351 us/op
+# Warmup Iteration   5: 7.936 us/op
+Iteration   1: 9.046 us/op
+Iteration   2: 7.599 us/op
+Iteration   3: 8.782 us/op
+Iteration   4: 14.061 us/op
+Iteration   5: 13.042 us/op
+Iteration   6: 8.541 us/op
+Iteration   7: 8.101 us/op
+Iteration   8: 8.263 us/op
+
+# Run progress: 20.45% complete, ETA 00:08:17
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@1082633b]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@7a5760d8]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@1082633b]
+# Warmup Iteration   1: 13.697 us/op
+# Warmup Iteration   2: 5.910 us/op
+# Warmup Iteration   3: 8.069 us/op
+# Warmup Iteration   4: 9.923 us/op
+# Warmup Iteration   5: 6.821 us/op
+Iteration   1: 5.373 us/op
+Iteration   2: 5.615 us/op
+Iteration   3: 8.192 us/op
+Iteration   4: 9.278 us/op
+Iteration   5: 9.159 us/op
+Iteration   6: 8.371 us/op
+Iteration   7: 8.515 us/op
+Iteration   8: 8.827 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.InsertBenchmark.insert":
+  8.798 ±(99.9%) 2.214 us/op [Average]
+  (min, avg, max) = (5.373, 8.798, 14.061), stdev = 2.174
+  CI (99.9%): [6.584, 11.011] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.ListQueryBenchmark.selectList
+# Parameters: (impl = jdbc)
+
+# Run progress: 22.73% complete, ETA 00:08:02
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@2e18fc35]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@326d368]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@2e18fc35]
+# Warmup Iteration   1: 6.779 us/op
+# Warmup Iteration   2: 4.617 us/op
+# Warmup Iteration   3: 8.563 us/op
+# Warmup Iteration   4: 6.908 us/op
+# Warmup Iteration   5: 6.581 us/op
+Iteration   1: 6.260 us/op
+Iteration   2: 6.500 us/op
+Iteration   3: 6.712 us/op
+Iteration   4: 6.547 us/op
+Iteration   5: 7.491 us/op
+Iteration   6: 6.278 us/op
+Iteration   7: 6.873 us/op
+Iteration   8: 7.109 us/op
+
+# Run progress: 25.00% complete, ETA 00:07:47
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@2e18fc35]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@326d368]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@2e18fc35]
+# Warmup Iteration   1: 6.299 us/op
+# Warmup Iteration   2: 4.324 us/op
+# Warmup Iteration   3: 5.765 us/op
+# Warmup Iteration   4: 6.385 us/op
+# Warmup Iteration   5: 8.065 us/op
+Iteration   1: 6.849 us/op
+Iteration   2: 6.638 us/op
+Iteration   3: 6.984 us/op
+Iteration   4: 7.844 us/op
+Iteration   5: 8.017 us/op
+Iteration   6: 6.954 us/op
+Iteration   7: 6.179 us/op
+Iteration   8: 6.555 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.ListQueryBenchmark.selectList":
+  6.862 ±(99.9%) 0.548 us/op [Average]
+  (min, avg, max) = (6.179, 6.862, 8.017), stdev = 0.538
+  CI (99.9%): [6.314, 7.410] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.ListQueryBenchmark.selectList
+# Parameters: (impl = mybatis-per-call)
+
+# Run progress: 27.27% complete, ETA 00:07:32
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@565fbedd]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@2fe9402e]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@565fbedd]
+# Warmup Iteration   1: 127.193 us/op
+# Warmup Iteration   2: 59.355 us/op
+# Warmup Iteration   3: 74.183 us/op
+# Warmup Iteration   4: 95.364 us/op
+# Warmup Iteration   5: 85.040 us/op
+Iteration   1: 86.970 us/op
+Iteration   2: 83.110 us/op
+Iteration   3: 80.998 us/op
+Iteration   4: 79.044 us/op
+Iteration   5: 82.683 us/op
+Iteration   6: 86.136 us/op
+Iteration   7: 91.674 us/op
+Iteration   8: 78.267 us/op
+
+# Run progress: 29.55% complete, ETA 00:07:17
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@2e18fc35]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@326d368]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@2e18fc35]
+# Warmup Iteration   1: 135.947 us/op
+# Warmup Iteration   2: 62.727 us/op
+# Warmup Iteration   3: 56.024 us/op
+# Warmup Iteration   4: 60.664 us/op
+# Warmup Iteration   5: 56.499 us/op
+Iteration   1: 54.898 us/op
+Iteration   2: 57.502 us/op
+Iteration   3: 63.681 us/op
+Iteration   4: 53.948 us/op
+Iteration   5: 52.616 us/op
+Iteration   6: 52.413 us/op
+Iteration   7: 53.988 us/op
+Iteration   8: 52.825 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.ListQueryBenchmark.selectList":
+  69.422 ±(99.9%) 15.467 us/op [Average]
+  (min, avg, max) = (52.413, 69.422, 91.674), stdev = 15.191
+  CI (99.9%): [53.955, 84.889] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.ListQueryBenchmark.selectList
+# Parameters: (impl = mybatis-shared)
+
+# Run progress: 31.82% complete, ETA 00:07:03
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@565fbedd]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@2fe9402e]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@565fbedd]
+# Warmup Iteration   1: 121.707 us/op
+# Warmup Iteration   2: 55.207 us/op
+# Warmup Iteration   3: 54.753 us/op
+# Warmup Iteration   4: 52.914 us/op
+# Warmup Iteration   5: 52.784 us/op
+Iteration   1: 55.038 us/op
+Iteration   2: 53.638 us/op
+Iteration   3: 52.967 us/op
+Iteration   4: 52.372 us/op
+Iteration   5: 52.574 us/op
+Iteration   6: 53.507 us/op
+Iteration   7: 53.329 us/op
+Iteration   8: 52.844 us/op
+
+# Run progress: 34.09% complete, ETA 00:06:48
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@2e18fc35]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@326d368]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@2e18fc35]
+# Warmup Iteration   1: 141.735 us/op
+# Warmup Iteration   2: 63.278 us/op
+# Warmup Iteration   3: 57.007 us/op
+# Warmup Iteration   4: 56.698 us/op
+# Warmup Iteration   5: 55.941 us/op
+Iteration   1: 54.522 us/op
+Iteration   2: 58.185 us/op
+Iteration   3: 54.782 us/op
+Iteration   4: 59.240 us/op
+Iteration   5: 54.485 us/op
+Iteration   6: 83.523 us/op
+Iteration   7: 57.423 us/op
+Iteration   8: 56.165 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.ListQueryBenchmark.selectList":
+  56.537 ±(99.9%) 7.620 us/op [Average]
+  (min, avg, max) = (52.372, 56.537, 83.523), stdev = 7.484
+  CI (99.9%): [48.917, 64.157] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.ListQueryBenchmark.selectList
+# Parameters: (impl = meta-code)
+
+# Run progress: 36.36% complete, ETA 00:06:33
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@565fbedd]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@2fe9402e]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@565fbedd]
+# Warmup Iteration   1: 44.014 us/op
+# Warmup Iteration   2: 28.129 us/op
+# Warmup Iteration   3: 26.648 us/op
+# Warmup Iteration   4: 26.595 us/op
+# Warmup Iteration   5: 26.338 us/op
+Iteration   1: 27.255 us/op
+Iteration   2: 26.538 us/op
+Iteration   3: 25.955 us/op
+Iteration   4: 27.349 us/op
+Iteration   5: 26.607 us/op
+Iteration   6: 26.796 us/op
+Iteration   7: 26.630 us/op
+Iteration   8: 26.827 us/op
+
+# Run progress: 38.64% complete, ETA 00:06:21
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@2e18fc35]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@326d368]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@2e18fc35]
+# Warmup Iteration   1: 43.578 us/op
+# Warmup Iteration   2: 28.125 us/op
+# Warmup Iteration   3: 26.947 us/op
+# Warmup Iteration   4: 26.338 us/op
+# Warmup Iteration   5: 26.565 us/op
+Iteration   1: 26.546 us/op
+Iteration   2: 26.154 us/op
+Iteration   3: 26.055 us/op
+Iteration   4: 25.683 us/op
+Iteration   5: 25.927 us/op
+Iteration   6: 25.514 us/op
+Iteration   7: 25.817 us/op
+Iteration   8: 26.089 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.ListQueryBenchmark.selectList":
+  26.359 ±(99.9%) 0.553 us/op [Average]
+  (min, avg, max) = (25.514, 26.359, 27.349), stdev = 0.543
+  CI (99.9%): [25.806, 26.912] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.ListQueryBenchmark.selectList
+# Parameters: (impl = meta-generic)
+
+# Run progress: 40.91% complete, ETA 00:06:07
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@2e18fc35]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@326d368]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@2e18fc35]
+# Warmup Iteration   1: 108.303 us/op
+# Warmup Iteration   2: 65.225 us/op
+# Warmup Iteration   3: 65.626 us/op
+# Warmup Iteration   4: 62.024 us/op
+# Warmup Iteration   5: 62.458 us/op
+Iteration   1: 61.900 us/op
+Iteration   2: 62.071 us/op
+Iteration   3: 61.228 us/op
+Iteration   4: 62.058 us/op
+Iteration   5: 61.200 us/op
+Iteration   6: 60.656 us/op
+Iteration   7: 63.593 us/op
+Iteration   8: 61.163 us/op
+
+# Run progress: 43.18% complete, ETA 00:05:53
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@2e18fc35]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@326d368]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@2e18fc35]
+# Warmup Iteration   1: 94.645 us/op
+# Warmup Iteration   2: 63.327 us/op
+# Warmup Iteration   3: 61.618 us/op
+# Warmup Iteration   4: 60.329 us/op
+# Warmup Iteration   5: 59.948 us/op
+Iteration   1: 59.064 us/op
+Iteration   2: 59.082 us/op
+Iteration   3: 60.277 us/op
+Iteration   4: 61.063 us/op
+Iteration   5: 61.792 us/op
+Iteration   6: 61.600 us/op
+Iteration   7: 62.580 us/op
+Iteration   8: 82.484 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.ListQueryBenchmark.selectList":
+  62.613 ±(99.9%) 5.523 us/op [Average]
+  (min, avg, max) = (59.064, 62.613, 82.484), stdev = 5.425
+  CI (99.9%): [57.090, 68.137] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.QueryBenchmark.selectOne
+# Parameters: (impl = jdbc)
+
+# Run progress: 45.45% complete, ETA 00:05:38
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@192d49da]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@15c519d7]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@192d49da]
+# Warmup Iteration   1: 1.068 us/op
+# Warmup Iteration   2: 0.802 us/op
+# Warmup Iteration   3: 0.919 us/op
+# Warmup Iteration   4: 0.805 us/op
+# Warmup Iteration   5: 0.810 us/op
+Iteration   1: 0.789 us/op
+Iteration   2: 0.772 us/op
+Iteration   3: 0.779 us/op
+Iteration   4: 0.776 us/op
+Iteration   5: 0.786 us/op
+Iteration   6: 0.866 us/op
+Iteration   7: 0.829 us/op
+Iteration   8: 0.796 us/op
+
+# Run progress: 47.73% complete, ETA 00:05:24
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@54b2aefc]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@64e6f57a]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@54b2aefc]
+# Warmup Iteration   1: 1.211 us/op
+# Warmup Iteration   2: 0.855 us/op
+# Warmup Iteration   3: 0.812 us/op
+# Warmup Iteration   4: 0.811 us/op
+# Warmup Iteration   5: 0.869 us/op
+Iteration   1: 0.854 us/op
+Iteration   2: 0.792 us/op
+Iteration   3: 0.783 us/op
+Iteration   4: 0.809 us/op
+Iteration   5: 0.800 us/op
+Iteration   6: 0.799 us/op
+Iteration   7: 0.790 us/op
+Iteration   8: 0.781 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.QueryBenchmark.selectOne":
+  0.800 ±(99.9%) 0.028 us/op [Average]
+  (min, avg, max) = (0.772, 0.800, 0.866), stdev = 0.027
+  CI (99.9%): [0.772, 0.828] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.QueryBenchmark.selectOne
+# Parameters: (impl = mybatis-per-call)
+
+# Run progress: 50.00% complete, ETA 00:05:10
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@7a3a389]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@a6535e2]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@7a3a389]
+# Warmup Iteration   1: 9.066 us/op
+# Warmup Iteration   2: 3.298 us/op
+# Warmup Iteration   3: 3.247 us/op
+# Warmup Iteration   4: 3.078 us/op
+# Warmup Iteration   5: 3.100 us/op
+Iteration   1: 3.121 us/op
+Iteration   2: 3.113 us/op
+Iteration   3: 3.195 us/op
+Iteration   4: 3.163 us/op
+Iteration   5: 3.182 us/op
+Iteration   6: 3.148 us/op
+Iteration   7: 3.154 us/op
+Iteration   8: 3.735 us/op
+
+# Run progress: 52.27% complete, ETA 00:04:55
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@7a3a389]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@a6535e2]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@7a3a389]
+# Warmup Iteration   1: 9.187 us/op
+# Warmup Iteration   2: 3.306 us/op
+# Warmup Iteration   3: 3.066 us/op
+# Warmup Iteration   4: 3.016 us/op
+# Warmup Iteration   5: 2.984 us/op
+Iteration   1: 2.993 us/op
+Iteration   2: 3.033 us/op
+Iteration   3: 3.005 us/op
+Iteration   4: 3.002 us/op
+Iteration   5: 3.063 us/op
+Iteration   6: 2.995 us/op
+Iteration   7: 2.939 us/op
+Iteration   8: 2.960 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.QueryBenchmark.selectOne":
+  3.113 ±(99.9%) 0.189 us/op [Average]
+  (min, avg, max) = (2.939, 3.113, 3.735), stdev = 0.186
+  CI (99.9%): [2.923, 3.302] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.QueryBenchmark.selectOne
+# Parameters: (impl = mybatis-shared)
+
+# Run progress: 54.55% complete, ETA 00:04:41
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@7a3a389]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@a6535e2]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@7a3a389]
+# Warmup Iteration   1: 6.231 us/op
+# Warmup Iteration   2: 2.801 us/op
+# Warmup Iteration   3: 2.724 us/op
+# Warmup Iteration   4: 2.694 us/op
+# Warmup Iteration   5: 2.756 us/op
+Iteration   1: 2.716 us/op
+Iteration   2: 2.685 us/op
+Iteration   3: 2.893 us/op
+Iteration   4: 2.647 us/op
+Iteration   5: 2.703 us/op
+Iteration   6: 2.684 us/op
+Iteration   7: 2.792 us/op
+Iteration   8: 2.696 us/op
+
+# Run progress: 56.82% complete, ETA 00:04:27
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@54b2aefc]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@64e6f57a]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@54b2aefc]
+# Warmup Iteration   1: 7.034 us/op
+# Warmup Iteration   2: 3.106 us/op
+# Warmup Iteration   3: 2.916 us/op
+# Warmup Iteration   4: 2.996 us/op
+# Warmup Iteration   5: 3.053 us/op
+Iteration   1: 2.911 us/op
+Iteration   2: 2.870 us/op
+Iteration   3: 3.060 us/op
+Iteration   4: 2.936 us/op
+Iteration   5: 2.928 us/op
+Iteration   6: 2.959 us/op
+Iteration   7: 3.367 us/op
+Iteration   8: 3.642 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.QueryBenchmark.selectOne":
+  2.906 ±(99.9%) 0.274 us/op [Average]
+  (min, avg, max) = (2.647, 2.906, 3.642), stdev = 0.269
+  CI (99.9%): [2.632, 3.179] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.QueryBenchmark.selectOne
+# Parameters: (impl = meta-code)
+
+# Run progress: 59.09% complete, ETA 00:04:12
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@9c8b752]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@2971d633]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@9c8b752]
+# Warmup Iteration   1: 4.227 us/op
+# Warmup Iteration   2: 2.405 us/op
+# Warmup Iteration   3: 2.361 us/op
+# Warmup Iteration   4: 2.383 us/op
+# Warmup Iteration   5: 2.345 us/op
+Iteration   1: 2.299 us/op
+Iteration   2: 2.380 us/op
+Iteration   3: 2.394 us/op
+Iteration   4: 2.392 us/op
+Iteration   5: 2.834 us/op
+Iteration   6: 2.428 us/op
+Iteration   7: 2.423 us/op
+Iteration   8: 2.181 us/op
+
+# Run progress: 61.36% complete, ETA 00:03:59
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@7a3a389]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@a6535e2]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@7a3a389]
+# Warmup Iteration   1: 3.857 us/op
+# Warmup Iteration   2: 2.325 us/op
+# Warmup Iteration   3: 2.212 us/op
+# Warmup Iteration   4: 2.116 us/op
+# Warmup Iteration   5: 2.262 us/op
+Iteration   1: 2.149 us/op
+Iteration   2: 2.169 us/op
+Iteration   3: 2.194 us/op
+Iteration   4: 2.168 us/op
+Iteration   5: 2.153 us/op
+Iteration   6: 2.154 us/op
+Iteration   7: 2.175 us/op
+Iteration   8: 2.185 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.QueryBenchmark.selectOne":
+  2.293 ±(99.9%) 0.185 us/op [Average]
+  (min, avg, max) = (2.149, 2.293, 2.834), stdev = 0.181
+  CI (99.9%): [2.108, 2.477] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.QueryBenchmark.selectOne
+# Parameters: (impl = meta-code-statement)
+
+# Run progress: 63.64% complete, ETA 00:03:45
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@54b2aefc]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@64e6f57a]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@54b2aefc]
+# Warmup Iteration   1: 3.885 us/op
+# Warmup Iteration   2: 2.342 us/op
+# Warmup Iteration   3: 2.250 us/op
+# Warmup Iteration   4: 2.242 us/op
+# Warmup Iteration   5: 2.263 us/op
+Iteration   1: 2.246 us/op
+Iteration   2: 2.247 us/op
+Iteration   3: 2.246 us/op
+Iteration   4: 2.256 us/op
+Iteration   5: 2.237 us/op
+Iteration   6: 2.238 us/op
+Iteration   7: 2.236 us/op
+Iteration   8: 2.248 us/op
+
+# Run progress: 65.91% complete, ETA 00:03:32
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@54b2aefc]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@64e6f57a]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@54b2aefc]
+# Warmup Iteration   1: 3.847 us/op
+# Warmup Iteration   2: 2.285 us/op
+# Warmup Iteration   3: 2.205 us/op
+# Warmup Iteration   4: 2.244 us/op
+# Warmup Iteration   5: 2.235 us/op
+Iteration   1: 2.260 us/op
+Iteration   2: 2.251 us/op
+Iteration   3: 2.233 us/op
+Iteration   4: 2.238 us/op
+Iteration   5: 2.231 us/op
+Iteration   6: 2.247 us/op
+Iteration   7: 2.237 us/op
+Iteration   8: 2.235 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.QueryBenchmark.selectOne":
+  2.243 ±(99.9%) 0.009 us/op [Average]
+  (min, avg, max) = (2.231, 2.243, 2.260), stdev = 0.008
+  CI (99.9%): [2.234, 2.251] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.QueryBenchmark.selectOne
+# Parameters: (impl = meta-generic)
+
+# Run progress: 68.18% complete, ETA 00:03:18
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@54b2aefc]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@64e6f57a]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@54b2aefc]
+# Warmup Iteration   1: 4.510 us/op
+# Warmup Iteration   2: 2.673 us/op
+# Warmup Iteration   3: 2.592 us/op
+# Warmup Iteration   4: 2.541 us/op
+# Warmup Iteration   5: 2.595 us/op
+Iteration   1: 2.526 us/op
+Iteration   2: 2.569 us/op
+Iteration   3: 2.560 us/op
+Iteration   4: 2.554 us/op
+Iteration   5: 2.553 us/op
+Iteration   6: 2.512 us/op
+Iteration   7: 2.538 us/op
+Iteration   8: 2.546 us/op
+
+# Run progress: 70.45% complete, ETA 00:03:03
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@7a3a389]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@a6535e2]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@7a3a389]
+# Warmup Iteration   1: 4.624 us/op
+# Warmup Iteration   2: 2.667 us/op
+# Warmup Iteration   3: 2.590 us/op
+# Warmup Iteration   4: 2.512 us/op
+# Warmup Iteration   5: 2.530 us/op
+Iteration   1: 2.539 us/op
+Iteration   2: 2.580 us/op
+Iteration   3: 2.552 us/op
+Iteration   4: 2.552 us/op
+Iteration   5: 2.530 us/op
+Iteration   6: 2.533 us/op
+Iteration   7: 2.524 us/op
+Iteration   8: 2.562 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.QueryBenchmark.selectOne":
+  2.546 ±(99.9%) 0.018 us/op [Average]
+  (min, avg, max) = (2.512, 2.546, 2.580), stdev = 0.018
+  CI (99.9%): [2.527, 2.564] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.RowMappingBenchmark.mapRows
+# Parameters: (impl = meta-code-reader)
+
+# Run progress: 72.73% complete, ETA 00:02:49
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@2fe9dd04]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@72981e2c]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@2fe9dd04]
+# Warmup Iteration   1: 28.309 us/op
+# Warmup Iteration   2: 24.530 us/op
+# Warmup Iteration   3: 23.755 us/op
+# Warmup Iteration   4: 23.336 us/op
+# Warmup Iteration   5: 23.271 us/op
+Iteration   1: 23.337 us/op
+Iteration   2: 23.516 us/op
+Iteration   3: 25.237 us/op
+Iteration   4: 24.013 us/op
+Iteration   5: 23.487 us/op
+Iteration   6: 23.522 us/op
+Iteration   7: 23.656 us/op
+Iteration   8: 23.887 us/op
+
+# Run progress: 75.00% complete, ETA 00:02:35
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@2fe9dd04]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@72981e2c]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@2fe9dd04]
+# Warmup Iteration   1: 29.617 us/op
+# Warmup Iteration   2: 25.085 us/op
+# Warmup Iteration   3: 24.592 us/op
+# Warmup Iteration   4: 24.644 us/op
+# Warmup Iteration   5: 26.122 us/op
+Iteration   1: 25.187 us/op
+Iteration   2: 26.486 us/op
+Iteration   3: 32.830 us/op
+Iteration   4: 43.850 us/op
+Iteration   5: 42.334 us/op
+Iteration   6: 43.552 us/op
+Iteration   7: 49.195 us/op
+Iteration   8: 39.357 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.RowMappingBenchmark.mapRows":
+  30.840 ±(99.9%) 9.562 us/op [Average]
+  (min, avg, max) = (23.337, 30.840, 49.195), stdev = 9.391
+  CI (99.9%): [21.279, 40.402] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.RowMappingBenchmark.mapRows
+# Parameters: (impl = meta-column-index)
+
+# Run progress: 77.27% complete, ETA 00:02:21
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@6f4ed58e]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@4c360e06]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@6f4ed58e]
+# Warmup Iteration   1: 17.823 us/op
+# Warmup Iteration   2: 29.134 us/op
+# Warmup Iteration   3: 31.845 us/op
+# Warmup Iteration   4: 28.267 us/op
+# Warmup Iteration   5: 28.060 us/op
+Iteration   1: 27.860 us/op
+Iteration   2: 30.294 us/op
+Iteration   3: 26.261 us/op
+Iteration   4: 26.319 us/op
+Iteration   5: 24.952 us/op
+Iteration   6: 29.344 us/op
+Iteration   7: 32.684 us/op
+Iteration   8: 31.588 us/op
+
+# Run progress: 79.55% complete, ETA 00:02:07
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@6f4ed58e]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@4c360e06]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@6f4ed58e]
+# Warmup Iteration   1: 17.361 us/op
+# Warmup Iteration   2: 22.085 us/op
+# Warmup Iteration   3: 28.181 us/op
+# Warmup Iteration   4: 24.714 us/op
+# Warmup Iteration   5: 24.081 us/op
+Iteration   1: 26.456 us/op
+Iteration   2: 20.796 us/op
+Iteration   3: 15.826 us/op
+Iteration   4: 15.163 us/op
+Iteration   5: 15.447 us/op
+Iteration   6: 15.272 us/op
+Iteration   7: 14.750 us/op
+Iteration   8: 15.174 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.RowMappingBenchmark.mapRows":
+  23.012 ±(99.9%) 6.885 us/op [Average]
+  (min, avg, max) = (14.750, 23.012, 32.684), stdev = 6.762
+  CI (99.9%): [16.127, 29.896] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.RowMappingBenchmark.mapRows
+# Parameters: (impl = meta-generic-reader)
+
+# Run progress: 81.82% complete, ETA 00:01:53
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@6f4ed58e]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@4c360e06]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@6f4ed58e]
+# Warmup Iteration   1: 76.139 us/op
+# Warmup Iteration   2: 61.001 us/op
+# Warmup Iteration   3: 57.179 us/op
+# Warmup Iteration   4: 59.216 us/op
+# Warmup Iteration   5: 58.998 us/op
+Iteration   1: 63.198 us/op
+Iteration   2: 61.119 us/op
+Iteration   3: 62.212 us/op
+Iteration   4: 60.135 us/op
+Iteration   5: 59.538 us/op
+Iteration   6: 60.034 us/op
+Iteration   7: 57.235 us/op
+Iteration   8: 57.370 us/op
+
+# Run progress: 84.09% complete, ETA 00:01:39
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@2fe9dd04]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@72981e2c]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@2fe9dd04]
+# Warmup Iteration   1: 75.846 us/op
+# Warmup Iteration   2: 62.032 us/op
+# Warmup Iteration   3: 62.928 us/op
+# Warmup Iteration   4: 59.831 us/op
+# Warmup Iteration   5: 64.625 us/op
+Iteration   1: 68.053 us/op
+Iteration   2: 93.532 us/op
+Iteration   3: 111.113 us/op
+Iteration   4: 110.342 us/op
+Iteration   5: 106.212 us/op
+Iteration   6: 115.628 us/op
+Iteration   7: 126.427 us/op
+Iteration   8: 95.623 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.RowMappingBenchmark.mapRows":
+  81.736 ±(99.9%) 25.919 us/op [Average]
+  (min, avg, max) = (57.235, 81.736, 126.427), stdev = 25.456
+  CI (99.9%): [55.817, 107.654] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.RowMappingBenchmark.mapRows
+# Parameters: (impl = mybatis-metaobject)
+
+# Run progress: 86.36% complete, ETA 00:01:25
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@6f4ed58e]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@4c360e06]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@6f4ed58e]
+# Warmup Iteration   1: 30.396 us/op
+# Warmup Iteration   2: 34.979 us/op
+# Warmup Iteration   3: 33.368 us/op
+# Warmup Iteration   4: 37.407 us/op
+# Warmup Iteration   5: 39.776 us/op
+Iteration   1: 38.569 us/op
+Iteration   2: 40.163 us/op
+Iteration   3: 32.905 us/op
+Iteration   4: 34.483 us/op
+Iteration   5: 32.455 us/op
+Iteration   6: 32.961 us/op
+Iteration   7: 34.515 us/op
+Iteration   8: 36.653 us/op
+
+# Run progress: 88.64% complete, ETA 00:01:11
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@2fe9dd04]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@72981e2c]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@2fe9dd04]
+# Warmup Iteration   1: 36.900 us/op
+# Warmup Iteration   2: 38.767 us/op
+# Warmup Iteration   3: 62.536 us/op
+# Warmup Iteration   4: 89.962 us/op
+# Warmup Iteration   5: 58.416 us/op
+Iteration   1: 56.931 us/op
+Iteration   2: 50.986 us/op
+Iteration   3: 58.064 us/op
+Iteration   4: 63.144 us/op
+Iteration   5: 106.893 us/op
+Iteration   6: 82.391 us/op
+Iteration   7: 135.982 us/op
+Iteration   8: 184.895 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.RowMappingBenchmark.mapRows":
+  63.874 ±(99.9%) 44.661 us/op [Average]
+  (min, avg, max) = (32.455, 63.874, 184.895), stdev = 43.863
+  CI (99.9%): [19.214, 108.535] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.RowMappingBenchmark.mapRows
+# Parameters: (impl = mybatis-handler)
+
+# Run progress: 90.91% complete, ETA 00:00:57
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@2fe9dd04]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@72981e2c]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@2fe9dd04]
+# Warmup Iteration   1: 628.227 us/op
+# Warmup Iteration   2: 240.355 us/op
+# Warmup Iteration   3: 174.139 us/op
+# Warmup Iteration   4: 82.798 us/op
+# Warmup Iteration   5: 75.137 us/op
+Iteration   1: 83.335 us/op
+Iteration   2: 70.841 us/op
+Iteration   3: 68.739 us/op
+Iteration   4: 70.410 us/op
+Iteration   5: 64.709 us/op
+Iteration   6: 63.046 us/op
+Iteration   7: 72.331 us/op
+Iteration   8: 69.291 us/op
+
+# Run progress: 93.18% complete, ETA 00:00:43
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@2fe9dd04]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@72981e2c]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@2fe9dd04]
+# Warmup Iteration   1: 109.826 us/op
+# Warmup Iteration   2: 76.627 us/op
+# Warmup Iteration   3: 64.039 us/op
+# Warmup Iteration   4: 55.875 us/op
+# Warmup Iteration   5: 56.683 us/op
+Iteration   1: 57.317 us/op
+Iteration   2: 56.196 us/op
+Iteration   3: 58.529 us/op
+Iteration   4: 59.756 us/op
+Iteration   5: 65.198 us/op
+Iteration   6: 62.717 us/op
+Iteration   7: 58.045 us/op
+Iteration   8: 58.444 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.RowMappingBenchmark.mapRows":
+  64.932 ±(99.9%) 7.399 us/op [Average]
+  (min, avg, max) = (56.196, 64.932, 83.335), stdev = 7.267
+  CI (99.9%): [57.533, 72.330] (assumes normal distribution)
+
+
+# JMH version: 1.37
+# VM version: JDK 25.0.4.1.1, Java HotSpot(TM) 64-Bit Server VM, 25.0.4.1.1+1-LTS-jvmci-25.4-b23
+# VM invoker: D:\opt\graalvm-25.4.4.1.1+1.1\bin\java.exe
+# VM options: -XX:ThreadPriorityPolicy=1 -XX:+UnlockExperimentalVMOptions -XX:+EnableJVMCIProduct -XX:+EnableJVMCI -XX:-UnlockExperimentalVMOptions
+# Blackhole mode: compiler (auto-detected, use -Djmh.blackhole.autoDetect=false to disable)
+# Warmup: 5 iterations, 1 s each
+# Measurement: 8 iterations, 1 s each
+# Timeout: 10 min per iteration
+# Threads: 1 thread, will synchronize iterations
+# Benchmark mode: Average time, time/op
+# Benchmark: xyz.wewin.autumn.data.bench.RowMappingBenchmark.mapRows
+# Parameters: (impl = pojo-setters)
+
+# Run progress: 95.45% complete, ETA 00:00:29
+# Fork: 1 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@6f4ed58e]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@4c360e06]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@6f4ed58e]
+# Warmup Iteration   1: 5.443 us/op
+# Warmup Iteration   2: 4.651 us/op
+# Warmup Iteration   3: 4.294 us/op
+# Warmup Iteration   4: 4.136 us/op
+# Warmup Iteration   5: 3.989 us/op
+Iteration   1: 3.630 us/op
+Iteration   2: 3.632 us/op
+Iteration   3: 4.010 us/op
+Iteration   4: 4.118 us/op
+Iteration   5: 3.854 us/op
+Iteration   6: 4.254 us/op
+Iteration   7: 3.627 us/op
+Iteration   8: 3.630 us/op
+
+# Run progress: 97.73% complete, ETA 00:00:14
+# Fork: 2 of 2
+WARNING: A terminally deprecated method in sun.misc.Unsafe has been called
+WARNING: sun.misc.Unsafe::objectFieldOffset has been called by org.openjdk.jmh.util.Utils (file:/C:/Users/Percy/.m2/repository/org/openjdk/jmh/jmh-core/1.37/jmh-core-1.37.jar)
+WARNING: Please consider reporting this to the maintainers of class org.openjdk.jmh.util.Utils
+WARNING: sun.misc.Unsafe::objectFieldOffset will be removed in a future release
+SLF4J(W): Class path contains multiple SLF4J providers.
+SLF4J(W): Found provider [org.slf4j.nop.NOPServiceProvider@2fe9dd04]
+SLF4J(W): Found provider [ch.qos.logback.classic.spi.LogbackServiceProvider@72981e2c]
+SLF4J(W): See https://www.slf4j.org/codes.html#multiple_bindings for an explanation.
+SLF4J(I): Actual provider is of type [org.slf4j.nop.NOPServiceProvider@2fe9dd04]
+# Warmup Iteration   1: 4.428 us/op
+# Warmup Iteration   2: 4.213 us/op
+# Warmup Iteration   3: 3.751 us/op
+# Warmup Iteration   4: 3.698 us/op
+# Warmup Iteration   5: 4.087 us/op
+Iteration   1: 3.685 us/op
+Iteration   2: 3.654 us/op
+Iteration   3: 3.694 us/op
+Iteration   4: 3.531 us/op
+Iteration   5: 3.532 us/op
+Iteration   6: 4.315 us/op
+Iteration   7: 3.628 us/op
+Iteration   8: 3.662 us/op
+
+
+Result "xyz.wewin.autumn.data.bench.RowMappingBenchmark.mapRows":
+  3.778 ±(99.9%) 0.259 us/op [Average]
+  (min, avg, max) = (3.531, 3.778, 4.315), stdev = 0.254
+  CI (99.9%): [3.520, 4.037] (assumes normal distribution)
+
+
+# Run complete. Total time: 00:10:43
+
+REMEMBER: The numbers below are just data. To gain reusable insights, you need to follow up on
+why the numbers are the way they are. Use profilers (see -prof, -lprof), design factorial
+experiments, perform baseline and negative tests that provide experimental control, make sure
+the benchmarking environment is safe on JVM/OS/HW level, ask for reviews from the domain experts.
+Do not assume the numbers tell you what you want them to tell.
+
+NOTE: Current JVM experimentally supports Compiler Blackholes, and they are in use. Please exercise
+extra caution when trusting the results, look into the generated code to check the benchmark still
+works, and factor in a small probability of new VM bugs. Additionally, while comparisons between
+different JVMs are already problematic, the performance difference caused by different Blackhole
+modes can be very significant. Please make sure you use the consistent Blackhole mode for comparisons.
+
+Benchmark                                   (impl)  Mode  Cnt   Score    Error  Units
+InsertBenchmark.insert                        jdbc  avgt   16   4.399 ±  0.212  us/op
+InsertBenchmark.insert            mybatis-per-call  avgt   16   5.016 ±  0.192  us/op
+InsertBenchmark.insert              mybatis-shared  avgt   16   4.597 ±  0.180  us/op
+InsertBenchmark.insert                   meta-code  avgt   16   6.333 ±  1.429  us/op
+InsertBenchmark.insert                meta-generic  avgt   16   8.798 ±  2.214  us/op
+ListQueryBenchmark.selectList                 jdbc  avgt   16   6.862 ±  0.548  us/op
+ListQueryBenchmark.selectList     mybatis-per-call  avgt   16  69.422 ± 15.467  us/op
+ListQueryBenchmark.selectList       mybatis-shared  avgt   16  56.537 ±  7.620  us/op
+ListQueryBenchmark.selectList            meta-code  avgt   16  26.359 ±  0.553  us/op
+ListQueryBenchmark.selectList         meta-generic  avgt   16  62.613 ±  5.523  us/op
+QueryBenchmark.selectOne                      jdbc  avgt   16   0.800 ±  0.028  us/op
+QueryBenchmark.selectOne          mybatis-per-call  avgt   16   3.113 ±  0.189  us/op
+QueryBenchmark.selectOne            mybatis-shared  avgt   16   2.906 ±  0.274  us/op
+QueryBenchmark.selectOne                 meta-code  avgt   16   2.293 ±  0.185  us/op
+QueryBenchmark.selectOne       meta-code-statement  avgt   16   2.243 ±  0.009  us/op
+QueryBenchmark.selectOne              meta-generic  avgt   16   2.546 ±  0.018  us/op
+RowMappingBenchmark.mapRows       meta-code-reader  avgt   16  30.840 ±  9.562  us/op
+RowMappingBenchmark.mapRows      meta-column-index  avgt   16  23.012 ±  6.885  us/op
+RowMappingBenchmark.mapRows    meta-generic-reader  avgt   16  81.736 ± 25.919  us/op
+RowMappingBenchmark.mapRows     mybatis-metaobject  avgt   16  63.874 ± 44.661  us/op
+RowMappingBenchmark.mapRows        mybatis-handler  avgt   16  64.932 ±  7.399  us/op
+RowMappingBenchmark.mapRows           pojo-setters  avgt   16   3.778 ±  0.259  us/op
+
+Benchmark result is saved to target/jmh-results-final.json
