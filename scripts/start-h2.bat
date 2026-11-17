@@ -27,12 +27,11 @@ set "PS_EXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%PS_EXE%" set "PS_EXE=powershell.exe"
 
 rem ---- locate H2_HOME -------------------------------------------------------
-if not defined H2_HOME (
-    dir /b "%~dp0bin\h2-*.jar" >nul 2>&1
-    if not errorlevel 1 set "H2_HOME=%~dp0"
-)
-if defined H2_HOME if "%H2_HOME:~-1%"=="\" set "H2_HOME=%H2_HOME:~0,-1%"
+if not defined H2_HOME dir /b "%~dp0bin\h2-*.jar" >nul 2>&1
+if not defined H2_HOME if not errorlevel 1 set H2_HOME=%~dp0
 if not defined H2_HOME set "H2_HOME=D:\opt\h2"
+rem strip the trailing backslash %~dp0 leaves behind
+if "%H2_HOME:~-1%"=="\" set "H2_HOME=%H2_HOME:~0,-1%"
 
 rem ---- defaults -------------------------------------------------------------
 if not defined H2_PORT set "H2_PORT=9092"
