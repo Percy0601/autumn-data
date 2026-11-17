@@ -25,8 +25,10 @@
 
 ## 本机 H2（TCP）初始化
 
-H2 服务端：`D:\opt\h2\start-h2-server.bat`（端口 9092，数据目录 `D:\opt\h2\data`，
+H2 服务端：`D:\opt\h2\start-h2.bat`（端口 9092，数据目录 `D:\opt\h2\data`，
 启动参数带 `-ifNotExists`，所以第一次连不存在的库会自动建）。
+仓库内另有一份跨平台启停脚本：Windows `scripts/start-h2.bat` / `scripts/stop-h2.bat`，
+Linux `scripts/start-h2.sh` / `scripts/stop-h2.sh`（用法见 [scripts/README.md](../scripts/README.md)）。
 
 ```bat
 REM 1. 启动服务端（保持窗口开着）
