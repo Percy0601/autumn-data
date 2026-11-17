@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 测试用：meta/default/default/form_order.xml，验证 classpath 下的默认数据源 + 默认命名空间 -->
+<mapper namespace="default/default/form_order">
+    <select id="metaFind">
+        SELECT id, order_no, status FROM form_order ORDER BY id
+    </select>
+</mapper>

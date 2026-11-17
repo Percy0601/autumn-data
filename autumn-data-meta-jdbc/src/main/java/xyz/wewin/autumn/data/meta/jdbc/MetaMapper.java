@@ -12,6 +12,7 @@ import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperClient;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperEngine;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MarkedSql;
+import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlFileStore;
 
 /**
  * 动态表 CRUD 的静态门面，读写的操作对象一律是 {@link MetaClass}。
@@ -59,9 +60,27 @@ import xyz.wewin.autumn.data.meta.jdbc.sql.MarkedSql;
  * 在调用边界上，而不是塞进 {@code ThreadLocal}。静态字段只有一个 {@code volatile} 引擎引用，
  * 不缓存表结构、不持有连接，因此可被容器安全替换。</p>
  *
- * <p><b>没有 delete</b>：应用侧不提供物理删除；需要作废时改状态列。</p>
+ * <p><b>写哪几列</b>由实体驱动（{@link MetaClass#isChanged(String)}）；<b>删不删</b>由语句驱动：
+ * {@code metaFind/metaSave/metaUpdate/metaDelete} 先看
+ * {@code meta/{数据源}/{命名空间}/{表}.xml} 里有没有同名 id 的语句，有就用文件、没有就按元数据现拼
+ * （{@code metaDelete} 例外：没有语句时只退化逻辑删除，绝不自己拼 {@code DELETE}）。</p>
  */
 public final class MetaMapper {
+
+	/** 默认命名空间：语句落在 {@code meta/{数据源}/default/{表}.xml}。 */
+	public static final String DEFAULT_NAMESPACE = MetaSqlFileStore.DEFAULT_NAMESPACE;
+
+	/** 查询语句的标准 id。 */
+	public static final String META_FIND = "metaFind";
+
+	/** 新增语句的标准 id。 */
+	public static final String META_SAVE = "metaSave";
+
+	/** 更新语句的标准 id。 */
+	public static final String META_UPDATE = "metaUpdate";
+
+	/** 删除语句的标准 id。 */
+	public static final String META_DELETE = "metaDelete";
 
 	private static volatile MetaMapperEngine engine;
 
@@ -161,6 +180,77 @@ public final class MetaMapper {
 	/** 表结构变化后刷新默认池的元数据快照、动态实体类与 Mapper 语句缓存。 */
 	public static void refresh(String tableName) {
 		defaultClient().refresh(tableName);
+	}
+
+	// ------------------------------------------------------------------
+	// metaFind / metaSave / metaUpdate / metaDelete（默认数据源 + 默认命名空间）
+	// ------------------------------------------------------------------
+
+	/**
+	 * 列表查询：SQL 来自 {@code meta/{默认池名}/{@value #DEFAULT_NAMESPACE}/{表}.xml} 里的
+	 * {@code <select id="metaFind">}；文件或语句缺失时按元数据现拼（等价于 {@link #findList}）。
+	 *
+	 * <p>走了文件时，{@code query} 的条件与排序叠在文件那份基础语句外面；文件负责投影、连接、自己的
+	 * 过滤条件（含逻辑删除），{@code query} 只负责调用方这次的筛选。</p>
+	 */
+	public static List<MetaClass> metaFind(String tableName, MetaQuery query) {
+		return defaultClient().metaFind(tableName, query);
+	}
+
+	public static List<MetaClass> metaFind(String tableName, MetaQuery query, long limit) {
+		return defaultClient().metaFind(tableName, query, limit);
+	}
+
+	/**
+	 * 完整形态：数据源 / 命名空间 / 表 / 语句 id 全部显式给出，SQL 一律来自
+	 * {@code meta/{datasource}/{namespace}/{table}.xml}，缺文件或缺该 id 直接报错。
+	 */
+	public static List<MetaClass> metaFind(String datasource, String namespace, String tableName, String queryId,
+			MetaClass params) {
+		return engine().client(datasource).metaFind(datasource, namespace, tableName, queryId, params);
+	}
+
+	/** 新增：优先用文件里的 {@code <insert id="metaSave">}，没有就等价于 {@link #save(MetaClass)}。 */
+	public static MetaClass metaSave(MetaClass entity) {
+		return defaultClient().metaSave(entity);
+	}
+
+	public static int metaSave(String datasource, String namespace, String tableName, String queryId,
+			MetaClass params) {
+		return engine().client(datasource).metaSave(datasource, namespace, tableName, queryId, params);
+	}
+
+	/** 更新：优先用文件里的 {@code <update id="metaUpdate">}，没有就等价于 {@link #update(MetaClass)}。 */
+	public static int metaUpdate(MetaClass entity) {
+		return defaultClient().metaUpdate(entity);
+	}
+
+	public static int metaUpdate(String datasource, String namespace, String tableName, String queryId,
+			MetaClass params) {
+		return engine().client(datasource).metaUpdate(datasource, namespace, tableName, queryId, params);
+	}
+
+	/**
+	 * 删除：文件里写了 {@code <delete id="metaDelete">} 才物理删除；没有该语句时退化为逻辑删除
+	 * （配置了逻辑删除列的话），两者都没有就报错。
+	 */
+	public static int metaDelete(MetaClass entity) {
+		return defaultClient().metaDelete(entity);
+	}
+
+	public static int metaDelete(String datasource, String namespace, String tableName, String queryId,
+			MetaClass params) {
+		return engine().client(datasource).metaDelete(datasource, namespace, tableName, queryId, params);
+	}
+
+	/** 该表在指定数据源/命名空间下的可用语句 id（诊断用）。 */
+	public static List<String> metaStatementIds(String datasource, String namespace, String tableName) {
+		return engine().client(datasource).metaStatementIds(datasource, namespace, tableName);
+	}
+
+	/** 丢掉该表的语句解析结果，下次访问重新读盘（改完 XML 想立刻生效时用；平时自动按修改时间重读）。 */
+	public static void clearMetaSqlCache(String datasource, String namespace, String tableName) {
+		engine().client(datasource).clearMetaSqlCache(datasource, namespace, tableName);
 	}
 
 	// ------------------------------------------------------------------

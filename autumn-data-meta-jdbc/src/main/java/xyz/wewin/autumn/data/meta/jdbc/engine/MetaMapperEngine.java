@@ -18,6 +18,7 @@ import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaModelStore;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaPlanCache;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlBuilder;
+import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlFileStore;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaStatementStore;
 import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCache;
 import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCaches;
@@ -155,7 +156,8 @@ public final class MetaMapperEngine {
 		MetaStatementStore statementStore = new MetaStatementStore(directories.mapperDirectory(),
 				options.generateFiles(), dialect, options.tableCacheSize());
 		return new MetaMapperClient(poolName, jdbc, connectionSource, registry, new MetaSqlBuilder(dialect),
-				statementStore, entities, new MetaPlanCache(options.tableCacheSize()), options.defaultListLimit());
+				statementStore, entities, new MetaPlanCache(options.tableCacheSize()), options.defaultListLimit(),
+				MetaSqlFileStore.classpath());
 	}
 
 	/** 默认池名。 */

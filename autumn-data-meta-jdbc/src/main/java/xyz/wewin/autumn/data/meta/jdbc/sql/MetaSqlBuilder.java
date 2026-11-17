@@ -142,6 +142,57 @@ public final class MetaSqlBuilder {
 				+ String.join(" AND ", keyClauses));
 	}
 
+	/**
+	 * 只拼「条件 + 排序」片段：以 {@code " WHERE "} 开头（没有条件时是空串），排序跟在其后。
+	 *
+	 * <p>用于把 {@link MetaQuery} 叠在 Mapper 文件里的基础语句外面——文件负责投影、连接、自己的过滤，
+	 * 前端筛选条件以派生表的形式加在最外层，两种来源各管一段，不去猜对方那半句 SQL 长什么样。
+	 * 因此这里<b>不追加逻辑删除过滤</b>：基础语句是否带 {@code deleted_flag = 0}，由文件自己决定。</p>
+	 */
+	public MarkedSql where(MetaTable table, MetaQuery query) {
+		MetaQuery effective = query == null ? MetaQuery.all() : query;
+		StringBuilder sql = new StringBuilder();
+		Binds binds = new Binds();
+		StringBuilder conditions = new StringBuilder();
+		appendConditions(conditions, table, effective, binds, false);
+		if (!conditions.isEmpty()) {
+			sql.append(" WHERE ").append(conditions);
+		}
+		appendOrder(sql, table, effective);
+		return binds.of(sql.toString());
+	}
+
+	/**
+	 * 逻辑删除：{@code UPDATE t SET <逻辑删除列> = ? WHERE <主键> = ?}。
+	 *
+	 * <p>物理删除的替代方案，只在表配置了逻辑删除列、且主键值齐全时可用；其余情况返回
+	 * {@code null}，让调用方决定报什么错（而不是在这里拼出一条会删错行的语句）。</p>
+	 */
+	public MarkedSql logicDelete(MetaTable table, MetaClass entity) {
+		String logicColumn = table.logicDeleteColumn();
+		if (logicColumn == null || entity == null || table.primaryKeys().isEmpty()) {
+			return null;
+		}
+		MetaProperty column = table.findColumn(logicColumn);
+		if (column == null) {
+			return null;
+		}
+		Binds binds = new Binds();
+		List<String> keyClauses = new ArrayList<>();
+		// 槽位必须按 SQL 文本顺序记：SET 的值在前，主键在后
+		binds.add(column, 1);
+		for (MetaProperty key : table.primaryKeys()) {
+			Object value = entity.get(key.getName());
+			if (value == null) {
+				return null;
+			}
+			keyClauses.add(quote(key.getName()) + " = ?");
+			binds.add(key, value);
+		}
+		return binds.of("UPDATE " + quote(table.name()) + " SET " + quote(column.getName()) + " = ? WHERE "
+				+ String.join(" AND ", keyClauses));
+	}
+
 	/** 表名（已加引号），供 Mapper 语句的 {@code ${table}}。 */
 	public String quoteTable(MetaTable table) {
 		return quote(table.name());
@@ -187,9 +238,25 @@ public final class MetaSqlBuilder {
 	 */
 	private void appendWhere(StringBuilder sql, MetaTable table, MetaQuery query, Binds binds) {
 		StringBuilder where = new StringBuilder();
+		appendConditions(where, table, query, binds, true);
+		if (!where.isEmpty()) {
+			sql.append(" WHERE ").append(where);
+		}
+	}
+
+	/**
+	 * 逐条条件写成 {@code a = ? AND b > ?} 的形式。
+	 *
+	 * @param logicDeleteFilter 是否补逻辑删除过滤（表配置了该列、且条件里没显式引用它时）
+	 */
+	private void appendConditions(StringBuilder where, MetaTable table, MetaQuery query, Binds binds,
+			boolean logicDeleteFilter) {
 		for (MetaQuery.Condition condition : query.conditions()) {
 			MetaProperty column = table.requireColumn(condition.column());
 			appendCondition(where, column, condition, binds);
+		}
+		if (!logicDeleteFilter) {
+			return;
 		}
 		String logicColumn = table.logicDeleteColumn();
 		if (logicColumn != null && !query.references(logicColumn)) {
@@ -199,9 +266,6 @@ public final class MetaSqlBuilder {
 			}
 			where.append(quote(column.getName())).append(" = ?");
 			binds.add(column, 0);
-		}
-		if (!where.isEmpty()) {
-			sql.append(" WHERE ").append(where);
 		}
 	}
 

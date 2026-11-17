@@ -374,6 +374,7 @@ client.registerStatement("form_order", "hotOrders",
 | `findById` / `findByKey` / `findList` / `findPage` / `count` / `save` / `saveAll` / `update` … | `MetaSqlBuilder` 现拼 | 条件运算符是开集（`>` / `LIKE` / `IN` / `BETWEEN` / 排序…），固定文件表达不了，因此这条路**完全不读文件** |
 | `sqlFor` / `selectList` / `selectOne` / `selectCount` / `execute` | 代码注册的语句优先，其次 Mapper 文件 | 语句 id 就是注册时的 id / XML 里的 `id`；`<select>` 走查询，`<insert>`/`<update>` 走 `execute`，`<delete>` 拒绝执行 |
 | `findListBySql` / `findOneBySql` / `findPageBySql` / `countBySql` / `executeBySql` / `sqlForText` | 调用方当场给的文本 | 不读文件、不注册；`#{...}` / `${...}` 语义与文件一致 |
+| `metaFind` / `metaSave` / `metaUpdate` / `metaDelete` | `meta/{数据源}/{命名空间}/{表}.xml`，缺语句时回退 `MetaSqlBuilder` 现拼（`metaDelete` 只退化逻辑删除） | 见下一节；同一张表在不同库/租户下各有一份语句 |
 
 生成的文件本身就是一份可跑的样例语句（`selectList` / `selectCount` / `insert` / `updateByKey`），
 逐列展开成 `<if>`；投影、排序、运算符想改就直接改这份文件。下面是生成内容的节选：
@@ -412,6 +413,62 @@ client.registerStatement("form_order", "hotOrders",
     </update>
 </mapper>
 ```
+
+### 按「数据源 + 命名空间」放语句：`metaFind` / `metaSave` / `metaUpdate` / `metaDelete`
+
+`<meta-directory>/mapper/<表名>.xml` 的寻址键只有表名，一张表只能有一份语句。低代码/多租户场景下
+同一张表常常在多个库、多个业务分组里各有一份写法，于是另有一层把**数据源与命名空间编进路径**的语句库：
+
+```
+src/main/resources/meta/{datasource}/{namespace}/{table}.xml
+```
+
+同一张 `form_order` 在 `default/default`、`tenant-a/erp` 下各有一份，互不覆盖。四个操作各有两套 API：
+
+```java
+// 一套：默认数据源（= 静态门面绑定的池名）+ 默认命名空间（"default"）
+MetaMapper.metaFind("form_order", MetaQuery.by("status", 1));
+MetaMapper.metaSave(entity);
+MetaMapper.metaUpdate(entity);
+MetaMapper.metaDelete(entity);
+
+// 另一套：数据源 / 命名空间 / 表 / 语句 id / 参数全部显式
+MetaMapper.metaFind("tenant-a", "erp", "form_order", "findByNo", params);
+MetaMapper.metaUpdate("tenant-a", "erp", "form_order", "voidById", params);
+```
+
+**语句 id 是约定**：默认那套按操作名找 `metaFind` / `metaSave` / `metaUpdate` / `metaDelete`；
+完整那套的 id 由调用方给（可以是这四个约定名，也可以是 `findByNo` 这类自定义语句）。
+
+**缺文件、缺语句不算错**：`metaFind` / `metaSave` / `metaUpdate` 回退到按元数据现拼，
+行为与 `findList` / `save` / `update` 一模一样——所以可以先上线、后补语句，也可以只覆盖其中一两个操作。
+`metaDelete` 是例外：动态层**不会自己拼 `DELETE`**，只有文件里显式写了 `<delete id="metaDelete">`
+（或写成 `<update id="metaDelete">` 的逻辑删除）才执行；没有该语句时，表配置了逻辑删除列就退化成
+`UPDATE ... SET deleted = 1 WHERE 主键`，两者都没有则报错并要求写语句。
+
+**条件怎么叠**：默认那套只拿 `MetaQuery`，无法把开集运算符塞进固定文件，所以约定文件里的 `metaFind`
+写成不依赖外部参数的「基础语句」（投影、连接、固定过滤含逻辑删除），调用方这次的筛选条件与排序由
+框架包成派生表叠在最外层：
+
+```sql
+SELECT * FROM ( <文件里的基础语句> ) autumn_meta_base WHERE "status" = ? ORDER BY "id" DESC
+```
+
+没有条件也没有排序时直接用原文，不额外包一层。派生表只做投影透传，所以条件里引用的列必须出现在
+基础语句的投影里；逻辑删除过滤不在外层补——那是文件那份语句自己的责任。要带参数（固定租户、区间条件）
+就走完整那套，`#{name}` 与 `MetaQuery` 是两条互不掺混的路。
+
+**懒加载**：`MetaSqlFileStore` 构造时不扫目录、不读文件；某个 (数据源, 命名空间, 表) 第一次被访问才读盘
+解析，结果进有界 LRU（默认 10_000，随表的数量增长而淘汰冷条目）。
+
+**动态更新**：每次访问比对来源的「最后修改时间 + 长度」，改过就重新读、重新解析，不需要重启；
+`-Dautumn.data.meta.sql.root=/path/to/resources/meta` 可以把根目录指到磁盘上（开发期改完即时生效），
+classpath 里以 jar 条目存在的文件不可变、读一次即固定。`clearMetaSqlCache(ds, ns, table)` 用于手工重读，
+`metaStatementIds(ds, ns, table)` 列出可用 id（错误信息里也会带上）。
+
+**宽松解析**：文件可以是完整的 MyBatis 写法（`<?xml?>` + `<mapper namespace="...">`），也可以只写几条语句、
+省掉 `<mapper>` 壳（缺的壳与 `namespace` 由解析前补上）。语句内容还是同一套方言，
+`<resultMap>` 也照样生效——按文件里声明的映射逐行取值。
 
 ### 方言
 

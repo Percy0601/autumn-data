@@ -120,9 +120,57 @@ MetaMapper.of("tenant-a").findList("form_order", MetaQuery.by("status", 1));
 - **手写 SQL 不用建文件**：`findListBySql / findOneBySql / findPageBySql / countBySql / executeBySql / sqlForText` 直接吃一段 SQL，`#{name}` 走 JDBC 绑定、`${name}` 只放标识符、`${table}` 由方言填表名；裸 `?` 在解析期就被拒绝（无名槽判不了列类型、进不了计划缓存）。同一段 SQL 还可以 `registerStatement(table, id, sql)` 注册成命名语句，之后 `selectList/selectOne/sqlFor` 按 id 复用（同 id 覆盖，`refresh` 不撤销）；解析、绑定、类型收口、计划缓存与 XML 里的 `<select>` 完全同一条路径；
 - 自动生成的文件带 `generated-by` 标记；`refresh` 只丢缓存重读文件，要按新结构重来就删文件；手工文件同样原样使用，不会被覆盖；
 - 文件名与列名按**忽略大小写**对齐：H2/Oracle 元数据给的是大写名，手写文件多按 MySQL 习惯写小写，`demo_order.xml` 配 `DEMO_ORDER` 这张表、`#{order_no}` 配 `ORDER_NO` 这一列都能对上；
-- **没有 delete**：应用侧不提供物理删除，作废用一次状态列更新；`deleted_flag` / `del_flag` / `is_deleted` 可自动过滤；
+- **删除看语句，不看框架**：默认路径不提供物理删除，作废用一次状态列更新；`deleted_flag` / `del_flag` / `is_deleted` 可自动过滤。`metaDelete` 只有文件里**显式写了** `<delete id="metaDelete">` 才物理删除，没有该语句时退化为逻辑删除（配置了逻辑删除列的话），两者都没有就报错。
 - `findList` 默认最多 1000 行，多数据源按 pool 绑定句柄而不是 ThreadLocal；
 - **连接池与事务沿用 Spring Boot**：starter 的自动配置把容器里的 `DataSource`（`spring.datasource.*` 建出来的 HikariCP 等）直接交给两条链路——编译期生成的静态仓储和动态层引擎，不自建连接池，连接的创建/回收/调优全归使用方那个池；连接源是 `PerThreadConnectionSource` 包一层 `SpringConnectionSource`（每线程一份，单例 `AutumnJdbc` 才不会串连接），所以语句自动加入 `@Transactional`——事务里调 `MetaMapper`、调 `JdbcTemplate`、调生成的仓储用的是同一条连接，回滚一起回滚。无 Spring 时（`MetaMapperEngine.standalone` / `Autumn.using`）仍是 JDBC 连接源自管、单方法自提交。
+
+### 按「数据源 + 命名空间」放语句：`metaFind / metaSave / metaUpdate / metaDelete`
+
+除了上面按表名组织的 `<meta-directory>/mapper/<表名>.xml`，还有一套把**数据源与业务分组编进路径**
+的语句库：`resources/meta/{datasource}/{namespace}/{table}.xml`。同一张表在多个库、多个租户下各有一份
+语句，互不覆盖；四个操作各有「默认数据源 + 默认命名空间」和「全部显式」两种调法：
+
+```java
+// 默认：数据源 = 静态门面绑定的池名，命名空间 = "default"
+List<MetaClass> rows = MetaMapper.metaFind("form_order", MetaQuery.by("status", 1));
+MetaClass saved = MetaMapper.metaSave(entity);          // 文件里没语句就等价于 save(entity)
+MetaMapper.metaUpdate(entity);                          // 同上，等价于 update(entity)
+MetaMapper.metaDelete(entity);                          // 文件里写了 <delete> 才物理删，否则逻辑删
+
+// 完整：数据源 / 命名空间 / 表 / 语句 id / 参数全部显式
+MetaMapper.metaFind("tenant-a", "erp", "form_order", "findByNo", params);
+```
+
+```xml
+<!-- src/main/resources/meta/default/default/form_order.xml（没有 <mapper> 壳也能用） -->
+<mapper namespace="default/default/form_order">
+    <select id="metaFind">
+        SELECT o.id, o.order_no, o.amount, o.status FROM form_order o
+        <where>
+            <if test="status != null">AND o.status = #{status}</if>
+        </where>
+    </select>
+    <insert id="metaSave">
+        INSERT INTO form_order (order_no, amount, status) VALUES (#{order_no}, #{amount}, #{status})
+    </insert>
+    <update id="metaUpdate">UPDATE form_order SET status = #{status} WHERE id = #{id}</update>
+    <delete id="metaDelete">DELETE FROM form_order WHERE id = #{id}</delete>
+    <select id="findByNo">SELECT * FROM form_order WHERE order_no = #{order_no}</select>
+</mapper>
+```
+
+- **两套 API 各有分工**：默认那套的 `metaFind(table, query)` 只拿 `MetaQuery`，所以文件里的 `metaFind`
+  应当写成不依赖外部参数的「基础语句」（投影、连接、固定的过滤条件含逻辑删除），前端这次的筛选条件与
+  排序由框架以派生表形式叠在最外层；要带参数就用完整那套，语句 id 随便起；
+- **缺文件/缺语句不算错**（`metaDelete` 除外，见上）：`metaFind / metaSave / metaUpdate` 回退到按元数据
+  现拼，行为与 `findList / save / update` 完全一致，所以可以先上线、后补语句；
+- **懒加载**：构造引擎时不扫目录、不读任何文件，某个 (数据源, 命名空间, 表) 第一次被访问才解析那一份；
+  解析结果进有界 LRU，表的数量再涨也不会把语句常驻内存；
+- **动态更新**：每次访问比对来源的「修改时间 + 长度」，文件改过就重新读盘重新解析，不用重启；
+  classpath 里以 jar 形式存在的文件不可变，读一次固定。系统属性
+  `-Dautumn.data.meta.sql.root=/path/to/resources/meta` 可把根目录指到磁盘上（开发期改完即时生效）；
+- 语句内容就是静态实体那套 XML 方言（`#{}/${}/<if>/<choose>/<foreach>/<where>/<trim>/<sql>/<include>/<resultMap>`），
+  `mapper namespace` 可以省略；`metaStatementIds(...)` 列出该表可用 id，`clearMetaSqlCache(...)` 手工重读。
 
 Mapper 文件相关配置：
 
