@@ -1,7 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- 测试用：meta/default/default/form_order.xml，验证 classpath 下的默认数据源 + 默认命名空间 -->
+<!--
+    测试用 classpath 资源：meta/default/default/form_order.xml。
+    验证只读 classpath 兜底路径 {数据源}/{命名空间}/{表名}.xml；语句 id 由使用方自定义。
+-->
 <mapper namespace="default/default/form_order">
-    <select id="metaFind">
+    <select id="findRows">
         SELECT id, order_no, status FROM form_order ORDER BY id
     </select>
 </mapper>

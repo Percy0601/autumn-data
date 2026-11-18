@@ -16,13 +16,14 @@
 外层是**用户级 API**，里面按职责分五层，层与层之间单向依赖（engine → metadata/entity/sql → support）：
 
 ```text
-xyz.wewin.autumn.data.meta.jdbc            用户级：MetaMapper 门面 / MetaQuery 条件 DSL / MetaSqlException / SqlBuild
+xyz.wewin.autumn.data.meta.jdbc            用户级：MetaMapper 门面 / MetaClass 参数实体 / MetaSqlException / SqlBuild
   ├─ engine      MetaMapperEngine（池 → client，共享实体注册表）/ MetaMapperClient（一次调用的编排）
   │              MetaMapperOptions / PerThreadConnectionSource
   ├─ metadata    MetaTable（列快照）/ MetaTableRegistry（懒读 + 手工覆盖）/ MetaModelStore（元类定义 JSON）
   ├─ entity      MetaEntitySource（拼 Java 源码）/ MetaEntityCompiler（内存 javac）
   │              MetaEntityRegistry（结构指纹 → 类）/ MetaEntityColumns + MetaEntityReader（结果集映射）
-  ├─ sql         MetaSqlBuilder（CRUD 现拼）/ MetaStatementStore + SqlTemplate（文件解释）
+  ├─ sql         MetaSqlFileStore（唯一语句库：寻址 / 生成 / 合并 / 缓存）
+  │              MetaSqlGenerator（七条默认语句与 GENERATED 块）/ SqlTemplate（XML AST 解释）
   │              MarkedSql（抽取产物）/ MetaPlanCompiler + MetaSqlPlan + MetaBindSlot + MetaTypeCoercion（再转换）
   │              MetaPlanCache（形状 → 计划）
   └─ support     BoundedCache / LruCache / BoundedCaches / MetaDirectories（根目录 + 三个固定子目录）
@@ -33,11 +34,11 @@ xyz.wewin.autumn.data.meta.jdbc            用户级：MetaMapper 门面 / MetaQ
 ```text
 MetaMapper（静态门面，只持有 volatile engine）
   └─ MetaMapperEngine [有界 LRU：池名 → client]
-       └─ MetaMapperClient（绑定一个池）
+       └─ MetaMapperClient（绑定「数据源 + 命名空间」）
             ├─ MetaTableRegistry     表名 → MetaTable 快照 + 手工登记覆盖                [有界 LRU ×2]
             ├─ MetaEntityRegistry    结构指纹 → 已编译 MetaClass 子类 + READER          [有界 LRU]
-            ├─ MetaSqlBuilder        按 MetaTable 现拼 CRUD SQL，标识符只来自快照
-            ├─ MetaStatementStore    表名 → Mapper AST；已有则读、缺失生成一次           [有界 LRU]
+            ├─ MetaSqlFileStore      {数据源}/{命名空间}/{表}.xml → 语句 AST            [有界 LRU ×3]
+            │                        （七条默认语句由 MetaSqlGenerator 按表结构生成在 GENERATED 块）
             ├─ MetaPlanCache         形状指纹 + SQL 文本 → 执行计划                     [有界 LRU]
             └─ AutumnJdbc            复用执行层：query / page / count / update / 生成键 / 预编译计划
 
@@ -95,8 +96,8 @@ switch，仍用原始列名，业务语义不变。
 同构的表只编译一次，多个数据源池共享一个 `MetaEntityRegistry`。
 
 生成的源码可以落盘（`meta-directory` 的 `entity/` 子目录），产出的是一份可读、可改、能固化成静态实体的
-`.java`；同目录下的 `meta-class/` 放元类定义 JSON，`mapper/` 放 Mapper
-文件。运行期需要完整 JDK（JRE 上没有 `javax.tools`，会明确报错）。
+`.java`；同目录下的 `meta-class/` 放元类定义 JSON，`sql/` 放一张表一个的语句 XML
+（其下再按 `数据源/命名空间/` 分层）。运行期需要完整 JDK（JRE 上没有 `javax.tools`，会明确报错）。
 
 > **部署注意**：javac 编译生成源码时需要能从 `java.class.path` / `CodeSource` 找到
 > `MetaClass` 等依赖类。普通 classpath 启动（含 Maven Surefire 的 manifest-only jar）已处理；
@@ -126,7 +127,7 @@ autumn.data.meta.mapper.entity-codegen=auto
 ```
 
 GENERIC 下 `MetaClass` 的 `getProperties()`、`set/get`、`toJson()`（json-path，原生支持
-native）、`MetaQuery`、Mapper `<sql>/<include>`、`<resultMap>`、分页、逻辑删除全部照旧；
+native）、参数实体、语句 XML 的 `<sql>/<include>`、`<resultMap>`、分页、逻辑删除全部照旧；
 `MetaMapper.entityType(table)` 返回 `MetaClass.class`，`MetaEntityModel.source()` 为 null。
 每行深拷贝一份属性列表（值存放在 `MetaProperty` 上），因此行与行之间不共享状态；
 读出来的行同样 `clearChanged()`，部分更新语义不变。
@@ -137,11 +138,11 @@ native）、`MetaQuery`、Mapper `<sql>/<include>`、`<resultMap>`、分页、�
   （避免 native-image 把常量 `Class.forName` 自动注册成反射目标），native 下策略是 GENERIC，
   这段不会执行；构建报告里不应再出现 `jdk.compiler`（实测镜像从 62.7 MiB 降到 48.3 MiB）。
   不要显式把 `entity-codegen` 配成 `code`。
-- 资源：**不声明** native-image 资源包含。Mapper XML 是使用方的资产，按
-  `autumn.data.meta.mapper.meta-directory` 落在磁盘的 `mapper/` 下，native 运行期直接按路径读
-  （`Files.readString`）、缺失时照样生成一份，和 `spring-boot-native-samples` 里读
+- 资源：**不声明** native-image 资源包含。语句 XML 是使用方的资产，按
+  `autumn.data.meta.mapper.meta-directory` 落在磁盘的 `sql/{数据源}/{命名空间}/` 下，native 运行期直接按路径读
+  （`Files.readString`）、缺失时照样在内存生成七条默认语句，和 `spring-boot-native-samples` 里读
   `/data/html/static.html` 那类外部文件一个路子；把某个版本的 SQL 塞进镜像只会让它过期。
-  确实想内置一批默认语句，再按 `-H:IncludeResources=meta-mappers/.*` 自行声明即可。
+  确实想内置一批语句，再按 `-H:IncludeResources=meta/.*` 自行声明即可。
 - 驱动 / 连接池按各自官方的 native 配置准备；H2 自带 `JdbcDataSource`（本次冒烟用的就是它），
   PostgreSQL 用 `org.postgresql.Driver`。
 
@@ -177,13 +178,19 @@ MetaMapper.install(MetaMapperEngine.forDataSource("default", dataSource));
 // 查询（返回的就是运行期生成、带真实字段类型的实体）
 Optional<MetaClass> row = MetaMapper.findById("form_order", 1L);
 Class<? extends MetaClass> type = MetaMapper.entityType("form_order");   // 动态生成出来的类
-MetaMapper.findOne("form_order", MetaQuery.by("order_no", "A001"));
-MetaMapper.findList("form_order", MetaQuery.by("status", 1)
-        .and("create_time", MetaQuery.Op.GE, from)
-        .orderBy("create_time", MetaQuery.Direction.DESC));
-MetaMapper.findList("form_order", MetaQuery.all().isNull("remark"));      // 空值判断走专门的方法
-MetaMapper.findPage("form_order", MetaQuery.by("status", 1), Pageable.of(0, 20));
-MetaMapper.count(...); MetaMapper.exists(...);
+
+// 查询条件 = 参数实体：赋了值的列按 XML 里的 <if> 进 WHERE
+MetaClass query = new MetaClass();
+query.set("status", 1);
+MetaMapper.findOne("form_order", query);
+MetaMapper.findList("form_order", query);
+MetaMapper.findPage("form_order", query, Pageable.of(0, 20));
+MetaMapper.count("form_order", query); MetaMapper.exists("form_order", query);
+
+// 复杂条件（比较 / 模糊 / IN / 排序）写在 XML 自定义语句里，按 id 调用
+MetaClass range = new MetaClass();
+range.set("minAmount", new BigDecimal("50"));
+MetaMapper.defaultClient().selectList("form_order", "highValue", range);
 
 // 新增：实体上赋过值的列才进 INSERT，自增主键回填到同一个实体上
 MetaClass order = MetaMapper.newEntity("form_order");
@@ -200,20 +207,23 @@ byKey.set("tenant", "T1");
 byKey.set("order_no", "A001");
 MetaMapper.findByKey(byKey);
 
-// 多数据源：显式绑定池
-MetaMapper.of("tenant-a").findPage("form_order", MetaQuery.all(), Pageable.of(0, 20));
+// 删除：执行 XML 里的 delete 语句
+MetaMapper.delete(order);
 
-// 命名语句走 client（id 就是 Mapper 文件里的语句 id，参数也是实体）
-MetaMapperClient client = MetaMapper.defaultClient();
-MetaClass params = MetaMapper.newEntity("form_order");                    // 或 new MetaClass()
-params.set("status", 1);
-client.selectList("form_order", "selectList", params);
-client.selectOne("form_order", "byOrderNo", params);
-client.selectCount("form_order", "countDraft", params);
-client.execute("form_order", "voidByNo", params);
-MarkedSql sql = client.sqlFor("form_order", "selectList", params);        // 只看文本与绑定值，不执行
+// 多数据源 + 命名空间：把边界固定在客户端句柄上（命名空间可用于业务划分或包名称）
+MetaMapperClient client = MetaMapper.of("tenant-a", "erp");   // → sql/tenant-a/erp/form_order.xml
+client.findPage("form_order", query, Pageable.of(0, 20));
 
-// 手写 SQL：不建文件、不注册，即查即写（#{...} 绑定、${table} 由方言填表名）
+// 自定义语句（同一份 XML 里 GENERATED 块之外的部分，参数也是实体）
+client.selectList("form_order", "findByNo", query);
+client.selectOne("form_order", "byOrderNo", query);
+client.selectCount("form_order", "countDraft", query);
+client.execute("form_order", "voidByNo", query);
+MarkedSql sql = client.sqlFor("form_order", "findByNo", query);          // 只看文本与绑定值，不执行
+client.statementIds("form_order");                                       // 七条默认 + 自定义 + 代码注册
+client.ensureStatementFile("form_order");                                // 显式生成 / 更新文件
+
+// 手写 SQL：不落文件、不注册，即查即写（#{...} 绑定、${table} 由方言填表名）
 MetaClass q = new MetaClass();
 q.set("status", 1);
 q.set("minAmount", new BigDecimal("50"));
@@ -231,14 +241,14 @@ MarkedSql preview = MetaMapper.sqlForText("form_order", "SELECT * FROM ${table} 
 // 也可以把手写 SQL 注册成命名语句，之后按 id 复用（同 id 覆盖，refresh 不撤销）
 client.registerStatement("form_order", "hotOrders",
         "SELECT id, order_no, amount FROM ${table} WHERE status = #{status} ORDER BY amount DESC");
-client.selectList("form_order", "hotOrders", params);
+client.selectList("form_order", "hotOrders", query);
 client.unregisterStatement("form_order", "hotOrders");
 
 // 缓存分级清理与重新加载
 MetaMapper.clearTableCache("form_order");       // 只丢 MetaTable 快照，下次访问回源 DatabaseMetaData
 MetaMapper.clearEntityCache("form_order");      // 只丢编译出来的 MetaClass 子类，下次重新生成 + 编译
 MetaMapper.clearStatementCache("form_order");   // 只丢语句 AST 与执行计划
-MetaMapper.clearCache("form_order");            // 三样一起清（= 老 refresh 的语义）
+MetaMapper.clearCache("form_order");            // 三样一起清（refresh 是它的别名）
 MetaClass rebuilt = MetaMapper.reload("form_order");  // 清缓存 + 立即回读 + 立即重编（失败当场暴露）
 MetaMapper.cacheStats();                        // 各级条目数与上限，运维巡检用
 ```
@@ -247,8 +257,10 @@ MetaMapper.cacheStats();                        // 各级条目数与上限，�
 它们不是列，就落在实体的动态属性里，`getProperties()` 会一并摊出来。表名也读自实体，所以
 `client.execute(table, id, entity)` 里 `table` 与 `entity.getName()` 一致即可。
 
-**没有 delete。** 应用侧不提供物理删除；作废走状态列（`entity.set("status", "VOID")` + `update`）。
-若表里有 `deleted_flag` / `del_flag` / `is_deleted`，查询自动追加 `= 0`（可配置关闭）。
+**删除由 XML 里的 `delete` 语句决定**：表配置了逻辑删除列时默认语句生成
+`UPDATE ... SET deleted_flag = 1 WHERE 主键 AND deleted_flag = 0`，没有逻辑删除列时生成物理
+`DELETE FROM ... WHERE 主键`；使用方可以在自定义区覆盖 `delete` 换语义。`deleted_flag` /
+`del_flag` / `is_deleted` 命中后查询自动追加 `= 0`（可配置关闭）。
 
 ## 元数据快照
 
@@ -261,7 +273,7 @@ MetaMapper.cacheStats();                        // 各级条目数与上限，�
 | --- | --- | --- |
 | `clearTableCache(table)` | 只清 `MetaTable` 快照（含手工覆盖），下次访问回源 `DatabaseMetaData` | 怀疑结构读错了 / 表刚被重建，但不想让所有行换 Class |
 | `clearEntityCache(table)` | 只清该表编译出的 `MetaClass` 子类，下次访问重新生成 + 编译 | 换了代码生成器 / 想强制重编一次 |
-| `clearStatementCache(table)` | 只清 Mapper 语句 AST 与执行计划 | 改了 Mapper 文件、想丢掉旧 AST；不动结构与实体类 |
+| `clearStatementCache(table)` | 只清语句 AST 与执行计划 | 改了语句 XML、想丢掉旧 AST；不动结构与实体类 |
 | `clearCache(table)` | 以上三样一起清（`refresh(table)` 是它的别名） | 建表 / 加列 / 删列提交之后的标准动作 |
 | `reload(table)` | 先清三样，再**立即**回读元数据并重编实体类 | 需要“现在就成功”：表被删、元数据读失败、javac 编译失败会当场抛出，而不是等下一次查询 |
 | `reloadAll()` | 当前池里已有快照的表逐张 `reload` | 批量改表之后的一次性重建 |
@@ -281,8 +293,9 @@ MetaMapper.cacheStats();                        // 各级条目数与上限，�
 | `MetaTableRegistry.cache` | 表名（大小写不敏感） | 一份不可变列快照 | 重读一次 `DatabaseMetaData` |
 | `MetaTableRegistry.overrides` | 表名 | 使用方手工登记的结构覆盖 | 回源到 `DatabaseMetaData`；需长期保真就调大上限或重新 `register` |
 | `MetaEntityRegistry` | 表名 + 结构指纹 | 一个编译出的 `Class` + 内存 ClassLoader | 重新生成/编译一份同类名的类（新 ClassLoader） |
-| `MetaStatementStore.cache` | 表名 | 一棵 Mapper XML AST | 重读已有的 XML 文件（**不会重写**） |
-| `MetaStatementStore.declared` | 表名 → 语句 id | 一条代码注册的手写语句 AST | 丢失后需代码重新 `registerStatement`（不落盘、无文件可回源） |
+| `MetaSqlFileStore.files` | 数据源/命名空间/表 | 一份 XML 解析出的语句 AST | 重读已有的 XML 文件（结构指纹变了会重新生成 GENERATED 块） |
+| `MetaSqlFileStore.defaults` | 结构指纹 | 七条默认语句 AST（避免重复解析生成模板） | 按表结构重新解析一份生成模板 |
+| `MetaSqlFileStore.declared` | 数据源/命名空间/表 → 语句 id | 一条代码注册的语句 AST | 丢失后需代码重新 `registerStatement`（不落盘、无文件可回源） |
 | `MetaMapperEngine.clients` | 池名 | 一套 Registry + 连接源 | 按需重建 client（旧 client 上执行中的操作持有引用，不受影响） |
 
 其中实体类缓存最重，只堵表结构快照没有意义。以上统一走 `BoundedCache`，默认上限
@@ -320,18 +333,62 @@ autumn.data.meta.mapper.table-cache-size=10000
   普通表一样懒加载回源到 `DatabaseMetaData`（若该表不存在则报「table not found」）。
   `refresh(table)` 仍按原语义同时清掉该表的快照与覆盖。
 
-## Mapper 文件与命名语句
+## 唯一语句库：一张表一个 XML
 
-规则只有一条：**文件存在就用文件，不存在才按表结构生成一次**。
+**SQL 只有一个来源**：`MetaSqlFileStore` 里那张表对应的 XML 文件，路径
+`{语句根}/{数据源}/{命名空间}/{表名}.xml`。核心 CRUD 与自定义语句共用同一份文件、
+同一套 MyBatis 语法，**没有第二套文件目录，也没有 Java 侧现拼 CRUD SQL 的双轨实现**。
 
-1. 查找顺序：`<meta-directory>/mapper/<表名>.xml` → classpath `meta-mappers/<表名>.xml`；
-   两级都按「表名原样 / 小写 / 大写」三个文件名依次找（H2、Oracle 的元数据表名是大写，手写文件多按 MySQL 习惯写小写）；
-2. 都没有且 `generate-files=true`：按 `MetaTable` 的列结构生成一份，写到 `mapper/` 子目录后使用；
-   `meta-directory` 为空串时只在内存里用、不落盘；
-3. 生成文件带 `generated-by: autumn-data-meta-jdbc` 标记。**文件存在就直接使用，永不回头覆盖**：
-   改表加列后 `refresh` 只是丢缓存重读文件，要按新结构重来就删文件手工重写。文件归使用方所有。
+```text
+{语句根}/{数据源}/{命名空间}/{表名}.xml
+  · 语句根 = <meta-directory>/sql（或 -Dautumn.data.meta.sql.root 指定的目录）
+  · 磁盘找不到 → classpath:meta/{数据源}/{命名空间}/{表名}.xml
+  · 文件名按「原样 / 小写 / 大写」三种写法依次找，大小写不敏感
+```
 
-`client.refresh(table)` 与“重写用户文件”是两件事，故意不联动——否则用户改过的语句会被表结构冲掉。
+`MetaMapper.of(池, 命名空间)` 把「哪个库、哪套语句」固定在客户端句柄上；
+`MetaMapper.defaultClient()` 等价于 `of(默认池, "default")`。`forNamespace(...)` 只是切一个
+轻量视图，共享全部注册表与缓存。
+
+### 文件分两块
+
+框架在文件里维护一个带结构指纹的自动生成区，按表结构生成七条默认语句：
+
+```xml
+<mapper namespace="tenant-a/erp/form_order">
+  <!-- ===== AUTUMN-DATA GENERATED START fingerprint=1-xxxx ===== -->
+  <!-- 本块由框架按表结构生成，表结构变化时只重写本块；手工改动会被覆盖。 -->
+    <sql id="__autumn_columns">"id", "order_no", "amount", "status"</sql>
+    <select id="findList">SELECT <include refid="__autumn_columns"/> FROM "form_order" ...</select>
+    <select id="findPage"> ... </select>
+    <select id="findOne"> ... </select>
+    <select id="findById"> ... </select>
+    <insert id="save"> ... <if test="changed('order_no')"> ... </if> ... </insert>
+    <update id="update"> ... <if test="changed('status')"> ... </if> ... </update>
+    <update id="delete"> ... </update>
+  <!-- ===== AUTUMN-DATA GENERATED END ===== -->
+
+  <!-- ===== 自定义语句区：写在下面，框架不会改动 ===== -->
+  <select id="findByNo">SELECT * FROM ${table} WHERE order_no = #{order_no}</select>
+  <delete id="purgeById">DELETE FROM ${table} WHERE id = #{id}</delete>
+</mapper>
+```
+
+- **七条默认语句**：`findList` / `findPage` / `findOne` / `findById` / `save` / `update` / `delete`。
+  核心方法各自执行文件里同 id 的语句；读哪几列由 `<sql>` 片段与 `<include>` 决定，
+  条件由逐列 `<if>` + `<where>` 决定，写哪几列由内置谓词 `changed('col')` 读实体变更集决定
+  （「显式置 NULL」与「这一列没动」是两件事）。查询条件因此是**参数实体 + `<if>`**，不在 Java 侧现拼 SQL。
+- **表结构变化只重写生成块**：标记头里的结构指纹 = 生成器版本 + `MetaTable#fingerprint()`。
+  指纹变了，`MetaSqlGenerator.merge` 只替换 START/END 之间那一段；标记之前的注释、
+  标记之后的自定义语句、缩进与空行逐字保留。
+- **七条默认语句一定可用**：文件不存在且磁盘可写时生成完整文档；只读 classpath / 纯内存模式
+  （`generate-files=false`）不落盘，默认语句在内存补齐；没有生成块的手写文件也是内存补齐，
+  且文件一个字不改写——它被视为使用方资产。想让框架维护默认语句，就保留这对标记。
+- **自定义语句按 id 调用**：`sqlFor`（只抽取不执行）、`selectList` / `selectOne` / `selectCount` /
+  `execute`；`<select>` 走查询，`<insert>/<update>/<delete>` 走写。自定义区可以覆盖同名默认 id
+  （文件里已有的同名语句优先）。`delete` 语句决定删除语义：有逻辑删除列时默认生成逻辑删除
+  `UPDATE`，没有时生成物理 `DELETE`，覆盖它即可换语义。
+- **代码注册是同一套语法的内存覆盖层**：`registerStatement` 优先级高于文件，`refresh` 不撤销。
 
 ### 手写 SQL（不落文件）
 
@@ -360,8 +417,8 @@ client.registerStatement("form_order", "hotOrders",
 - **不接受裸 `?`**：没有名字的槽判不了列类型、进不了计划缓存，解析阶段就直接报错并提示改
   `#{name}`（而不是等驱动报「占位符个数对不上」）；
 - 注释（`--` / `/* */`）与单引号字面量里的 `#{...}` 不当占位符；
-- 开头关键字决定入口：查询入口只收 `SELECT` / `WITH`，写入口只收 `INSERT` / `UPDATE`，
-  `DELETE` 一律拒绝（动态层不做物理删除）；
+- 开头关键字决定入口：查询入口只收 `SELECT` / `WITH`，写入口收 `INSERT` / `UPDATE` / `DELETE`；
+  手写 `DELETE` 与 XML 自定义区的 `<delete>` 一样允许执行，删除语义由语句决定；
 - 分页时 `countSql` 留空会自动包成 `SELECT COUNT(*) FROM (原查询) autumn_page_count`；
   内容与计数各自按自己的占位符顺序绑定，所以 `countSql` 不必与内容查询参数顺序一致；
 - 注册语句由代码持有，`refresh` / `clearCache` 不会撤销；同 id 重复注册即覆盖；
@@ -371,104 +428,57 @@ client.registerStatement("form_order", "hotOrders",
 
 | 入口 | SQL 来源 | 说明 |
 | --- | --- | --- |
-| `findById` / `findByKey` / `findList` / `findPage` / `count` / `save` / `saveAll` / `update` … | `MetaSqlBuilder` 现拼 | 条件运算符是开集（`>` / `LIKE` / `IN` / `BETWEEN` / 排序…），固定文件表达不了，因此这条路**完全不读文件** |
-| `sqlFor` / `selectList` / `selectOne` / `selectCount` / `execute` | 代码注册的语句优先，其次 Mapper 文件 | 语句 id 就是注册时的 id / XML 里的 `id`；`<select>` 走查询，`<insert>`/`<update>` 走 `execute`，`<delete>` 拒绝执行 |
-| `findListBySql` / `findOneBySql` / `findPageBySql` / `countBySql` / `executeBySql` / `sqlForText` | 调用方当场给的文本 | 不读文件、不注册；`#{...}` / `${...}` 语义与文件一致 |
-| `metaFind` / `metaSave` / `metaUpdate` / `metaDelete` | `meta/{数据源}/{命名空间}/{表}.xml`，缺语句时回退 `MetaSqlBuilder` 现拼（`metaDelete` 只退化逻辑删除） | 见下一节；同一张表在不同库/租户下各有一份语句 |
+| `findById` / `findByKey` / `findOne` / `findList` / `findPage` / `count` / `exists` / `save` / `saveAll` / `update` / `delete` | 同一份 XML 里对应 id 的默认语句 | 七条默认语句一定可用（GENERATED 块或内存补齐），**核心 CRUD 也读文件** |
+| `sqlFor` / `selectList` / `selectOne` / `selectCount` / `execute` | 代码注册语句优先，其次文件里的自定义语句，其次默认语句 | 语句 id 就是注册时的 id / XML 里的 `id`；`<select>` 走查询，`<insert>/<update>/<delete>` 走写 |
+| `findListBySql` / `findOneBySql` / `findPageBySql` / `countBySql` / `executeBySql` / `sqlForText` | 调用方当场给的文本 | 一次性模板，不落文件、不进语句库；`#{...}` / `${...}` 语义与文件一致 |
 
-生成的文件本身就是一份可跑的样例语句（`selectList` / `selectCount` / `insert` / `updateByKey`），
-逐列展开成 `<if>`；投影、排序、运算符想改就直接改这份文件。下面是生成内容的节选：
+默认语句本身就是一份可跑的样例：`<sql id="__autumn_columns">` 抽列清单、`<include>` 复用，
+`<where>` 里逐列 `<if test="col != null">` 拼等值条件并固定追加逻辑删除过滤，
+`save` / `update` 用 `<trim suffixOverrides=",">` + `changed('col')` 拼列清单与绑定。节选：
 
 ```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!-- generated-by: autumn-data-meta-jdbc -->
-<mapper namespace="dynamic.form_order">
-    <select id="selectList">
-        SELECT "id", "order_no", "amount", "status", "create_time", "deleted_flag" FROM "form_order"
-        <where>
-            AND "deleted_flag" = 0
-            <if test="id != null">AND "id" = #{id}</if>
-            <if test="order_no != null">AND "order_no" = #{order_no}</if>
-            <if test="status != null">AND "status" = #{status}</if>
-        </where>
-        ORDER BY "id"
-    </select>
-    <insert id="insert">
-        INSERT INTO "form_order"
-        <trim prefix="(" suffix=")" suffixOverrides=",">
-            <if test="order_no != null">"order_no",</if>
-            <if test="status != null">"status",</if>
-        </trim>
-        <trim prefix="VALUES (" suffix=")" suffixOverrides=",">
-            <if test="order_no != null">#{order_no},</if>
-            <if test="status != null">#{status},</if>
-        </trim>
-    </insert>
-    <update id="updateByKey">
-        UPDATE "form_order"
-        <trim prefix="SET " suffixOverrides=",">
-            <if test="status != null">"status" = #{status},</if>
-        </trim>
-        WHERE "id" = #{id}
-    </update>
-</mapper>
+<insert id="save">
+    INSERT INTO "form_order"
+    <trim prefix="(" suffix=")" suffixOverrides=",">
+        <if test="changed('order_no')">"order_no",</if>
+        <if test="changed('amount')">"amount",</if>
+        <if test="changed('status')">"status",</if>
+    </trim>
+    <trim prefix="VALUES (" suffix=")" suffixOverrides=",">
+        <if test="changed('order_no')">#{order_no},</if>
+        <if test="changed('amount')">#{amount},</if>
+        <if test="changed('status')">#{status},</if>
+    </trim>
+</insert>
 ```
 
-### 按「数据源 + 命名空间」放语句：`metaFind` / `metaSave` / `metaUpdate` / `metaDelete`
+### 按「数据源 + 命名空间」分层
 
-`<meta-directory>/mapper/<表名>.xml` 的寻址键只有表名，一张表只能有一份语句。低代码/多租户场景下
-同一张表常常在多个库、多个业务分组里各有一份写法，于是另有一层把**数据源与命名空间编进路径**的语句库：
-
-```
-src/main/resources/meta/{datasource}/{namespace}/{table}.xml
-```
-
-同一张 `form_order` 在 `default/default`、`tenant-a/erp` 下各有一份，互不覆盖。四个操作各有两套 API：
+同一张表在多个库、多个业务分组里各有一份语句文件，互不覆盖。`of(池, 命名空间)` 就是这层寻址的
+调用边界，命名空间可用于业务划分或包名称：
 
 ```java
-// 一套：默认数据源（= 静态门面绑定的池名）+ 默认命名空间（"default"）
-MetaMapper.metaFind("form_order", MetaQuery.by("status", 1));
-MetaMapper.metaSave(entity);
-MetaMapper.metaUpdate(entity);
-MetaMapper.metaDelete(entity);
+MetaMapperClient client = MetaMapper.of("tenant-a", "erp");   // → sql/tenant-a/erp/form_order.xml
+MetaClass params = new MetaClass();
+params.set("status", 1);
 
-// 另一套：数据源 / 命名空间 / 表 / 语句 id / 参数全部显式
-MetaMapper.metaFind("tenant-a", "erp", "form_order", "findByNo", params);
-MetaMapper.metaUpdate("tenant-a", "erp", "form_order", "voidById", params);
+client.findList("form_order", params);                 // 该命名空间文件里的 findList
+client.selectList("form_order", "findByNo", params);  // 该命名空间文件里的自定义语句
+client.statementIds("form_order");                    // 七条默认 + 自定义 + 代码注册
+client.ensureStatementFile("form_order");             // 显式生成 / 更新文件并返回位置
 ```
 
-**语句 id 是约定**：默认那套按操作名找 `metaFind` / `metaSave` / `metaUpdate` / `metaDelete`；
-完整那套的 id 由调用方给（可以是这四个约定名，也可以是 `findByNo` 这类自定义语句）。
-
-**缺文件、缺语句不算错**：`metaFind` / `metaSave` / `metaUpdate` 回退到按元数据现拼，
-行为与 `findList` / `save` / `update` 一模一样——所以可以先上线、后补语句，也可以只覆盖其中一两个操作。
-`metaDelete` 是例外：动态层**不会自己拼 `DELETE`**，只有文件里显式写了 `<delete id="metaDelete">`
-（或写成 `<update id="metaDelete">` 的逻辑删除）才执行；没有该语句时，表配置了逻辑删除列就退化成
-`UPDATE ... SET deleted = 1 WHERE 主键`，两者都没有则报错并要求写语句。
-
-**条件怎么叠**：默认那套只拿 `MetaQuery`，无法把开集运算符塞进固定文件，所以约定文件里的 `metaFind`
-写成不依赖外部参数的「基础语句」（投影、连接、固定过滤含逻辑删除），调用方这次的筛选条件与排序由
-框架包成派生表叠在最外层：
-
-```sql
-SELECT * FROM ( <文件里的基础语句> ) autumn_meta_base WHERE "status" = ? ORDER BY "id" DESC
-```
-
-没有条件也没有排序时直接用原文，不额外包一层。派生表只做投影透传，所以条件里引用的列必须出现在
-基础语句的投影里；逻辑删除过滤不在外层补——那是文件那份语句自己的责任。要带参数（固定租户、区间条件）
-就走完整那套，`#{name}` 与 `MetaQuery` 是两条互不掺混的路。
-
-**懒加载**：`MetaSqlFileStore` 构造时不扫目录、不读文件；某个 (数据源, 命名空间, 表) 第一次被访问才读盘
-解析，结果进有界 LRU（默认 10_000，随表的数量增长而淘汰冷条目）。
-
-**动态更新**：每次访问比对来源的「最后修改时间 + 长度」，改过就重新读、重新解析，不需要重启；
-`-Dautumn.data.meta.sql.root=/path/to/resources/meta` 可以把根目录指到磁盘上（开发期改完即时生效），
-classpath 里以 jar 条目存在的文件不可变、读一次即固定。`clearMetaSqlCache(ds, ns, table)` 用于手工重读，
-`metaStatementIds(ds, ns, table)` 列出可用 id（错误信息里也会带上）。
-
-**宽松解析**：文件可以是完整的 MyBatis 写法（`<?xml?>` + `<mapper namespace="...">`），也可以只写几条语句、
-省掉 `<mapper>` 壳（缺的壳与 `namespace` 由解析前补上）。语句内容还是同一套方言，
-`<resultMap>` 也照样生效——按文件里声明的映射逐行取值。
+- **懒加载**：`MetaSqlFileStore` 构造时不扫目录、不读任何文件；某个 (数据源, 命名空间, 表) 第一次
+  被访问才解析那一份，结果进有界 LRU（默认 10_000，随表的数量增长而淘汰冷条目）。
+- **动态更新**：每次访问比对来源的「最后修改时间 + 长度」，改过就重新读、重新解析，不需要重启；
+  另外按结构指纹判活，表结构一变就重新生成 GENERATED 块并重新解析。
+  `-Dautumn.data.meta.sql.root=/path/to/sql` 可以把语句根指到磁盘上（开发期改完即时生效），
+  classpath 里以 jar 条目存在的文件不可变、读一次即固定。`refresh(table)` 用于手工重读，
+  找不到语句时的错误信息会带上可用的 id 与文件位置。
+- **宽松解析**：文件可以是完整的 MyBatis 写法（`<?xml?>` + `<mapper namespace="...">`），也可以只写几条语句、
+  省掉 `<mapper>` 壳（缺的壳与 `namespace` 由解析前补上）。`<resultMap>` 也照样生效——
+  按文件里声明的映射逐行取值。
+- **路径安全**：数据源 / 命名空间来自调用方，会被收口成安全文件名，`..` 之类无法越出语句根。
 
 ### 方言
 
@@ -497,10 +507,10 @@ classpath 里以 jar 条目存在的文件不可变、读一次即固定。`clea
 - `test` 表达式只认 MyBatis 写法：`name != null`、`name == 'active'`、`name != ''`、`!expr`、
   `a && b`（`&&` 需写成 `&amp;&amp;`）。FreeMarker 的 `name??` / `name?has_content` / `name?size`
   已移除，写了会按未知标识符在解析阶段报错；
-- **SQL 片段**：`<sql id="allColumns">...</sql>` 定义片段，`<include refid="allColumns"/>` 引用；
+- **SQL 片段**：`<sql id="...">...</sql>` 定义片段，`<include refid="..."/>` 引用；
   `refid` 支持 `namespace.id`（取最后一段匹配），解析阶段直接内联成 AST，运行期没有额外开销；
   片段互相引用会做环检测，`a -> b -> a` 直接报错；`<include>` 里的 `<property>` 子标签暂不支持；
-  生成的 Mapper 文件默认就带一个 `allColumns` 片段，`selectList` 用 `<include>` 复用；
+  生成块的七条默认语句共用 `<sql id="__autumn_columns">`，自定义语句也能 `<include>` 它；
 - **字段映射**：`<resultMap id="orderView" type="demo_order">` 下用 `<id column="id" property="id"/>`
   与 `<result column="no" property="order_no"/>` 声明「结果集列名 → MetaClass 属性名」。
   property 会按表元数据归一（驼峰自动转下划线，`orderNo` → `order_no`），列名大小写不敏感；
@@ -509,13 +519,13 @@ classpath 里以 jar 条目存在的文件不可变、读一次即固定。`clea
   这类嵌套映射暂不支持，遇到会明确报错；
 - 参数实体上的键按元数据归一，`set("ORDER_NO", ...)` 与 `set("order_no", ...)` 都能对上语句里的列名；
   值按列的 JDBC 类型收口（表单字符串 → Long/BigDecimal/LocalDateTime）；
-- 名字按忽略大小写对齐：`#{}` / `test` 里写的列名、调用方传的键、Mapper 文件名三者都不要求
+- 名字按忽略大小写对齐：`#{}` / `test` 里写的列名、调用方传的键、语句文件名三者都不要求
   和元数据的大小写一致。H2、Oracle 的元数据列名是大写，手写文件多按 MySQL 习惯写小写，
   对不上时 `#{order_no}` 会静默绑成 `null`——所以这里显式做成大小写不敏感。
 
 ```properties
 autumn.data.meta.mapper.meta-directory=autumn-meta             # 空串 = 纯内存，三类产物都不落盘
-autumn.data.meta.mapper.generate-files=true                    # false 时缺失文件直接报错
+autumn.data.meta.mapper.generate-files=true                    # 是否把生成/合并结果写回磁盘；false 时默认语句仍在内存补齐
 autumn.data.meta.mapper.table-cache-size=10000
 autumn.data.meta.mapper.default-list-limit=1000
 autumn.data.meta.mapper.default-pool-name=default
@@ -523,26 +533,27 @@ autumn.data.meta.mapper.logic-delete-columns=deleted_flag,del_flag,is_deleted
 ```
 
 `meta-directory` 是唯一的工作目录，三类产物落在它的固定子目录里：`meta-class/`（元类定义 JSON）、
-`entity/`（生成的实体 `.java`，留空即全程内存编译）、
-`mapper/`（Mapper XML）。子目录里的文件一旦存在就不再重写，所以 `generate-files=false` 只影响「第一次」：
-缺失时抛 `MetaSqlException`，适合生产环境要求 Mapper 必须预置的场景。`table-cache-size` 是各缓存容器各自的
-条目上限（默认 10000），详见「有界缓存」一节。
+`entity/`（生成的实体 `.java`，留空即全程内存编译）、`sql/`（一张表一个语句 XML，其下再按
+`数据源/命名空间/` 分层）。`generate-files` 只控制「是否落盘」：关掉它，缺失的文件不会报错，
+七条默认语句照样在内存生成、手写文件照样生效。`table-cache-size` 是各缓存容器各自的条目上限
+（默认 10000），详见「有界缓存」一节。
 
 ### 上手示例
 
 上层怎么调，看使用方模块里的两个文件，都是能直接跑的：
 
 - `autumn-data-jdbc-spring-boot-starter-using/src/test/java/.../using/MetaMapperXmlUsingTest.java`
-  按「CRUD 不碰文件 → 命名语句首次生成 → 手写文件优先 → 类型与 id 校验 → 注入边界」五段走一遍，
-  Spring 只配了数据源，引擎由 starter 自动装配进 `MetaMapper`；
-- `autumn-data-jdbc-spring-boot-starter-using/src/test/resources/meta-mappers/demo_order.xml`
-  就是那份手写 Mapper 文件，`<if>/<where>/<trim>/<choose>/<foreach>` + `#{}` + `${}` 各有一条，
-  注释里写了查找顺序和三条写法约定。
+  按「默认语句驱动 CRUD → 手写文件不改写 → 生成块刷新与自定义语句保留 → classpath 手写文件驱动动态 SQL →
+  语句类型/id 与删除语义 → 注入边界」六段走一遍，Spring 只配了数据源，
+  引擎由 starter 自动装配进 `MetaMapper`；
+- `autumn-data-jdbc-spring-boot-starter-using/src/test/resources/meta/default/default/demo_order.xml`
+  就是那份手写语句文件，`<if>/<where>/<trim>/<choose>/<foreach>` + `#{}` + `${}` 各有一条，
+  注释里写了路径约定与写法约定。
 
 跑起来：`mvn -B test`（全 reactor）。想只跑这一类示例，先 `mvn -B install -DskipTests`
 把编译期处理器装进本地仓库，再 `mvn -pl autumn-data-jdbc-spring-boot-starter-using test
--Dtest=MetaMapperXmlUsingTest`。生成的文件落在 `target/autumn-meta/mapper/`，删掉它就等于
-「按新表结构重来」。
+-Dtest=MetaMapperXmlUsingTest`。生成的文件落在 `target/autumn-meta/sql/{数据源}/{命名空间}/`，
+删掉它就等于「按当前表结构重新生成一份」。
 
 ## 抽取 / 再转换 / 执行：一次 SQL 的三段
 
@@ -576,7 +587,8 @@ autumn.data.meta.mapper.logic-delete-columns=deleted_flag,del_flag,is_deleted
 
 ## 安全边界
 
-- 表名/列名/排序字段只作为引用，拼 SQL 前必须命中 `MetaTable`，否则抛错；
+- 默认语句的列名由 `MetaSqlGenerator` 按 `MetaTable` 生成、写死在 XML 里；参数实体里不是元数据的列名
+  根本进不了逐列 `<if>` 条件，写方向的未知列在拼 SQL 之前就被 `validateWritable` 拦下；
 - 所有值走 `?`，包括条件、分页前的谓词、批量参数；命名语句里的 `#{}` 在**解析阶段**就摘成
   参数节点，模板渲染只产出 `?`，不存在“先拼文本再补参数”的顺序；
 - `${}` 只能展开成标识符片段（字母数字下划线 + 方言引用符 + 列表标点），带引号、分号、
@@ -584,20 +596,22 @@ autumn.data.meta.mapper.logic-delete-columns=deleted_flag,del_flag,is_deleted
 - 值按列 JDBC 类型显式转换（表单字符串 → Long/BigDecimal/LocalDateTime/Boolean 等），
   失败信息带表.列与期望类型；
 - `findList` 默认最多 1000 行，避免动态查询误拉全表；需要更多显式传 limit；
-- 动态层不执行 `<delete>`：`execute` 遇到删除语句直接拒绝。
+- 删除语义由 XML 的 `delete` 语句决定：有逻辑删除列默认逻辑删除、否则物理删除，`execute` 允许执行 `<delete>`；
+  `save` / `update` / `delete` 会先校验语句类型、变更集与主键值，避免空 WHERE 或脏主键静默命中 0 行；
 
 ## 多数据源：为什么不用 ThreadLocal 存 DataSource
 
-推荐的是**显式绑定句柄**：`MetaMapper.of(pool)` 返回 `MetaMapperClient`，租户/库的选择发生在
-请求边界（能拿到租户 ID 的地方），之后把 client 往下传。理由：
+推荐的是**显式绑定句柄**：`MetaMapper.of(池, 命名空间)` 返回 `MetaMapperClient`，租户/库与业务分组的
+选择都发生在请求边界（能拿到租户 ID 的地方），之后把 client 往下传。理由：
 
 1. 异步/线程池/虚拟线程会丢 ThreadLocal，必须到处 `wrap`，与现有 `AutumnDataContextHolder`
    的透传问题重复一遍；
 2. 嵌套切换池时容易和事务错位：事务绑在默认池，语句却跑到另一个池；
 3. 出问题时堆栈里只剩 `MetaMapper.findList(...)`，看不出用的哪个库。
 
-ThreadLocal 最多作为“请求级默认池”的便利糖，不能作为唯一机制。缓存也按 `(pool, table)` 维度
-各自持有 Registry，不能共用一个全局表缓存。
+ThreadLocal 最多作为“请求级默认池”的便利糖，不能作为唯一机制。client 按池名持有各注册表与缓存，
+命名空间只是共享它们的轻量视图（`forNamespace`）；语句库则按 `(pool, namespace, table)` 分键，
+不同命名空间的同名表各有自己的 XML 文件，互不覆盖。
 
 ## Spring Boot 连接池与事务
 
@@ -618,7 +632,7 @@ ThreadLocal 最多作为“请求级默认池”的便利糖，不能作为唯�
   （容器里的 `AutumnJdbc` / 引擎里的 client），所以两处都套了 `PerThreadConnectionSource`。
   不套就会串连接——甲线程取连接时把乙线程正在用的那条归还掉，事务里的语句也会突然跑到别的连接上。
 - **没有事务时**：每次操作借还连接、单方法自提交，与原生 JDBC 行为一致。
-- **多数据源**：默认池走上面这条；`MetaMapper.of(pool)` 指向的其他池连接来自
+- **多数据源**：默认池走上面这条；`MetaMapper.of(池, 命名空间)` 指向的其他池连接来自
   `MetaDataSource` 注册表，事务要按池自建 `DataSourceTransactionManager`（Spring 事务只绑默认池）。
 - 想换成自己的连接源（连接加密、影子库、压测桩等），定义自己的 `MetaMapperEngine` Bean 即可，
   自动配置 `@ConditionalOnMissingBean` 会退让。
@@ -634,26 +648,23 @@ ThreadLocal 最多作为“请求级默认池”的便利糖，不能作为唯�
 
 ## 代码与测试
 
-## 代码与测试
-
 - 实现：`autumn-data-meta-jdbc/src/main/java/xyz/wewin/autumn/data/meta/jdbc`，外层放用户级 API
-  （`MetaMapper` / `MetaQuery` / `MetaSqlException` / `SqlBuild`），内部分五层：
-  `engine`（引擎与 client 的编排）、`metadata`（表结构快照与元类定义）、`entity`（Java 源码拼装 +
-  内存 javac + 结果集映射）、`sql`（`MetaSqlBuilder` 现拼、`MetaStatementStore` + `SqlTemplate` 解释文件、
+  （`MetaMapper` / `MetaSqlException` / `SqlBuild`），内部分五层：
+  `engine`（引擎与绑定「数据源 + 命名空间」的 client）、`metadata`（表结构快照与元类定义）、
+  `entity`（Java 源码拼装 + 内存 javac + 结果集映射）、
+  `sql`（`MetaSqlFileStore` 唯一语句库 + `MetaSqlGenerator` 七条默认语句 + `SqlTemplate` 解释 XML、
   `MarkedSql` → `MetaPlanCompiler` → `MetaSqlPlan` 三段与 `MetaPlanCache`）、`support`（有界缓存与目录）。
   方言与编译期生成器共用 `autumn-data-common` 的 `TemplateParser` / `TemplateNode`，本层只解释执行。
-- 用例（共 76 个）：`engine/MetaMapperDynamicTest` 47 个（建表 → 不重启 CRUD → 加列 refresh → 逻辑删除 →
-  复合主键 → Mapper 文件生成一次/改表不重写 → 手工文件优先 → 名字忽略大小写对齐 → 空值判断方法 →
-  `#{}` 绑定与注入拒绝 → `${}` 白名单 → `<foreach>` / `<trim>` / `<delete>` 拒绝，以及生成类的真实字段类型 /
-  零反射源码 / 加列后生成新类 / 源码落盘 / 投影缺列 / 各缓存淘汰后可重建 / 手工登记也参与淘汰后回源 /
-  池 client 淘汰重建 / 内存编译无临时目录 / 默认上限 10000 / 列名撞基类契约 / 关键字与中文列名 /
-  并发单飞 / 连续改表，以及**手写 SQL 的绑定与 `${table}` 展开、分页（显式/自动计数）、裸 `?` 与物理删除拒绝、
-  注册语句跨 refresh 复用与撤销、表/实体/语句三级缓存分开清理、`reload` 立即重建与表已删报错、`cacheStats`**）；
-  `sql/MetaSqlPlanTest` 6 个（形状与数据分离、槽位类型、写过的列决定 INSERT 形状、字面量问号不算槽）；
-  `entity/MetaEntityCompilerTest` 1 个（`jar:` CodeSource 兜底）；
-  `support/BoundedCacheTest` 15 个（LRU 顺序、上限、并发单飞、加载在锁外、失败不缓存、失效语义、
-  `asMap` 只读快照、refresh 与在途加载竞态、并发读写不越界）；另有 `engine/MetaEntityGenericModeTest` 1 个
-  （GENERIC 实体）、`engine/MetaMapperDialectTest` 2 个（方言差异）、`entity/MetaEntityStrategyTest` 4 个
-  （CODE / GENERIC 两档策略）。
-  starter 装配 2 个；using 模块端到端 1 个 + 上层用法示例 5 个。
-- 全 reactor：`mvn -B test`，starter / using / compiler / common 全绿。
+- 用例（meta-jdbc 模块 93 个）：`engine/MetaMapperDynamicTest` 47 个、`engine/MetaMapperMetaApiTest` 9 个、
+  `sql/MetaSqlFileStoreTest` 8 个、`sql/MetaSqlPlanTest` 6 个、`support/BoundedCacheTest` 15 个、
+  `entity/MetaEntityStrategyTest` 4 个、`entity/MetaEntityCompilerTest` 1 个、
+  `engine/MetaEntityGenericModeTest` 1 个、`engine/MetaMapperDialectTest` 2 个。
+  覆盖运行期建表 → 不重启 CRUD → 加列 `refresh` → 逻辑/物理删除由语句决定 → 复合主键 →
+  七条默认语句自动生成块 / 手写文件不改写 / 自定义语句保留 / 按数据源与命名空间分层 →
+  名字忽略大小写对齐 → `#{}` 绑定与注入拒绝 → `${}` 白名单 → `<foreach>` / `<trim>` / `<choose>` /
+  `<resultMap>` → `changed('col')` 变更集 → 手写 SQL 与代码注册语句 → 表 / 实体 / 语句三级缓存分开清理与
+  `reload` → 生成类的真实字段类型 / 零反射源码 / 加列生成新类 / 源码落盘 / 投影缺列 /
+  各缓存淘汰后可重建 / 并发单飞 / 连续改表。
+  starter 装配与事务 40 个；using 模块 67 个（含 `MetaMapperXmlUsingTest` 6 个上层用法示例与
+  `MetaDataControllerTest` 的 HTTP 验证）。
+- 全 reactor：`mvn -B test`，294 个用例全绿（common 41 / meta-jdbc 93 / starter 40 / compiler 53 / using 67）。

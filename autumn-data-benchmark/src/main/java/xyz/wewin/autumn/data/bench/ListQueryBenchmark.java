@@ -26,7 +26,7 @@ import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
 
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery;
+import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperClient;
 
 /**
@@ -78,13 +78,13 @@ public class ListQueryBenchmark {
 		if (this.impl.startsWith("meta")) {
 			this.metaClient = "meta-generic".equals(this.impl) ? BenchMeta.generic() : BenchMeta.code();
 			// 表快照 + 实体生成/编译 + 计划编译在 setup 付掉
-			this.metaClient.findList(BenchDatabase.READ_TABLE, ORDER_BY_ID, BenchDatabase.LIST_ROWS);
+			this.metaClient.findList(BenchDatabase.READ_TABLE, NO_FILTER, BenchDatabase.LIST_ROWS);
 		}
 		this.op = switch (this.impl) {
 			case "jdbc" -> this::jdbcQuery;
 			case "mybatis-per-call" -> this::mybatisPerCall;
 			case "mybatis-shared" -> this::mybatisShared;
-			case "meta-code", "meta-generic" -> this::metaFindList;
+			case "meta-code", "meta-generic" -> this::dynamicFindList;
 			default -> throw new IllegalArgumentException("unknown impl: " + this.impl);
 		};
 	}
@@ -123,10 +123,11 @@ public class ListQueryBenchmark {
 		return this.sharedMapper.selectList(BenchDatabase.LIST_ROWS);
 	}
 
-	private List<?> metaFindList() {
-		return this.metaClient.findList(BenchDatabase.READ_TABLE, ORDER_BY_ID, BenchDatabase.LIST_ROWS);
+	private List<?> dynamicFindList() {
+		// 默认 findList 语句已按主键排序；无条件即空参数实体。
+		return this.metaClient.findList(BenchDatabase.READ_TABLE, NO_FILTER, BenchDatabase.LIST_ROWS);
 	}
 
-	private static final MetaQuery ORDER_BY_ID = MetaQuery.all().orderBy("id");
+	private static final MetaClass NO_FILTER = new MetaClass();
 
 }

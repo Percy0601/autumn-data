@@ -13,9 +13,9 @@ import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTable;
  * 都在这里各槽做一次，编完之后同形状的每次执行只是取值 + 绑值。因此编译必须由
  * {@link MetaPlanCache} 兜住 —— 每个形状只编一次。</p>
  *
- * <p>{@code refs} 里的引用<b>允许不是列</b>：Mapper 文件里的 {@code #{keyword}}、{@code <foreach>}
- * 的循环值都可能是纯业务参数，这类槽原样交给驱动，不报错。引用不存在的列在抽取阶段就被
- * {@link MetaSqlBuilder} 的 {@code requireColumn} 拦下，轮不到编译期。</p>
+ * <p>{@code refs} 里的引用<b>允许不是列</b>：XML 语句里的 {@code #{keyword}}、{@code <foreach>}
+ * 的循环值都可能是纯业务参数，这类槽按普通值槽原样交给驱动，不报错；能对上
+ * {@link MetaTable#findColumn(String)} 的才按列类型收口。</p>
  */
 public final class MetaPlanCompiler {
 

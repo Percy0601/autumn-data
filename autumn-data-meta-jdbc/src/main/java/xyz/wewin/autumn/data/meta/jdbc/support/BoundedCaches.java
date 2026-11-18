@@ -5,7 +5,7 @@ package xyz.wewin.autumn.data.meta.jdbc.support;
  *
  * <p>将来引入 Caffeine 时，在这里返回 {@code Caffeine.newBuilder().maximumSize(size).build()}
  * 的适配器即可，{@link MetaTableRegistry} / {@link MetaEntityRegistry} /
- * {@link MetaStatementStore} 的调用代码不用改。</p>
+ * {@link MetaSqlFileStore} 的调用代码不用改。</p>
  */
 public final class BoundedCaches {
 

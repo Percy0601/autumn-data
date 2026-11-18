@@ -6,7 +6,7 @@ package xyz.wewin.autumn.data.meta.jdbc;
  * <p>只承载结果，不参与 SQL 生成，也不持有任何运行期状态。使用方是编译期那一侧：
  * {@code autumn-data-jdbc-compiler} 生成的 Mapper 方法统一返回本类型。</p>
  *
- * <p>动态侧（{@code MetaSqlBuilder} / {@code SqlTemplate}）不再产出它，而是产出
+ * <p>动态侧（{@code MetaSqlFileStore} / {@code SqlTemplate}）不再产出它，而是产出
  * {@code MarkedSql} —— 光有「文本 + 值」不足以预编译，还需要每个 {@code ?} 引用的是哪一列，
  * 那份知识见 {@code MetaBindSlot} / {@code MetaSqlPlan}。</p>
  *

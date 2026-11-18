@@ -6,7 +6,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.Statement;
-import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -23,22 +22,21 @@ import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 import xyz.wewin.autumn.data.jdbc.runtime.JdbcConnectionSource;
 import xyz.wewin.autumn.data.jdbc.runtime.PerThreadConnectionSource;
 import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaPlanCache;
-import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlBuilder;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlFileStore;
-import xyz.wewin.autumn.data.meta.jdbc.sql.MetaStatementStore;
+import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * {@code metaFind / metaSave / metaUpdate / metaDelete} 的两套 API：
- * 一套走默认数据源 + 默认命名空间（{@code meta/{池名}/default/{表}.xml}），
- * 一套把数据源 / 命名空间 / 表 / 语句 id 全部显式给出。
+ * 统一 XML 语句库：{@code {根}/{数据源}/{命名空间}/{表名}.xml}。
+ *
+ * <p>七条默认语句（findList/findPage/findOne/findById/save/update/delete）始终可用；标记外的
+ * 自定义语句逐字保留并优先于同名默认语句；{@code of(数据源, 命名空间)} 把寻址固定在调用边界上。</p>
  */
 class MetaMapperMetaApiTest {
 
@@ -78,161 +76,121 @@ class MetaMapperMetaApiTest {
 		}
 		this.connectionSource = new PerThreadConnectionSource(() -> new JdbcConnectionSource(this.dataSource));
 		this.registry = new MetaTableRegistry(this.dataSource, new H2Dialect(), Set.of("deleted_flag"));
-		// 池名用 test：classpath 里只有 default/default 的样例文件，不会串到这些用例
 		this.client = client("test", this.registry);
 	}
 
 	@Test
-	void metaFindRunsTheStatementFromTheFile() throws IOException {
-		write("test", DEFAULT_NAMESPACE, """
+	void sevenDefaultStatementsAreAlwaysAvailableEvenWithoutAFile() {
+		assertThat(this.client.statementIds("form_order")).containsExactlyInAnyOrder(
+				"findList", "findPage", "findOne", "findById", "save", "update", "delete");
+
+		MetaClass saved = this.client.save(row("A001", "12.50", 1));
+		assertThat(saved.get("id")).isInstanceOf(Number.class);
+		assertThat(this.client.findList("form_order", params("status", 1))).hasSize(1);
+		assertThat(this.client.cacheStats()).containsEntry("statementTables", 1L);
+	}
+
+	@Test
+	void customStatementsArePreservedAndDefaultsAreFilledIn() throws IOException {
+		String handwritten = """
 				<mapper namespace="test/default/form_order">
-				    <select id="metaFind">
-				        SELECT id, order_no, status FROM form_order ORDER BY id
+				    <select id="findByNo">
+				        SELECT id, order_no, status FROM form_order WHERE order_no = #{order_no}
 				    </select>
 				</mapper>
-				""");
-		this.client.save(row("A001", "12.50", 1));
-		this.client.save(row("A002", "3.40", 1));
-
-		List<MetaClass> rows = this.client.metaFind("form_order", MetaQuery.all());
-
-		assertThat(rows).hasSize(2);
-		assertThat(rows.get(0).getString("order_no")).isEqualTo("A001");
-		// 文件里的投影只有三列：没投影的列不会被补出来，说明 SQL 确实来自文件
-		assertThat(rows.get(0).get("amount")).isNull();
-		assertThat(this.client.cacheStats()).containsEntry("metaSqlFiles", 1L);
-	}
-
-	@Test
-	void metaFindFallsBackToGeneratedSqlWhenNoStatementExists() {
-		this.client.save(row("B001", "1.00", 1));
-		this.client.save(row("B002", "2.00", 2));
-
-		List<MetaClass> matched = this.client.metaFind("form_order", MetaQuery.by("status", 2));
-
-		assertThat(matched).hasSize(1);
-		assertThat(matched.get(0).getString("order_no")).isEqualTo("B002");
-		assertThat(matched.get(0).getBigDecimal("amount")).isEqualByComparingTo("2.00");
-	}
-
-	@Test
-	void metaQueryConditionsAndOrdersAreLaidOverTheFileStatement() throws IOException {
-		write("test", DEFAULT_NAMESPACE, """
-				<select id="metaFind">SELECT id, order_no, status FROM form_order</select>
-				""");
-		this.client.save(row("C001", "1.00", 1));
-		this.client.save(row("C002", "2.00", 2));
-		this.client.save(row("C003", "3.00", 1));
-
-		List<MetaClass> rows = this.client.metaFind("form_order",
-				MetaQuery.by("status", 1).orderBy("id", MetaQuery.Direction.DESC));
-
-		assertThat(rows).hasSize(2);
-		assertThat(rows.get(0).getString("order_no")).isEqualTo("C003");
-		assertThat(rows.get(1).getString("order_no")).isEqualTo("C001");
-	}
-
-	@Test
-	void fullApiRunsAnyStatementIdWithItsParameters() throws IOException {
-		write("test", DEFAULT_NAMESPACE, """
-				<select id="metaFind">SELECT id, order_no, status FROM form_order</select>
-				<select id="findByNo">
-				    SELECT id, order_no, status FROM form_order WHERE order_no = #{order_no}
-				</select>
-				""");
+				""";
+		Path file = write("test", DEFAULT_NAMESPACE, handwritten);
 		this.client.save(row("D001", "1.00", 1));
 		this.client.save(row("D002", "2.00", 1));
 
-		List<MetaClass> rows = this.client.metaFind("test", DEFAULT_NAMESPACE, "form_order", "findByNo",
-				params("order_no", "D002"));
-
-		assertThat(rows).hasSize(1);
-		assertThat(rows.get(0).getString("order_no")).isEqualTo("D002");
-		assertThat(this.client.metaStatementIds("test", DEFAULT_NAMESPACE, "form_order"))
-				.containsExactly("metaFind", "findByNo");
+		assertThat(this.client.statementIds("form_order")).contains("findByNo", "findList", "delete");
+		assertThat(this.client.selectList("form_order", "findByNo", params("order_no", "D002")))
+				.extracting(row -> row.getString("order_no")).containsExactly("D002");
+		// 手写文件没有 GENERATED 标记：框架一个字都不动，默认语句只在内存里补齐。
+		assertThat(Files.readString(file)).isEqualTo(handwritten);
 	}
 
 	@Test
-	void metaSaveUpdateDeleteUseTheFileStatements() throws IOException {
-		write("test", DEFAULT_NAMESPACE, """
-				<mapper namespace="test/default/form_order">
-				    <insert id="metaSave">
-				        INSERT INTO form_order (order_no, amount, status) VALUES (#{order_no}, #{amount}, #{status})
-				    </insert>
-				    <update id="metaUpdate">
-				        UPDATE form_order SET status = #{status}, amount = #{amount} WHERE id = #{id}
-				    </update>
-				    <delete id="metaDelete">DELETE FROM form_order WHERE id = #{id}</delete>
-				</mapper>
-				""");
+	void namespaceIsBoundOnTheClientHandle() throws IOException {
+		write("test", "a", "<mapper namespace=\"a\"><select id=\"tag\">SELECT 'a' AS tag FROM form_order</select></mapper>");
+		write("test", "b", "<mapper namespace=\"b\"><select id=\"tag\">SELECT 'b' AS tag FROM form_order</select></mapper>");
 
-		MetaClass saved = this.client.metaSave(row("E001", "5.00", 1));
-		assertThat(saved.get("id")).isInstanceOf(Number.class); // 自增主键回填
-		assertThat(saved.hasChanges()).isFalse();
-
-		MetaClass row = this.client.findById("form_order", saved.get("id")).orElseThrow();
-		row.set("status", 9);
-		assertThat(this.client.metaUpdate(row)).isEqualTo(1);
-		assertThat(this.client.findById("form_order", saved.get("id")).orElseThrow().getInt("status")).isEqualTo(9);
-
-		assertThat(this.client.metaDelete(row)).isEqualTo(1);
-		assertThat(this.client.findById("form_order", saved.get("id"))).isEmpty();
+		MetaMapperClient a = this.client.forNamespace("a");
+		MetaMapperClient b = this.client.forNamespace("b");
+		assertThat(a.namespace()).isEqualTo("a");
+		assertThat(b.namespace()).isEqualTo("b");
+		assertThat(a.poolName()).isEqualTo("test");
+		assertThat(a).isNotSameAs(b);
+		assertThat(a.sqlFor("form_order", "tag", params()).sql()).contains("'a'");
+		assertThat(b.sqlFor("form_order", "tag", params()).sql()).contains("'b'");
 	}
 
 	@Test
-	void metaDeleteDegradesToLogicDeleteWithoutAStatement() {
+	void deleteUsesLogicDeleteWhenTheTableHasALogicDeleteColumn() {
 		MetaClass saved = this.client.save(row("F001", "1.00", 1));
 
-		assertThat(this.client.metaDelete(saved)).isEqualTo(1);
-
-		assertThat(this.client.findById("form_order", saved.get("id"))).isEmpty(); // 逻辑删除后查不到
+		assertThat(this.client.delete(saved)).isEqualTo(1);
+		assertThat(this.client.findById("form_order", saved.get("id"))).isEmpty();
+		// 逻辑删除只是把标记列置 1，行还在
 		assertThat(this.client.countBySql("form_order", "SELECT COUNT(*) FROM form_order", null)).isEqualTo(1);
 	}
 
 	@Test
-	void metaDeleteFailsWhenNeitherStatementNorLogicColumnExists() {
+	void deleteUsesPhysicalDeleteWithoutALogicDeleteColumn() {
 		MetaTableRegistry plain = new MetaTableRegistry(this.dataSource, new H2Dialect(), Set.of());
 		MetaMapperClient noLogicDelete = client("test", plain);
 		MetaClass saved = noLogicDelete.save(row("G001", "1.00", 1));
 
-		assertThatThrownBy(() -> noLogicDelete.metaDelete(saved)).isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("does not generate physical deletes");
+		assertThat(noLogicDelete.delete(saved)).isEqualTo(1);
+		assertThat(noLogicDelete.countBySql("form_order", "SELECT COUNT(*) FROM form_order", null)).isZero();
 	}
 
 	@Test
-	void missingStatementIdReportsWhatTheFileHas() throws IOException {
+	void customDeleteStatementOverridesTheGeneratedDefault() throws IOException {
 		write("test", DEFAULT_NAMESPACE, """
-				<select id="metaFind">SELECT id FROM form_order</select>
+				<mapper namespace="test/default/form_order">
+				    <delete id="delete">DELETE FROM form_order WHERE id = #{id}</delete>
+				</mapper>
 				""");
+		MetaClass saved = this.client.save(row("E001", "5.00", 1));
 
-		assertThatThrownBy(() -> this.client.metaFind("test", DEFAULT_NAMESPACE, "form_order", "nope", null))
+		// 即使表配了逻辑删除列，文件里显式写 <delete> 就按物理删除执行。
+		assertThat(this.client.delete(saved)).isEqualTo(1);
+		assertThat(this.client.countBySql("form_order", "SELECT COUNT(*) FROM form_order", null)).isZero();
+	}
+
+	@Test
+	void missingStatementIdReportsWhatIsAvailable() throws IOException {
+		write("test", DEFAULT_NAMESPACE, "<mapper namespace=\"x\"><select id=\"myQuery\">SELECT 1 FROM form_order</select></mapper>");
+
+		assertThatThrownBy(() -> this.client.sqlFor("form_order", "nope", params()))
 				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("available: [metaFind]");
+				.hasMessageContaining("nope")
+				.hasMessageContaining("available:")
+				.hasMessageContaining("myQuery")
+				.hasMessageContaining("findList");
 	}
 
 	@Test
 	void statementTypeMismatchIsRejected() throws IOException {
-		write("test", DEFAULT_NAMESPACE, """
-				<update id="metaFind">UPDATE form_order SET status = 1</update>
-				""");
+		write("test", DEFAULT_NAMESPACE,
+				"<mapper namespace=\"x\"><update id=\"findList\">UPDATE form_order SET status = 1</update></mapper>");
 
-		assertThatThrownBy(() -> this.client.metaFind("form_order", MetaQuery.all()))
+		assertThatThrownBy(() -> this.client.findList("form_order", params()))
 				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("must be a <select>");
+				.hasMessageContaining("is not a <select>");
 	}
 
 	@Test
-	void staticFacadeReadsTheDefaultNamespaceFromClasspath() {
-		// classpath:meta/default/default/form_order.xml（见 src/test/resources）
+	void staticFacadeUsesDefaultPoolAndBoundNamespace() {
 		MetaMapper.install(MetaMapperEngine.forDataSource("default", this.dataSource,
-				xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperOptions.inMemory()));
-		this.client.save(row("H001", "8.00", 1));
+				MetaMapperOptions.inMemory()));
+		MetaClass saved = this.client.save(row("H001", "8.00", 1));
 
-		List<MetaClass> rows = MetaMapper.metaFind("form_order", MetaQuery.all());
-
-		assertThat(rows).hasSize(1);
-		assertThat(rows.get(0).getString("order_no")).isEqualTo("H001");
-		assertThat(rows.get(0).get("amount")).isNull(); // 文件里只投影了三列
+		assertThat(MetaMapper.DEFAULT_STATEMENT_IDS).containsExactly("findList", "findPage", "findOne",
+				"findById", "save", "update", "delete");
+		assertThat(MetaMapper.findList("form_order", params("order_no", "H001"))).hasSize(1);
+		assertThat(MetaMapper.of("default", "erp").findById("form_order", saved.get("id"))).isPresent();
 	}
 
 	// ------------------------------------------------------------------
@@ -240,12 +198,15 @@ class MetaMapperMetaApiTest {
 	// ------------------------------------------------------------------
 
 	private MetaMapperClient client(String poolName, MetaTableRegistry tableRegistry) {
+		return client(poolName, tableRegistry, false);
+	}
+
+	private MetaMapperClient client(String poolName, MetaTableRegistry tableRegistry, boolean generateFiles) {
 		AutumnJdbc jdbc = new AutumnJdbc(this.connectionSource, new H2Dialect(), FetchPolicy.defaults());
-		MetaStatementStore statements = new MetaStatementStore(this.sqlRoot.resolve("mapper"), false,
-				new H2Dialect());
+		MetaSqlFileStore statements = new MetaSqlFileStore(this.sqlRoot, getClass().getClassLoader(),
+				10_000, new MetaSqlGenerator(new H2Dialect()), generateFiles);
 		return new MetaMapperClient(poolName, jdbc, this.connectionSource, tableRegistry,
-				new MetaSqlBuilder(new H2Dialect()), statements, ENTITIES, new MetaPlanCache(), 1000,
-				new MetaSqlFileStore(this.sqlRoot));
+				ENTITIES, new MetaPlanCache(), 1000, statements);
 	}
 
 	private Path write(String datasource, String namespace, String content) throws IOException {
@@ -255,12 +216,18 @@ class MetaMapperMetaApiTest {
 		return file;
 	}
 
+	/** 待写入的实体：用 newEntity 拿到带表名的实例。 */
 	private MetaClass row(String orderNo, String amount, int status) {
-		return params("order_no", orderNo, "amount", amount, "status", status);
+		MetaClass entity = this.client.newEntity("form_order");
+		entity.set("order_no", orderNo);
+		entity.set("amount", amount);
+		entity.set("status", status);
+		return entity;
 	}
 
-	private MetaClass params(Object... nameValues) {
-		MetaClass entity = this.client.newEntity("form_order");
+	/** 语句参数实体：只放赋过值的属性，列以外的名字也能进模板作用域。 */
+	private static MetaClass params(Object... nameValues) {
+		MetaClass entity = new MetaClass();
 		for (int i = 0; i < nameValues.length; i += 2) {
 			entity.set((String) nameValues[i], nameValues[i + 1]);
 		}

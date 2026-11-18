@@ -20,14 +20,14 @@ class MetaSqlFileStoreTest {
 
 	@Test
 	void loadsLazilyAndCachesTheParsedFile() throws IOException {
-		write("db", "ns", "form_order", "<select id=\"metaFind\">SELECT 1 FROM form_order</select>");
+		write("db", "ns", "form_order", "<select id=\"findRows\">SELECT 1 FROM form_order</select>");
 		MetaSqlFileStore store = new MetaSqlFileStore(this.root);
 
 		assertThat(store.size()).isZero(); // 构造时不扫目录
 
-		assertThat(store.statement("db", "ns", "form_order", "metaFind")).isNotNull();
+		assertThat(store.statement("db", "ns", "form_order", "findRows")).isNotNull();
 		assertThat(store.size()).isEqualTo(1);
-		assertThat(store.statement("db", "ns", "form_order", "metaFind")).isNotNull();
+		assertThat(store.statement("db", "ns", "form_order", "findRows")).isNotNull();
 		assertThat(store.size()).isEqualTo(1); // 命中缓存，不重复解析
 	}
 
@@ -36,7 +36,7 @@ class MetaSqlFileStoreTest {
 		MetaSqlFileStore store = new MetaSqlFileStore(this.root);
 
 		assertThat(store.statements("db", "ns", "form_order")).isEmpty();
-		assertThat(store.statement("db", "ns", "form_order", "metaFind")).isNull();
+		assertThat(store.statement("db", "ns", "form_order", "findRows")).isNull();
 		assertThat(store.statementIds("db", "ns", "form_order")).isEmpty();
 		assertThat(store.location("db", "ns", "form_order")).contains("form_order.xml");
 	}
@@ -45,13 +45,13 @@ class MetaSqlFileStoreTest {
 	void statementsWithoutMapperRootAreWrapped() throws IOException {
 		// 一个文件里只写几条语句，不写 <?xml?> 与 <mapper> 壳
 		write("db", "ns", "form_order", """
-				<select id="metaFind">SELECT * FROM form_order</select>
-				<update id="metaUpdate">UPDATE form_order SET status = #{status} WHERE id = #{id}</update>
+				<select id="findRows">SELECT * FROM form_order</select>
+				<update id="updateStatus">UPDATE form_order SET status = #{status} WHERE id = #{id}</update>
 				""");
 		MetaSqlFileStore store = new MetaSqlFileStore(this.root);
 
-		assertThat(store.statementIds("db", "ns", "form_order")).containsExactly("metaFind", "metaUpdate");
-		assertThat(store.statement("db", "ns", "form_order", "metaUpdate").type())
+		assertThat(store.statementIds("db", "ns", "form_order")).containsExactly("findRows", "updateStatus");
+		assertThat(store.statement("db", "ns", "form_order", "updateStatus").type())
 				.isEqualTo(xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementType.UPDATE);
 	}
 
@@ -60,47 +60,47 @@ class MetaSqlFileStoreTest {
 		write("db", "ns", "form_order", """
 				<?xml version="1.0" encoding="UTF-8"?>
 				<mapper>
-				    <select id="metaFind">SELECT * FROM form_order</select>
+				    <select id="findRows">SELECT * FROM form_order</select>
 				</mapper>
 				""");
 		MetaSqlFileStore store = new MetaSqlFileStore(this.root);
 
-		assertThat(store.statement("db", "ns", "form_order", "metaFind")).isNotNull();
+		assertThat(store.statement("db", "ns", "form_order", "findRows")).isNotNull();
 	}
 
 	@Test
 	void sameTableUnderDifferentNamespacesDoesNotCollide() throws IOException {
-		write("db", "tenant_a", "form_order", "<select id=\"metaFind\">SELECT 'a' AS tag FROM form_order</select>");
-		write("db", "tenant_b", "form_order", "<select id=\"metaFind\">SELECT 'b' AS tag FROM form_order</select>");
+		write("db", "tenant_a", "form_order", "<select id=\"findRows\">SELECT 'a' AS tag FROM form_order</select>");
+		write("db", "tenant_b", "form_order", "<select id=\"findRows\">SELECT 'b' AS tag FROM form_order</select>");
 		MetaSqlFileStore store = new MetaSqlFileStore(this.root);
 
-		assertThat(store.statement("db", "tenant_a", "form_order", "metaFind").render(java.util.Map.of()).sql())
+		assertThat(store.statement("db", "tenant_a", "form_order", "findRows").render(java.util.Map.of()).sql())
 				.contains("'a'");
-		assertThat(store.statement("db", "tenant_b", "form_order", "metaFind").render(java.util.Map.of()).sql())
+		assertThat(store.statement("db", "tenant_b", "form_order", "findRows").render(java.util.Map.of()).sql())
 				.contains("'b'");
 		assertThat(store.size()).isEqualTo(2);
 	}
 
 	@Test
 	void readsTheFileAgainAfterItChanges() throws IOException {
-		Path file = write("db", "ns", "form_order", "<select id=\"metaFind\">SELECT 1 AS tag FROM form_order</select>");
+		Path file = write("db", "ns", "form_order", "<select id=\"findRows\">SELECT 1 AS tag FROM form_order</select>");
 		MetaSqlFileStore store = new MetaSqlFileStore(this.root);
-		assertThat(store.statement("db", "ns", "form_order", "metaFind").render(java.util.Map.of()).sql())
+		assertThat(store.statement("db", "ns", "form_order", "findRows").render(java.util.Map.of()).sql())
 				.contains("1 AS tag");
 
 		// 改文件：长度变了，下次访问必须重读，不需要重启也不需要显式刷新
-		Files.writeString(file, "<select id=\"metaFind\">SELECT 2222 AS tag, 3333 AS extra FROM form_order</select>",
+		Files.writeString(file, "<select id=\"findRows\">SELECT 2222 AS tag, 3333 AS extra FROM form_order</select>",
 				StandardCharsets.UTF_8);
 
-		assertThat(store.statement("db", "ns", "form_order", "metaFind").render(java.util.Map.of()).sql())
+		assertThat(store.statement("db", "ns", "form_order", "findRows").render(java.util.Map.of()).sql())
 				.contains("2222 AS tag");
 	}
 
 	@Test
 	void refreshDropsTheParsedCopy() throws IOException {
-		write("db", "ns", "form_order", "<select id=\"metaFind\">SELECT 1 AS tag FROM form_order</select>");
+		write("db", "ns", "form_order", "<select id=\"findRows\">SELECT 1 AS tag FROM form_order</select>");
 		MetaSqlFileStore store = new MetaSqlFileStore(this.root);
-		assertThat(store.statement("db", "ns", "form_order", "metaFind")).isNotNull();
+		assertThat(store.statement("db", "ns", "form_order", "findRows")).isNotNull();
 		assertThat(store.size()).isEqualTo(1);
 
 		store.refresh("db", "ns", "form_order");

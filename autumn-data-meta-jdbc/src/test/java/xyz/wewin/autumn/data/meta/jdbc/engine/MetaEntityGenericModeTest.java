@@ -17,14 +17,13 @@ import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 import xyz.wewin.autumn.data.jdbc.runtime.JdbcConnectionSource;
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityModel;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityStrategy;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaPlanCache;
-import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlBuilder;
-import xyz.wewin.autumn.data.meta.jdbc.sql.MetaStatementStore;
+import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlFileStore;
+import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -55,9 +54,10 @@ class MetaEntityGenericModeTest {
 		AutumnJdbc jdbc = new AutumnJdbc(connections, new H2Dialect(), FetchPolicy.defaults());
 		MetaTableRegistry tables = new MetaTableRegistry(dataSource, new H2Dialect(), Set.of("deleted_flag"));
 		MetaEntityRegistry entities = new MetaEntityRegistry(MetaEntityStrategy.GENERIC);
-		MetaStatementStore statements = new MetaStatementStore(this.mapperDirectory, true, new H2Dialect());
+		MetaSqlFileStore statements = new MetaSqlFileStore(this.mapperDirectory, getClass().getClassLoader(),
+				10_000, new MetaSqlGenerator(new H2Dialect()), true);
 		MetaMapperClient client = new MetaMapperClient("test", jdbc, connections, tables,
-				new MetaSqlBuilder(new H2Dialect()), statements, entities, new MetaPlanCache(), 1000);
+				entities, new MetaPlanCache(), 1000, statements);
 
 		MetaEntityModel model = entities.model(tables.require("generic_order"));
 		assertThat(model.entityType()).isEqualTo(MetaClass.class);
@@ -85,7 +85,7 @@ class MetaEntityGenericModeTest {
 		assertThat(loaded.hasChanges()).isFalse();
 
 		client.save(entity(client, "G002", 2));
-		List<MetaClass> rows = client.findList("generic_order", MetaQuery.all());
+		List<MetaClass> rows = client.findList("generic_order", params());
 		assertThat(rows).hasSize(2);
 		assertThat(rows.get(0)).isNotSameAs(rows.get(1));
 		assertThat(rows).extracting(item -> item.getString("order_no")).containsExactly("G001", "G002");
@@ -94,11 +94,12 @@ class MetaEntityGenericModeTest {
 		assertThat(client.update(loaded)).isEqualTo(1);
 		assertThat(client.findById("generic_order", saved.get("id")).orElseThrow().getInt("status")).isEqualTo(3);
 
-		// 命名语句：首次访问按表结构生成 Mapper XML，GENERIC 下同样可用
-		assertThat(client.selectCount("generic_order", "selectCount", params())).isEqualTo(2);
-		assertThat(client.selectList("generic_order", "selectList", params("status", 3)))
+		// 默认语句首次访问时生成到 {数据源}/{命名空间}/{表名}.xml，GENERIC 下同样可用。
+		assertThat(client.count("generic_order", params())).isEqualTo(2);
+		assertThat(client.findList("generic_order", params("status", 3)))
 				.extracting(item -> item.getString("order_no")).containsExactly("G001");
-		assertThat(Files.exists(this.mapperDirectory.resolve("generic_order.xml"))).isTrue();
+		assertThat(Files.exists(this.mapperDirectory.resolve("test").resolve("default")
+				.resolve("generic_order.xml"))).isTrue();
 	}
 
 	private static MetaClass entity(MetaMapperClient client, String orderNo, int status) {

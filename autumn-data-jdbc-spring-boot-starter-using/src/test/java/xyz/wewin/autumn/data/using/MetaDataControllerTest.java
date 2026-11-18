@@ -69,7 +69,7 @@ class MetaDataControllerTest {
 		assertThat(keys).hasSize(2);
 		assertThat(keys.get(0)).isNotNull();
 
-		// ④ 条件 + 排序 + 分页：全部走 MetaQuery 绑定
+		// ④ 条件 + 排序 + 分页：参数实体 + 手写 SQL 的 #{} 绑定
 		Map<String, Object> page = this.controller.findRows(1, new BigDecimal("50"), null, 0, 5, "amount", true);
 		assertThat(((Number) page.get("total")).longValue()).isGreaterThanOrEqualTo(1L);
 		List<?> content = (List<?>) page.get("content");
@@ -112,7 +112,7 @@ class MetaDataControllerTest {
 		// 重复加列是幂等的
 		assertThat(this.controller.addColumn("courier", "VARCHAR(64)")).containsEntry("added", false);
 
-		// ⑨ 命名语句：文件缺失时按当前表结构生成一次，sqlFor / selectList / selectCount / execute 都能跑
+		// ⑨ 命名语句：手写语句 XML 与七条默认语句共存，sqlFor / selectList / selectCount / execute 都能跑
 		Map<String, Object> statements = this.controller.namedStatements();
 		assertThat((String) statements.get("listSql")).contains("?");
 		assertThat((List<?>) statements.get("listValues")).hasSize(1);
@@ -120,7 +120,7 @@ class MetaDataControllerTest {
 		assertThat((String) statements.get("insertSql")).containsIgnoringCase("form_no");
 		assertThat(statements).containsEntry("insertedRows", 1).containsEntry("updatedRows", 1);
 		assertThat(statements.get("afterUpdateRemark")).isEqualTo("生成语句改的");
-		assertThat((String) statements.get("mapperFile")).endsWith(".xml");
+		assertThat((String) statements.get("statementFile")).endsWith(".xml");
 
 		// ⑩ 防注入：值不进 SQL 文本，非法列名/排序标识符都被元数据挡住
 		Map<String, Object> safety = this.controller.safety();
@@ -136,7 +136,7 @@ class MetaDataControllerTest {
 		assertThat(engine.get("activePools").toString()).contains("default");
 		assertThat(engine.get("entityClass")).isNotEqualTo(entityBefore);
 
-		// ⑫ 逻辑删除：查询自动过滤，显式按标志查行还在；动态层不提供物理删除
+		// ⑫ 逻辑删除：查询自动过滤，显式按标志查行还在；删除语义由 XML 的 delete 语句决定
 		Map<String, Object> voided = this.controller.voidRow(1L);
 		assertThat(voided.get("visibleAfterVoid")).isEqualTo(Boolean.FALSE);
 		assertThat(voided).containsEntry("voidedRowsFoundByFlag", 1);
@@ -170,7 +170,7 @@ class MetaDataControllerTest {
 		assertThat(get("/metadata/query/operators", 200)).contains("EXISTS_F-001");
 		assertThat(get("/metadata/engine", 200)).contains("defaultPoolName");
 		assertThat(get("/metadata/safety", 200)).contains("valueInSqlText");
-		assertThat(get("/metadata/statements", 200)).contains("mapperFile");
+		assertThat(get("/metadata/statements", 200)).contains("statementFile");
 		assertThat(request("POST", "/metadata/rows?count=1", 200)).contains("generatedKeys");
 		assertThat(request("DELETE", "/metadata/drop", 200)).contains("dropped");
 		assertThat(get("/metadata/schema", 400)).contains("/metadata/init");

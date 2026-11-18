@@ -12,7 +12,6 @@ import org.apache.ibatis.session.SqlSession;
 
 import xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementType;
 import xyz.wewin.autumn.data.common.meta.MetaClass;
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperClient;
 
 /**
@@ -58,7 +57,7 @@ public final class BenchVerification {
 			check("mybatis-list-first", jdbcRow(1L), signature(rows.get(0)));
 			check("mybatis-list-last", jdbcRow(BenchDatabase.LIST_ROWS), signature(rows.get(rows.size() - 1)));
 		}
-		List<MetaClass> codeRows = code.findList(BenchDatabase.READ_TABLE, MetaQuery.all().orderBy("id"),
+		List<MetaClass> codeRows = code.findList(BenchDatabase.READ_TABLE, new MetaClass(),
 				BenchDatabase.LIST_ROWS);
 		check("meta-list-size", String.valueOf(BenchDatabase.LIST_ROWS), String.valueOf(codeRows.size()));
 		check("meta-list-first", jdbcRow(1L), signature(codeRows.get(0)));

@@ -1,17 +1,20 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-    使用方手写的 Mapper 文件示例（对应 demo_order 表）。
+    使用方手写的语句 XML 示例（对应 demo_order 表）：一张表一个文件。
 
-    放的位置：src/main/resources/meta-mappers/<表名>.xml（测试里放 src/test/resources 同理）。
-    查找顺序是 <xml-directory>/<表名>.xml → classpath meta-mappers/<表名>.xml，
-    表名大小写都能对上；找到就直接用，不会再按表结构生成，也永远不会回头覆盖这个文件——它归使用方所有。
-    想按新表结构重来，删掉文件即可（生成语句的 id 是 selectList / selectCount / insert / updateByKey）。
+    放的位置：src/main/resources/meta/{数据源}/{命名空间}/{表名}.xml（测试里放 src/test/resources 同理）。
+    查找顺序是 {语句根}/{数据源}/{命名空间}/{表名}.xml → classpath 同名资源，
+    表名大小写都能对上。本文件没有 GENERATED 标记，因此是使用方资产：框架一个字都不改写，
+    只在内存补齐七条默认语句（findList / findPage / findOne / findById / save / update / delete）。
+    想让框架按表结构维护默认语句，就保留 AUTUMN-DATA GENERATED START/END 标记——
+    表结构变化时只重写标记之间的生成块，标记外的自定义语句逐字保留。
 
     三条写法约定：
       #{}    解析阶段就摘成 JDBC 绑定，SQL 文本里只留 ?，值不进文本；
       ${}    只做标识符拼接，展开结果必须过标识符白名单（分号、引号、注释符、比较符直接拒绝）；
              ${table} 由框架按方言填好带引号的表名，调用方不用传；
-      test   只认 MyBatis 写法（a != null / a == 'x' / a != '' / !a / a &amp;&amp; b）。
+      test   只认 MyBatis 写法（a != null / a == 'x' / a != '' / !a / a &amp;&amp; b）；
+             changed('col') 是框架内置谓词，读实体变更集，区分「这一列没动」与「显式置 NULL」。
 
     <sql>/<include> 与 <resultMap>/<result> 都在解析阶段展开：include 内联成 SQL 片段，
     resultMap 换成「结果集列名 → MetaClass 属性名」的映射清单。
@@ -96,6 +99,6 @@
     <!-- 想显式把一列写成 NULL 就别判空：绑到什么写什么，NULL 也是使用方的意图 -->
     <update id="setAmount">UPDATE ${table} SET amount = #{amount} WHERE id = #{id}</update>
 
-    <!-- 写在文件里也只会解析成功：动态层拒绝执行物理删除 -->
+    <!-- 自定义删除语句：删除语义由 XML 决定，框架不再禁止物理删除 -->
     <delete id="purgeById">DELETE FROM ${table} WHERE id = #{id}</delete>
 </mapper>

@@ -13,7 +13,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -51,7 +50,7 @@ class AutumnDataMetaMapperSpringPoolTests {
 			JdbcTemplate jdbc = new JdbcTemplate(dataSource);
 			resetTable(jdbc);
 
-			MetaMapper.findList("spring_demo", MetaQuery.all());
+			MetaMapper.findList("spring_demo", new MetaClass());
 
 			// 连接的创建与回收都归 Hikari：池里确实有连接，但操作结束后一条都不再被动态层占着
 			assertThat(hikari.getHikariPoolMXBean().getTotalConnections()).isGreaterThanOrEqualTo(1);

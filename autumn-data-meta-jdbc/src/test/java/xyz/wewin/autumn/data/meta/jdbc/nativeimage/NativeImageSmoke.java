@@ -13,14 +13,13 @@ import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 import xyz.wewin.autumn.data.jdbc.runtime.JdbcConnectionSource;
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperClient;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityStrategy;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaPlanCache;
-import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlBuilder;
-import xyz.wewin.autumn.data.meta.jdbc.sql.MetaStatementStore;
+import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlFileStore;
+import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
 
 /**
  * Native Image 冒烟入口：不依赖 JUnit / Spring，直接跑一遍动态层 CRUD。
@@ -55,9 +54,10 @@ public final class NativeImageSmoke {
 		AutumnJdbc jdbc = new AutumnJdbc(connections, dialect, FetchPolicy.defaults());
 		MetaTableRegistry tables = new MetaTableRegistry(dataSource, dialect, Set.of("deleted_flag"));
 		MetaEntityRegistry entities = new MetaEntityRegistry(MetaEntityStrategy.auto());
-		MetaStatementStore statements = new MetaStatementStore(mapperDirectory, true, dialect);
+		MetaSqlFileStore statements = new MetaSqlFileStore(mapperDirectory,
+				NativeImageSmoke.class.getClassLoader(), 10_000, new MetaSqlGenerator(dialect), true);
 		MetaMapperClient client = new MetaMapperClient("native", jdbc, connections, tables,
-				new MetaSqlBuilder(dialect), statements, entities, new MetaPlanCache(), 1000);
+				entities, new MetaPlanCache(), 1000, statements);
 
 		MetaClass row = client.newEntity("native_order");
 		row.set("order_no", "N001");
@@ -74,7 +74,7 @@ public final class NativeImageSmoke {
 		if (loaded.getClass() != MetaClass.class) {
 			throw new IllegalStateException("expected plain MetaClass but was " + loaded.getClass().getName());
 		}
-		if (client.findList("native_order", MetaQuery.all()).size() != 2) {
+		if (client.findList("native_order", new MetaClass()).size() != 2) {
 			throw new IllegalStateException("expected 2 rows");
 		}
 		System.out.println("NATIVE_SMOKE_OK strategy=" + strategy + " type=" + loaded.getClass().getName()

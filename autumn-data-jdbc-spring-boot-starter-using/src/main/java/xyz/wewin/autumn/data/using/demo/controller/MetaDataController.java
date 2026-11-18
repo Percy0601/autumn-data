@@ -14,7 +14,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,9 +36,6 @@ import xyz.wewin.autumn.data.common.meta.MetaProperty;
 import xyz.wewin.autumn.data.jdbc.page.Page;
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery;
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery.Direction;
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery.Op;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperClient;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MarkedSql;
@@ -56,7 +52,7 @@ import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
  * {@code GET /metadata/safety} → {@code DELETE /metadata/drop}。</p>
  *
  * <p>覆盖的能力：运行期建表不重启即 CRUD、按表结构运行期生成强类型实体（entityClass）、
- * 加列后 refresh 换实体类、MetaQuery 运算符开集与分页、命名语句 Mapper XML 的读/写、
+ * 加列后 refresh 换实体类、参数实体 + XML 语句与分页、语句 XML 自动生成块与自定义语句、
  * 手写 SQL（不落文件即查即写）与代码注册语句、表结构 / 实体类 / 语句三级缓存的分开清理与重载、
  * 逻辑删除自动过滤、列名与标识符白名单（防注入）、按池绑定的客户端与缓存诊断。</p>
  *
@@ -80,14 +76,56 @@ public class MetaDataController {
 
 	private final JdbcOperations jdbc;
 
-	/** Mapper 文件目录；纯内存模式为 null。init/drop 时只清理本演示表自己的生成文件。 */
-	private final Path mapperDirectory;
+	/** 语句 XML 根目录；纯内存模式为 null。init/drop 时只清理本演示表自己的文件。 */
+	private final Path sqlDirectory;
 
 	public MetaDataController(JdbcOperations jdbc,
 			@Value("${autumn.data.meta.mapper.meta-directory:autumn-meta}") String metaDirectory) {
 		this.jdbc = jdbc;
-		this.mapperDirectory = MetaDirectories.of(metaDirectory).mapperDirectory();
+		this.sqlDirectory = MetaDirectories.of(metaDirectory).sqlDirectory();
 	}
+
+	/**
+	 * 使用方手写的自定义语句区：没有 GENERATED 标记，框架不会改写它，只在内存补上七条默认语句。
+	 * 这样自定义 id 与 findList/findPage/findOne/findById/save/update/delete 在同一份文件里共存。
+	 */
+	private static final String PRESET_STATEMENTS = """
+			<?xml version="1.0" encoding="UTF-8"?>
+			<mapper namespace="default/default/meta_demo_form">
+			    <select id="selectList">
+			        SELECT id, form_no, title, amount, status, remark, create_time, deleted_flag FROM ${table}
+			        <where>
+			            AND deleted_flag = 0
+			            <if test="id != null">AND id = #{id}</if>
+			            <if test="form_no != null">AND form_no = #{form_no}</if>
+			            <if test="amount != null">AND amount = #{amount}</if>
+			            <if test="status != null">AND status = #{status}</if>
+			            <if test="remark != null">AND remark = #{remark}</if>
+			            <if test="deleted_flag != null">AND deleted_flag = #{deleted_flag}</if>
+			        </where>
+			        ORDER BY id
+			    </select>
+			    <select id="selectCount">SELECT COUNT(*) FROM ${table} WHERE deleted_flag = 0</select>
+			    <insert id="insert">
+			        INSERT INTO ${table}
+			        <trim prefix="(" suffix=")" suffixOverrides=",">
+			            <if test="form_no != null">form_no,</if>
+			            <if test="title != null">title,</if>
+			            <if test="amount != null">amount,</if>
+			            <if test="status != null">status,</if>
+			            <if test="create_time != null">create_time,</if>
+			        </trim>
+			        <trim prefix="VALUES (" suffix=")" suffixOverrides=",">
+			            <if test="form_no != null">#{form_no},</if>
+			            <if test="title != null">#{title},</if>
+			            <if test="amount != null">#{amount},</if>
+			            <if test="status != null">#{status},</if>
+			            <if test="create_time != null">#{create_time},</if>
+			        </trim>
+			    </insert>
+			    <update id="updateByKey">UPDATE ${table} SET remark = #{remark} WHERE id = #{id}</update>
+			</mapper>
+			""";
 
 	// ==================================================================
 	// 一、运行期建表 / 元数据 / 运行期生成的实体类
@@ -95,11 +133,11 @@ public class MetaDataController {
 
 	/**
 	 * 运行期建表并灌入种子数据：不重启、不改代码，建完立刻就能 newEntity/save/findById。
-	 * 同时删掉本表演示遗留的 Mapper 文件，让命名语句按当前表结构重新生成一份（幂等）。
+	 * 同时预置一份「使用方手写」的语句 XML（无 GENERATED 标记，框架不改写、只在内存补默认语句）。
 	 */
 	@PostMapping("/init")
 	public Map<String, Object> init() {
-		dropGeneratedMapper();
+		dropStatementFile();
 		this.jdbc.execute("DROP TABLE IF EXISTS " + TABLE);
 		this.jdbc.execute("CREATE TABLE " + TABLE + " ("
 				+ " id BIGINT AUTO_INCREMENT PRIMARY KEY,"
@@ -111,6 +149,7 @@ public class MetaDataController {
 				+ " create_time TIMESTAMP,"
 				+ " deleted_flag INT DEFAULT 0)");
 		MetaMapper.refresh(TABLE); // 丢掉旧表结构快照 / 旧实体类 / 语句与计划缓存
+		writePresetStatementFile(); // 写一份「使用方手写」的自定义语句区，框架不会改写
 		List<MetaClass> saved = MetaMapper.saveAll(seedRows());
 		this.log.info("runtime table {} created, {} rows seeded, entity={}", TABLE, saved.size(),
 				MetaMapper.entityType(TABLE).getName());
@@ -124,7 +163,7 @@ public class MetaDataController {
 	public Map<String, Object> drop() {
 		this.jdbc.execute("DROP TABLE IF EXISTS " + TABLE);
 		MetaMapper.refresh(TABLE);
-		dropGeneratedMapper();
+		dropStatementFile();
 		return linked("dropped", TABLE, "hint", "POST /metadata/init to rebuild it at runtime");
 	}
 
@@ -173,7 +212,7 @@ public class MetaDataController {
 		String after = MetaMapper.entityType(TABLE).getName();
 
 		// 新列立即参与写与读：拿一行写入，再按主键读回来
-		MetaClass row = MetaMapper.findList(TABLE, MetaQuery.all().orderBy("id"), 1).get(0);
+		MetaClass row = MetaMapper.findList(TABLE, params(), 1).get(0);
 		row.set(name, sampleValue(type));
 		int updated = MetaMapper.update(row);
 		MetaClass reread = MetaMapper.findById(TABLE, row.get("id")).orElseThrow();
@@ -182,7 +221,7 @@ public class MetaDataController {
 				"entityClassBefore", before, "entityClassAfter", after,
 				"entityClassChanged", !before.equals(after), "writtenRows", updated,
 				"readBack", reread.get(name), "readBackJavaType", reread.property(name).getType(),
-				"mapperFile", "生成过的 Mapper 文件归使用方所有，加列不会回头改写它");
+				"statementFile", "无 GENERATED 标记的手写文件归使用方所有，框架一个字都不改写");
 	}
 
 	// ==================================================================
@@ -212,7 +251,7 @@ public class MetaDataController {
 				"generatedKeys", saved.stream().map(row -> row.get("id")).toList(), "rows", maps(saved));
 	}
 
-	/** 条件 + 排序 + 分页：全部走 MetaQuery，条件值只进绑定、排序列先过元数据校验。 */
+	/** 条件 + 排序 + 分页：条件值只进 #{ } 绑定，排序标识符先过元数据白名单。 */
 	@GetMapping("/rows")
 	public Map<String, Object> findRows(@RequestParam(required = false) Integer status,
 			@RequestParam(required = false) BigDecimal minAmount,
@@ -226,18 +265,25 @@ public class MetaDataController {
 			throw new IllegalArgumentException("page must be >= 0 and size between 1 and 100");
 		}
 		requireColumn(order);
-		MetaQuery query = MetaQuery.all();
+		StringBuilder sql = new StringBuilder(
+				"SELECT id, form_no, title, amount, status, remark, create_time FROM ${table} "
+						+ "WHERE deleted_flag = 0");
+		MetaClass query = params();
 		if (status != null) {
-			query = query.and("status", status);
+			sql.append(" AND status = #{status}");
+			query.set("status", status);
 		}
 		if (minAmount != null) {
-			query = query.and("amount", Op.GE, minAmount);
+			sql.append(" AND amount >= #{minAmount}");
+			query.set("minAmount", minAmount);
 		}
 		if (keyword != null && !keyword.isBlank()) {
-			query = query.contains("form_no", keyword);
+			sql.append(" AND form_no LIKE #{keyword}");
+			query.set("keyword", "%" + keyword + "%");
 		}
-		query = query.orderBy(order, desc ? Direction.DESC : Direction.ASC);
-		Page<MetaClass> result = MetaMapper.findPage(TABLE, query, Pageable.of(page, size));
+		sql.append(" ORDER BY ").append(order).append(desc ? " DESC" : " ASC");
+		Page<MetaClass> result = MetaMapper.findPageBySql(TABLE, sql.toString(), null, query,
+				Pageable.of(page, size));
 		return linked("page", result.page(), "size", result.size(), "total", result.total(),
 				"totalPages", result.totalPages(), "content", maps(result.content()));
 	}
@@ -289,7 +335,8 @@ public class MetaDataController {
 
 	/**
 	 * 逻辑删除：只把 deleted_flag 改成 1。查询默认自动追加 deleted_flag = 0 所以查不到，
-	 * 显式按 deleted_flag = 1 查能查到（说明行还在，动态层不提供物理删除）。
+	 * 显式按 deleted_flag = 1 查能查到（说明行还在）。删除语义由 XML 里的 {@code delete} 语句决定：
+	 * 本表有逻辑删除列，默认语句生成逻辑删除；想物理删除只需在自定义区覆盖那条语句。
 	 */
 	@PostMapping("/rows/{id}/void")
 	public Map<String, Object> voidRow(@PathVariable long id) {
@@ -300,35 +347,39 @@ public class MetaDataController {
 		int rows = MetaMapper.update(row);
 		return linked("updatedRows", rows,
 				"visibleAfterVoid", MetaMapper.findById(TABLE, id).isPresent(),
-				"voidedRowsFoundByFlag", MetaMapper.findList(TABLE,
-						MetaQuery.by("id", id).and("deleted_flag", 1)).size());
+				"voidedRowsFoundByFlag", MetaMapper.findListBySql(TABLE,
+						"SELECT id FROM ${table} WHERE id = #{id} AND deleted_flag = #{flag}",
+						params("id", id, "flag", 1)).size());
 	}
 
 	// ==================================================================
-	// 三、MetaQuery 运算符开集 / 命名语句 / 防注入 / 引擎诊断
+	// 三、参数实体 + 手写 SQL / 命名语句 / 防注入 / 引擎诊断
 	// ==================================================================
 
-	/** 一条端点跑遍比较、模糊、区间、IN、空值、排序、限行、count、exists。 */
+	/** 一条端点跑遍比较、模糊、区间、IN、空值、排序、限行、count、exists：都是同一套 #{ } 绑定语法。 */
 	@GetMapping("/query/operators")
 	public Map<String, Object> queryOperators() {
 		requireInitialized();
+		String base = "SELECT form_no FROM ${table} WHERE deleted_flag = 0";
 		return linked(
-				"GE", formNos(MetaMapper.findList(TABLE, MetaQuery.by("amount", Op.GE, new BigDecimal("50")))),
-				"BETWEEN", formNos(MetaMapper.findList(TABLE,
-						MetaQuery.by("amount", Op.BETWEEN, new BigDecimal("10"), new BigDecimal("100")))),
-				"LIKE", formNos(MetaMapper.findList(TABLE, MetaQuery.all().contains("title", "动态"))),
-				"IN", formNos(MetaMapper.findList(TABLE, MetaQuery.by("status", Op.IN, 1, 2))),
-				"IS_NULL", formNos(MetaMapper.findList(TABLE, MetaQuery.all().isNull("remark"))),
-				"IS_NOT_NULL", formNos(MetaMapper.findList(TABLE, MetaQuery.all().isNotNull("amount"))),
-				"ORDER_BY_DESC", formNos(MetaMapper.findList(TABLE,
-						MetaQuery.all().orderBy("amount", Direction.DESC))),
-				"LIMIT_2", formNos(MetaMapper.findList(TABLE, MetaQuery.all(), 2)),
-				"COUNT_status_1", MetaMapper.count(TABLE, MetaQuery.by("status", 1)),
-				"EXISTS_F-001", MetaMapper.exists(TABLE, MetaQuery.by("form_no", "F-001")));
+				"GE", formNos(MetaMapper.findListBySql(TABLE, base + " AND amount >= #{min}",
+						params("min", new BigDecimal("50")))),
+				"BETWEEN", formNos(MetaMapper.findListBySql(TABLE, base + " AND amount BETWEEN #{lo} AND #{hi}",
+						params("lo", new BigDecimal("10"), "hi", new BigDecimal("100")))),
+				"LIKE", formNos(MetaMapper.findListBySql(TABLE, base + " AND title LIKE #{kw}",
+						params("kw", "%动态%"))),
+				"IN", formNos(MetaMapper.findListBySql(TABLE, base + " AND status IN (1, 2)", params())),
+				"IS_NULL", formNos(MetaMapper.findListBySql(TABLE, base + " AND remark IS NULL", params())),
+				"IS_NOT_NULL", formNos(MetaMapper.findListBySql(TABLE, base + " AND amount IS NOT NULL", params())),
+				"ORDER_BY_DESC", formNos(MetaMapper.findListBySql(TABLE, base + " ORDER BY amount DESC", params())),
+				"LIMIT_2", formNos(MetaMapper.findList(TABLE, params(), 2)),
+				"COUNT_status_1", MetaMapper.count(TABLE, params("status", 1)),
+				"EXISTS_F-001", MetaMapper.exists(TABLE, params("form_no", "F-001")));
 	}
 
 	/**
-	 * 命名语句（Mapper XML）：文件不存在时按当前表结构生成一次，之后归使用方所有。
+	 * 命名语句（同一份语句 XML）：七条默认语句在 GENERATED 块里按表结构生成，
+	 * 标记之外的自定义语句归使用方、表结构变化时逐字保留。
 	 * sqlFor 只抽取不执行，selectList/selectCount/execute 分别走读、计数与写。
 	 */
 	@GetMapping("/statements")
@@ -349,8 +400,8 @@ public class MetaDataController {
 				params("id", insertedRow.get("id"), "remark", "生成语句改的"));
 		MetaClass after = client.selectOne(TABLE, "selectList", params("form_no", formNo)).orElseThrow();
 
-		Path file = generatedMapperFile();
-		return linked("mapperFile", file == null ? null : file.toString(),
+		Path file = existingStatementFile();
+		return linked("statementFile", file == null ? null : file.toString(),
 				"listSql", listSql.sql(), "listValues", listSql.values(),
 				"listedRows", maps(listed), "selectCount", count,
 				"insertSql", insertSql.sql(), "insertValues", insertSql.values(),
@@ -372,10 +423,14 @@ public class MetaDataController {
 		return linked("payload", payload,
 				"valueInSqlText", bound.sql().contains(payload), "boundValues", bound.values(),
 				"matchedRows", matched,
-				"illegalConditionColumn", rejection(
-						() -> MetaMapper.findList(TABLE, MetaQuery.by("form_no = 'x' OR 1=1", "y"))),
-				"illegalOrderByIdentifier", rejection(
-						() -> MetaMapper.findList(TABLE, MetaQuery.all().orderBy("status; DROP TABLE " + TABLE))));
+				"illegalConditionColumn", rejection(() -> {
+					requireColumn("form_no = 'x' OR 1=1");
+					MetaMapper.findList(TABLE, params("form_no = 'x' OR 1=1", "y"));
+				}),
+				"illegalOrderByIdentifier", rejection(() -> {
+					requireColumn("status; DROP TABLE " + TABLE);
+					MetaMapper.findList(TABLE, params());
+				}));
 	}
 
 	/** 引擎诊断：默认池、已实例化的池、编译过的 SQL 形状数、当前实体类。 */
@@ -394,7 +449,7 @@ public class MetaDataController {
 	// ==================================================================
 
 	/**
-	 * 手写 SQL：不建 Mapper 文件、不注册，直接把一段 SQL 交给 MetaMapper 执行。
+	 * 手写 SQL：不落语句文件、不注册，直接把一段 SQL 交给 MetaMapper 执行。
 	 *
 	 * <p>{@code #{}} 走绑定、{@code ${table}} 由方言填表名；返回里 {@code valueInSqlText=false}
 	 * 说明参数确实没进 SQL 文本。分页可以给 countSql，也可以留空自动包子查询计数。</p>
@@ -515,7 +570,7 @@ public class MetaDataController {
 		Map<String, Object> out = linked("table", TABLE);
 		try {
 			out.put("initialized", true);
-			out.put("rows", MetaMapper.count(TABLE, MetaQuery.all()));
+			out.put("rows", MetaMapper.count(TABLE, params()));
 			out.put("entityClass", MetaMapper.entityType(TABLE).getName());
 		}
 		catch (RuntimeException ex) {
@@ -593,9 +648,9 @@ public class MetaDataController {
 		};
 	}
 
-	/** 只清本表演示生成的文件：让每次 init 都按当前表结构重新生成一次（生产代码不要这么做）。 */
-	private void dropGeneratedMapper() {
-		Path file = generatedMapperFile();
+	/** 只清本表演示文件：让每次 init 都按当前表结构重新预置一次（生产代码不要这么做）。 */
+	private void dropStatementFile() {
+		Path file = statementFile();
 		if (file == null) {
 			return;
 		}
@@ -607,14 +662,30 @@ public class MetaDataController {
 		}
 	}
 
-	/** 文件名按忽略大小写匹配：H2 元数据表名是大写，MySQL 习惯小写。 */
-	private Path generatedMapperFile() {
-		if (this.mapperDirectory == null || !Files.isDirectory(this.mapperDirectory)) {
+	/** 该表演示文件是否存在（供端点展示）。 */
+	private Path existingStatementFile() {
+		Path file = statementFile();
+		return file != null && Files.isRegularFile(file) ? file : null;
+	}
+
+	/** 路径 = {语句根}/{数据源}/{命名空间}/{表名}.xml，与引擎里的唯一语句库保持一致。 */
+	private Path statementFile() {
+		if (this.sqlDirectory == null) {
 			return null;
 		}
-		try (Stream<Path> files = Files.list(this.mapperDirectory)) {
-			return files.filter(path -> path.getFileName().toString().equalsIgnoreCase(TABLE + ".xml"))
-					.findFirst().orElse(null);
+		return this.sqlDirectory.resolve(MetaMapper.engine().defaultPoolName())
+				.resolve(MetaMapper.DEFAULT_NAMESPACE).resolve(TABLE + ".xml");
+	}
+
+	/** init 时写一份手写资产：没有 GENERATED 标记，框架不改写，只补齐七条默认语句。 */
+	private void writePresetStatementFile() {
+		Path file = statementFile();
+		if (file == null) {
+			return; // 纯内存模式：默认语句照样在内存里生成，自定义语句可用 registerStatement
+		}
+		try {
+			Files.createDirectories(file.getParent());
+			Files.writeString(file, PRESET_STATEMENTS, java.nio.charset.StandardCharsets.UTF_8);
 		}
 		catch (IOException ex) {
 			throw new UncheckedIOException(ex);
@@ -649,7 +720,7 @@ public class MetaDataController {
 			action.run();
 			return "NOT REJECTED (check me)";
 		}
-		catch (MetaSqlException ex) {
+		catch (RuntimeException ex) {
 			return ex.getMessage();
 		}
 	}

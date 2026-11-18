@@ -31,19 +31,20 @@ public class AutumnDataMetaMapperProperties {
 
 	/**
 	 * 动态层工作根目录，三类产物在其固定子目录下：{@code meta-class/}（元类定义 JSON）、
-	 * {@code entity/}（生成的实体 .java）、{@code mapper/}（Mapper XML）。
-	 * 空串表示纯内存模式：产物一律不落盘。
+	 * {@code entity/}（生成的实体 .java）、{@code sql/}（一张表一个语句 XML，按
+	 * {@code 数据源/命名空间/表名.xml} 分层）。空串表示纯内存模式：产物一律不落盘。
 	 */
 	private String metaDirectory = "autumn-meta";
 
 	/**
-	 * 子目录里的文件缺失时是否生成一份（元类定义 / 实体源码 / Mapper）。
-	 * 已存在的文件永远不重写，所以关掉它只影响「第一次」。
+	 * 语句 XML 缺失时是否生成、表结构变化时是否把自动生成块写回磁盘。
+	 * 文件里的 {@code GENERATED START/END} 之间由框架维护，标记之外的自定义语句逐字保留；
+	 * 关掉它只影响「落盘」，七条默认语句仍会在内存补齐。
 	 */
 	private boolean generateFiles = true;
 
 	/**
-	 * 按表缓存（表结构快照 / 动态实体 / Mapper AST）各自的条目上限，默认一万张表。
+	 * 按表缓存（表结构快照 / 动态实体 / 语句 AST / 执行计划）各自的条目上限，默认一万张表。
 	 * 触顶按 LRU 淘汰冷表，下次访问自动重建，内存不随表数量无限增长。
 	 */
 	private int tableCacheSize = BoundedCache.DEFAULT_MAXIMUM_SIZE;

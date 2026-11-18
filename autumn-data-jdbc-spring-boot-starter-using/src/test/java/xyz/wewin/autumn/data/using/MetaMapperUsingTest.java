@@ -7,7 +7,6 @@ import org.springframework.jdbc.core.JdbcOperations;
 
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery;
 import xyz.wewin.autumn.data.common.meta.MetaClass;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -43,7 +42,9 @@ class MetaMapperUsingTest {
 
 			saved.set("status", 2);
 			assertThat(MetaMapper.update(saved)).isEqualTo(1); // 只写 status 这一列
-			assertThat(MetaMapper.findPage(TABLE, MetaQuery.by("status", 2), Pageable.of(0, 10)).total())
+			MetaClass query = new MetaClass();
+			query.set("status", 2);
+			assertThat(MetaMapper.findPage(TABLE, query, Pageable.of(0, 10)).total())
 					.isEqualTo(1);
 
 			// 运行期加列：refresh 之后不需要重启服务，新列即读写

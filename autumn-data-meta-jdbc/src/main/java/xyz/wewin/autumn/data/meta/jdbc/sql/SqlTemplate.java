@@ -40,6 +40,15 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
  */
 public final class SqlTemplate {
 
+	/**
+	 * 变更集在参数模型里的键：{@code changed('col')} 从这里取值。
+	 *
+	 * <p>由 {@code MetaMapperClient} 在渲染前把实体的 {@code changedNames()} 放进来，
+	 * 于是系统自动生成的 {@code save} / {@code update} 能精确表达「写过的列才写」，
+	 * 而不需要 {@code col != null} 那种会把显式置 NULL 吞掉的近似写法。</p>
+	 */
+	public static final String CHANGED_KEY = "__autumn_changed";
+
 	private final String id;
 
 	private final MapperDefinition.StatementType type;
@@ -63,7 +72,7 @@ public final class SqlTemplate {
 	/**
 	 * 手写 SQL 文本 → 模板：只认 {@code #{}} / {@code ${}} 占位，没有 XML 标签。
 	 *
-	 * <p>解析结果与 Mapper 文件里的 {@code <select>} 在运行期是<b>同一种东西</b>：同一个
+	 * <p>解析结果与语句 XML 里的 {@code <select>} 在运行期是<b>同一种东西</b>：同一个
 	 * {@link #render(Map)} 产出 {@link MarkedSql}，同一套 {@code MetaPlanCompiler} 编计划，
 	 * 所以手写 SQL 也能吃到绑定、类型收口与形状缓存，不需要第二个执行路径。</p>
 	 *
@@ -283,6 +292,11 @@ public final class SqlTemplate {
 		if (text.startsWith("(") && text.endsWith(")")) {
 			return evaluate(text.substring(1, text.length() - 1), params);
 		}
+		// 框架内置谓词 changed('col')：从变更集判断这一列是不是被写过。
+		// 默认生成的 save/update 用它保留「显式置 NULL」语义，col != null 做不到。
+		if (text.startsWith("changed(") && text.endsWith(")")) {
+			return changed(text.substring("changed(".length(), text.length() - 1), params);
+		}
 		for (String op : new String[] { "==", "!=", ">=", "<=", ">", "<" }) {
 			int at = indexOfOutsideQuotes(text, op);
 			if (at > 0) {
@@ -290,6 +304,54 @@ public final class SqlTemplate {
 			}
 		}
 		return truthy(resolve(text, params));
+	}
+
+	/**
+	 * {@code changed('col')} / {@code changed("col")} / {@code changed(col)}：列在变更集里为真。
+	 *
+	 * <p>变更集由调用方以 {@link #CHANGED_KEY} 放进参数模型，值可以是 {@code Set<String>}、
+	 * {@code Collection<String>} 或逗号分隔的字符串；列名比较大小写不敏感（元数据列在 H2/Oracle 下
+	 * 常是大写，手写 XML 多按小写）。变更集缺失时恒为假，于是默认 {@code save}/{@code update}
+	 * 不会误把没动过的列写进 SQL。</p>
+	 */
+	private static boolean changed(String argument, ScopedParams params) {
+		String name = argument.trim();
+		if (isQuoted(name)) {
+			name = name.substring(1, name.length() - 1);
+		}
+		if (name.isEmpty()) {
+			return false;
+		}
+		Object raw = params.get(CHANGED_KEY);
+		if (raw == null) {
+			return false;
+		}
+		if (raw instanceof Collection<?> names) {
+			for (Object item : names) {
+				if (item != null && item.toString().equalsIgnoreCase(name)) {
+					return true;
+				}
+			}
+			return false;
+		}
+		if (raw instanceof Map<?, ?> map) {
+			return map.containsKey(name) || containsIgnoreCase(map.keySet(), name);
+		}
+		for (String item : raw.toString().split(",")) {
+			if (item.trim().equalsIgnoreCase(name)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private static boolean containsIgnoreCase(Collection<?> values, String name) {
+		for (Object value : values) {
+			if (value != null && value.toString().equalsIgnoreCase(name)) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private static boolean compare(String left, String right, String op, ScopedParams params) {

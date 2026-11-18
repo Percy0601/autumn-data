@@ -14,12 +14,12 @@ import java.util.logging.Logger;
  * &lt;root&gt;/
  *   meta-class/   元类定义（JSON）：定义优先，库里多出来的列由运行期补齐
  *   entity/       生成的实体 .java
- *   mapper/       动态表的 MyBatis 风格 Mapper XML
+ *   sql/          语句 XML：{数据源}/{命名空间}/{表名}.xml，每表一份
  * </pre>
  *
- * <p>三类产物遵循同一条规则：<b>文件已经存在就绝不重写</b>——它们一旦落到磁盘就归使用方所有，
- * 运行期只读；进程内的有界 LRU 负责「同一份文件不重复解析 / 同一份结构不重复编译」。
- * 目录为空串表示纯内存模式：产物只在内存里生成，不留盘。</p>
+ * <p>实体类、元类定义是<b>一次性产物</b>：文件一旦存在就绝不重写，归使用方所有。
+ * 语句 XML 不同：它由框架维护一个 {@code GENERATED START/END} 自动生成区，表结构变化时只重写这一块，
+ * 标记之外的自定义语句逐字保留。目录为空串表示纯内存模式：产物只在内存里生成，不留盘。</p>
  *
  * @param rootDirectory 根目录；{@code null} 表示纯内存模式
  */
@@ -34,8 +34,8 @@ public record MetaDirectories(Path rootDirectory) {
 	/** 生成的实体源码子目录。 */
 	public static final String ENTITY = "entity";
 
-	/** Mapper XML 子目录。 */
-	public static final String MAPPER = "mapper";
+	/** 语句 XML 子目录：其下再按 {@code 数据源/命名空间/表名.xml} 分层。 */
+	public static final String SQL = "sql";
 
 	private static final Logger LOG = Logger.getLogger(MetaDirectories.class.getName());
 
@@ -68,8 +68,9 @@ public record MetaDirectories(Path rootDirectory) {
 		return directory(ENTITY);
 	}
 
-	public Path mapperDirectory() {
-		return directory(MAPPER);
+	/** 语句 XML 根目录；纯内存模式返回 {@code null}。 */
+	public Path sqlDirectory() {
+		return directory(SQL);
 	}
 
 	/**

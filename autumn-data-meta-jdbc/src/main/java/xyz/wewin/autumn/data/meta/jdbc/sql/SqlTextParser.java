@@ -10,7 +10,7 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
 /**
  * 手写 SQL 文本 → {@link TemplateNode} 模板。
  *
- * <p>XML Mapper 是「文件 + 标签」的写法，低代码平台很多场景（设计器里临时拼一条查询、业务侧想
+ * <p>语句 XML 是「文件 + 标签」的写法，低代码平台很多场景（设计器里临时拼一条查询、业务侧想
  * 直接在代码里写 SQL 而懒得建文件）只需要一段纯文本。这里补的正是那条最短路径：</p>
  *
  * <ul>
@@ -19,7 +19,7 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
  *       {@link SqlTemplate#isIdentifierFragment(String)} 白名单；{@code ${table}} 由客户端按方言
  *       自动填成引号后的表名；</li>
  *   <li><b>没有 XML 标签</b>：{@code <if>} / {@code <foreach>} 这类分支写在 Java 侧，
- *       或者改用 Mapper 文件。手写 SQL 与文件走同一个 {@link SqlTemplate} 解释器，因此绑定、类型
+ *       或者改用语句 XML 文件。手写 SQL 与文件走同一个 {@link SqlTemplate} 解释器，因此绑定、类型
  *       收口、计划缓存完全一致。</li>
  * </ul>
  *

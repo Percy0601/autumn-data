@@ -1,10 +1,13 @@
 package xyz.wewin.autumn.data.meta.jdbc.engine;
+
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -18,8 +21,6 @@ import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.ConnectionSource;
 import xyz.wewin.autumn.data.jdbc.runtime.RowMapper;
-import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityModel;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityRegistry;
@@ -27,59 +28,47 @@ import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTable;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MarkedSql;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaPlanCache;
-import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlBuilder;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlFileStore;
+import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlPlan;
-import xyz.wewin.autumn.data.meta.jdbc.sql.MetaStatementStore;
 import xyz.wewin.autumn.data.meta.jdbc.sql.SqlTemplate;
 import xyz.wewin.autumn.data.meta.jdbc.sql.SqlTextParser;
 
 /**
- * 绑定到某个数据源（池）的动态客户端。
+ * 绑定「数据源 + 命名空间」的动态客户端。
  *
- * <p>{@link MetaMapper} 的静态方法默认走默认池；多数据源显式用 {@link MetaMapper#of(String)}
- * 拿到本类型，把“哪个库”固定在调用边界上，而不是藏在线程上下文里。表名/列名/类型仍然在每次
- * 调用时从 {@link MetaTableRegistry} 解析，所以运行期建表后无需重启。</p>
+ * <p><b>SQL 只有一个来源</b>：{@link MetaSqlFileStore} 里那张表对应的 XML 文件
+ * （{@code {根}/{数据源}/{命名空间}/{表名}.xml}）。核心七个方法各自执行文件里同 id 的语句：</p>
  *
- * <p>两组入口各走一条路，不存在“同一次调用可能被两套实现分走”的情况：</p>
- * <ul>
- *   <li>{@link MetaQuery} 驱动的查询（{@code findById/findByKey/findOne/findList/findPage/count/exists}）
- *       与实体驱动的写（{@code newEntity/save/saveAll/update}）：SQL 由 {@link MetaSqlBuilder} 按元数据
- *       现拼。条件运算符是开集（{@code >}/{@code LIKE}/{@code IN}/{@code BETWEEN}/排序……），
- *       固定文件表达不了，所以这条路不读 XML；</li>
- *   <li>命名语句（{@code sqlFor/selectList/selectOne/selectCount/execute}）：SQL 来自
- *       {@link MetaStatementStore} 的 Mapper 文件——文件存在就用文件，缺失时按表结构生成一次，
- *       之后归使用方编辑。</li>
- * </ul>
+ * <pre>
+ * findList / findPage / findOne / findById / save / update / delete
+ * </pre>
  *
- * <p>两条路产出同一种东西（{@link MarkedSql}），再走同一个后半程：
- * {@link MetaPlanCache} 按「结构指纹 + SQL 文本」取 {@link MetaSqlPlan}（未命中才
- * {@link MetaPlanCompiler} 编译一次），交给 {@link AutumnJdbc} 的执行入口。于是</p>
- * <ul>
- *   <li>有绑定槽 → {@link java.sql.PreparedStatement}，每个 {@code ?} 的类型转换与 setter
- *       是编译期定好的（见 {@link MetaBindSlot}）；</li>
- *   <li>零绑定槽（全是 {@code ${}} 拼接或字面量）→ {@link java.sql.Statement}，
- *       本来就没有东西可绑，不必再让驱动 parse 一遍占位符。</li>
- * </ul>
+ * <p>这七条由框架按表结构默认生成在 {@code GENERATED START/END} 之间；标记之外的使用方自定义语句
+ * 由 {@code sqlFor/selectList/selectOne/selectCount/execute} 按 id 调用。表结构变化时只重写生成块，
+ * 自定义语句逐字保留。手写 SQL（{@code findListBySql} 等）是 {@link SqlTemplate#ofText} 的一次性模板，
+ * 不落文件、不进语句库，属于同一套语法的临时用法。</p>
  *
- * <p><b>唯一的操作对象是 {@link MetaClass}</b>：读出来的行、写进去的行、命名语句的参数都是它。
- * 实例按当前表结构直接生成源码、运行期编译加载，有真实类型化字段和 getter，
- * 类型可以通过 {@link #entityType(String)} 取到；写哪几列看的是实体的变更集
- * （{@link MetaClass#isChanged(String)}），所以「显式置空」和「这一列不动」是两件事，
- * 不需要额外的空值哨兵。完全静态的实体类在运行期建表时做不到，完全动态的 Map 又没有类型，
- * 这一层就是要落在两者之间。</p>
+ * <p><b>查询条件用参数实体 + {@code <if>}</b>：传 {@link MetaClass}，赋了值的列才进 WHERE；复杂条件
+ * （比较、模糊、IN、排序）写在 XML 自定义语句里，用 {@code <if>/<foreach>/<choose>} 表达，
+ * 不在 Java 侧现拼 SQL。写哪几列由实体的变更集决定（{@code changed('col')}），因此「显式置 NULL」
+ * 和「这一列没动」是两件事。</p>
  *
- * <p>只提供查询、保存、更新；<b>不提供物理删除</b>。业务上的作废是
- * {@code entity.setStatus("VOID"); client.update(entity);}。</p>
+ * <p>所有入口产出同一种东西（{@link MarkedSql}），再走同一个后半程：{@link MetaPlanCache} 按
+ * 「结构指纹 + SQL 文本」取 {@link MetaSqlPlan}，交给 {@link AutumnJdbc} 执行。有绑定槽走
+ * {@code PreparedStatement}，零槽走 {@code Statement}。</p>
+ *
+ * <p>操作对象一律是 {@link MetaClass}：读出来的行、写进去的行、语句参数都是它。
+ * {@link MetaMapper#of(String, String)} 把数据源与命名空间固定在调用边界上；
+ * {@link #forNamespace(String)} 只是换一个命名空间的轻量视图，共享全部缓存与注册表。</p>
  */
 public final class MetaMapperClient {
 
 	private static final Logger LOG = Logger.getLogger(MetaMapperClient.class.getName());
 
-	/** 派生表别名：把 {@link MetaQuery} 的条件叠在文件里的基础语句外面时用。 */
-	private static final String OVERLAY_ALIAS = "autumn_meta_base";
-
 	private final String poolName;
+
+	private final String namespace;
 
 	private final AutumnJdbc jdbc;
 
@@ -87,166 +76,171 @@ public final class MetaMapperClient {
 
 	private final MetaTableRegistry registry;
 
-	private final MetaSqlBuilder sqlBuilder;
-
-	private final MetaStatementStore statementStore;
-
 	private final MetaEntityRegistry entityRegistry;
 
 	private final MetaPlanCache plans;
 
-	private final MetaSqlFileStore metaSqlStore;
+	private final MetaSqlFileStore statements;
 
 	private final int defaultListLimit;
 
 	public MetaMapperClient(String poolName, AutumnJdbc jdbc, ConnectionSource connectionSource,
-			MetaTableRegistry registry, MetaSqlBuilder sqlBuilder, MetaStatementStore statementStore,
-			MetaEntityRegistry entityRegistry, MetaPlanCache plans, int defaultListLimit) {
-		this(poolName, jdbc, connectionSource, registry, sqlBuilder, statementStore, entityRegistry, plans,
-				defaultListLimit, MetaSqlFileStore.classpath());
+			MetaTableRegistry registry, MetaEntityRegistry entityRegistry, MetaPlanCache plans,
+			int defaultListLimit, MetaSqlFileStore statements) {
+		this(poolName, MetaSqlFileStore.DEFAULT_NAMESPACE, jdbc, connectionSource, registry, entityRegistry, plans,
+				defaultListLimit, statements);
 	}
 
-	public MetaMapperClient(String poolName, AutumnJdbc jdbc, ConnectionSource connectionSource,
-			MetaTableRegistry registry, MetaSqlBuilder sqlBuilder, MetaStatementStore statementStore,
-			MetaEntityRegistry entityRegistry, MetaPlanCache plans, int defaultListLimit,
-			MetaSqlFileStore metaSqlStore) {
+	public MetaMapperClient(String poolName, String namespace, AutumnJdbc jdbc, ConnectionSource connectionSource,
+			MetaTableRegistry registry, MetaEntityRegistry entityRegistry, MetaPlanCache plans,
+			int defaultListLimit, MetaSqlFileStore statements) {
 		if (defaultListLimit <= 0) {
 			throw new IllegalArgumentException("defaultListLimit must be > 0");
 		}
-		if (statementStore == null) {
-			throw new IllegalArgumentException("statementStore must not be null");
-		}
-		if (entityRegistry == null) {
-			throw new IllegalArgumentException("entityRegistry must not be null");
-		}
-		if (metaSqlStore == null) {
-			throw new IllegalArgumentException("metaSqlStore must not be null");
-		}
-		this.poolName = poolName;
-		this.jdbc = jdbc;
-		this.connectionSource = connectionSource;
-		this.registry = registry;
-		this.sqlBuilder = sqlBuilder;
-		this.statementStore = statementStore;
-		this.entityRegistry = entityRegistry;
+		this.poolName = Objects.requireNonNull(poolName, "poolName");
+		this.namespace = Objects.requireNonNull(namespace, "namespace");
+		this.jdbc = Objects.requireNonNull(jdbc, "jdbc");
+		this.connectionSource = Objects.requireNonNull(connectionSource, "connectionSource");
+		this.registry = Objects.requireNonNull(registry, "registry");
+		this.entityRegistry = Objects.requireNonNull(entityRegistry, "entityRegistry");
+		this.statements = Objects.requireNonNull(statements, "statements");
 		this.plans = plans == null ? new MetaPlanCache() : plans;
-		this.metaSqlStore = metaSqlStore;
 		this.defaultListLimit = defaultListLimit;
 	}
 
-	/** 该客户端绑定的池名（默认池也在这里显示）。 */
+	/** 换一个命名空间的轻量视图：共享连接源、注册表、语句库与计划缓存，不复制状态。 */
+	private MetaMapperClient(MetaMapperClient base, String namespace) {
+		this.poolName = base.poolName;
+		this.namespace = Objects.requireNonNull(namespace, "namespace");
+		this.jdbc = base.jdbc;
+		this.connectionSource = base.connectionSource;
+		this.registry = base.registry;
+		this.entityRegistry = base.entityRegistry;
+		this.plans = base.plans;
+		this.statements = base.statements;
+		this.defaultListLimit = base.defaultListLimit;
+	}
+
+	/** 该客户端绑定的池名（数据源）。 */
 	public String poolName() {
 		return this.poolName;
 	}
 
+	/** 该客户端绑定的命名空间（业务划分 / 包名称）。 */
+	public String namespace() {
+		return this.namespace;
+	}
+
+	/** 切换到另一命名空间，语句会落到 {@code {根}/{数据源}/{新命名空间}/{表名}.xml}。 */
+	public MetaMapperClient forNamespace(String namespace) {
+		if (namespace == null || namespace.isBlank()) {
+			throw new IllegalArgumentException("namespace must not be blank");
+		}
+		return this.namespace.equals(namespace) ? this : new MetaMapperClient(this, namespace);
+	}
+
+	/** 唯一语句库（诊断 / 显式生成文件用）。 */
+	public MetaSqlFileStore statementStore() {
+		return this.statements;
+	}
+
 	// ------------------------------------------------------------------
-	// 查询（MetaQuery 驱动）
+	// 核心 CRUD：SQL 一律来自 XML 里同 id 的语句
 	// ------------------------------------------------------------------
 
+	/** 按单主键取一行；复合主键用 {@link #findByKey(MetaClass)}。 */
 	public Optional<MetaClass> findById(String tableName, Object id) {
 		MetaTable table = this.registry.require(tableName);
 		MetaProperty pk = table.singlePrimaryKey();
 		if (pk == null) {
 			throw new MetaSqlException("table '" + tableName + "' has no single primary key; use findByKey(...)");
 		}
-		return findOne(tableName, MetaQuery.by(pk.getName(), id));
+		MetaClass params = new MetaClass();
+		params.set(pk.getName(), id);
+		return findOne(table, MetaSqlGenerator.FIND_BY_ID, params, 1);
 	}
 
 	/**
-	 * 按主键取一行：主键值读自实体，所以既可以是「只填了主键的空实体」，也可以是「刚查出来的行」。
-	 *
-	 * <p>表名取自 {@link MetaClass#getName()}（生成实体在构造时就写死了自己的表），复合主键必须
-	 * 每一列都有值，少一列就是少一个条件，不会静默放宽查询范围。</p>
+	 * 按主键取一行：主键值读自实体，表名读自 {@link MetaClass#getName()}。
+	 * 复合主键每一列都必须有值，少一列就是少一个条件。
 	 */
 	public Optional<MetaClass> findByKey(MetaClass key) {
 		MetaTable table = table(key);
 		if (table.primaryKeys().isEmpty()) {
 			throw new MetaSqlException("table '" + table.name() + "' has no primary key");
 		}
-		MetaQuery query = MetaQuery.all();
 		for (MetaProperty column : table.primaryKeys()) {
-			Object value = key.get(column.getName());
-			if (value == null) {
+			if (key.get(column.getName()) == null) {
 				throw new MetaSqlException("primary key column '" + column.getName()
 						+ "' must not be null for table '" + table.name() + "'");
 			}
-			query = query.and(column.getName(), value);
 		}
-		return findOne(table.name(), query);
+		return findOne(table, MetaSqlGenerator.FIND_BY_ID, key, 1);
 	}
 
-	public Optional<MetaClass> findOne(String tableName, MetaQuery query) {
-		List<MetaClass> rows = findList(tableName, query, 1);
-		return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+	public Optional<MetaClass> findOne(String tableName, MetaClass params) {
+		return findOne(this.registry.require(tableName), MetaSqlGenerator.FIND_ONE, params, 1);
 	}
 
-	public List<MetaClass> findList(String tableName, MetaQuery query) {
-		return findList(tableName, query, this.defaultListLimit);
+	public List<MetaClass> findList(String tableName, MetaClass params) {
+		return findList(tableName, params, this.defaultListLimit);
 	}
 
-	/**
-	 * 查询列表并限制返回行数（防止动态查询一次拉全表）。
-	 */
-	public List<MetaClass> findList(String tableName, MetaQuery query, long limit) {
+	/** 查询列表并限制返回行数（防止动态查询一次拉全表）。 */
+	public List<MetaClass> findList(String tableName, MetaClass params, long limit) {
 		if (limit <= 0) {
 			throw new IllegalArgumentException("limit must be > 0");
 		}
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
-			Bound sql = bind(table, this.sqlBuilder.select(table, query));
-			return this.jdbc.query(sql.plan(), sql.args(), mapper(table), limit);
+			SqlTemplate statement = selectStatement(table, MetaSqlGenerator.FIND_LIST);
+			Bound sql = bind(table, tidy(render(table, statement, params)));
+			return this.jdbc.query(sql.plan(), sql.args(), mapper(table, statement), limit);
 		});
 	}
 
-	public Page<MetaClass> findPage(String tableName, MetaQuery query, Pageable pageable) {
+	public Page<MetaClass> findPage(String tableName, MetaClass params, Pageable pageable) {
+		if (pageable == null) {
+			throw new IllegalArgumentException("pageable must not be null");
+		}
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
-			MarkedSql select = this.sqlBuilder.select(table, query);
+			SqlTemplate statement = selectStatement(table, MetaSqlGenerator.FIND_PAGE);
+			MarkedSql select = tidy(render(table, statement, params));
 			MetaSqlPlan selectPlan = this.plans.plan(table, select);
-			MetaSqlPlan countPlan = this.plans.plan(table, this.sqlBuilder.count(table, query));
-			Object[] args = select.values().toArray();
-			return this.jdbc.page(selectPlan, countPlan, args, mapper(table), pageable);
+			MetaSqlPlan countPlan = this.plans.plan(table, derivedCount(select));
+			return this.jdbc.page(selectPlan, countPlan, select.values().toArray(), mapper(table, statement), pageable);
 		});
 	}
 
-	public long count(String tableName, MetaQuery query) {
+	public long count(String tableName, MetaClass params) {
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
-			Bound sql = bind(table, this.sqlBuilder.count(table, query));
-			return this.jdbc.count(sql.plan(), sql.args());
+			SqlTemplate statement = selectStatement(table, MetaSqlGenerator.FIND_LIST);
+			MarkedSql select = tidy(render(table, statement, params));
+			return this.jdbc.count(this.plans.plan(table, derivedCount(select)), select.values().toArray());
 		});
 	}
 
-	public boolean exists(String tableName, MetaQuery query) {
-		return count(tableName, query) > 0;
+	public boolean exists(String tableName, MetaClass params) {
+		return count(tableName, params) > 0;
 	}
 
 	// ------------------------------------------------------------------
 	// 实体：写与读共用同一个操作对象
 	// ------------------------------------------------------------------
 
-	/**
-	 * 造一个当前表结构的空实体（干净、无变更集）。
-	 *
-	 * <p>新增走它：{@code newEntity} → 逐列赋值 → {@link #save(MetaClass)}。查询出来的行已经是
-	 * 同一个形态的实例，改几列再 {@link #update(MetaClass)} 就是部分更新。</p>
-	 *
-	 * <p>CODE 模式的工厂是生成类里的 {@code NEW}（构造器方法引用），GENERIC 模式直接
-	 * {@code new MetaClass()}；两条路都不需要反射。</p>
-	 */
+	/** 造一个当前表结构的空实体（干净、无变更集）。 */
 	public MetaClass newEntity(String tableName) {
-		MetaTable table = this.registry.require(tableName);
-		return this.entityRegistry.model(table).factory().get();
+		return this.entityRegistry.model(this.registry.require(tableName)).factory().get();
 	}
 
-	/**
-	 * 新增一行：写实体上被赋过值的列，自增主键回填到实体里，之后实体是干净的。
-	 *
-	 * @return 同一个实体实例（主键已填），便于链式继续用
-	 */
+	/** 新增：写实体上被赋过值的列，自增主键回填到实体里，之后实体是干净的。 */
 	public MetaClass save(MetaClass entity) {
 		MetaTable table = table(entity);
-		Bound sql = bind(table, this.sqlBuilder.insert(table, entity));
+		validateWritable(table, entity, true);
+		SqlTemplate statement = statement(table, MetaSqlGenerator.SAVE, StatementType.INSERT);
+		Bound sql = bind(table, tidy(render(table, statement, entity)));
 		MetaProperty pk = table.singlePrimaryKey();
 		if (pk != null && pk.isAutoIncrement() && !entity.isChanged(pk.getName())) {
 			Object key = withConnection(() -> this.jdbc.insertReturningKey(sql.plan(), sql.args(), pk.getName()));
@@ -261,29 +255,27 @@ public final class MetaMapperClient {
 		return entity;
 	}
 
-	/**
-	 * 批量新增；赋值的列一致（同一形状）时走 JDBC batch，否则退化为逐条 {@link #save(MetaClass)}。
-	 *
-	 * @return 按入参顺序返回的同一批实体，自增主键已回填
-	 */
+	/** 批量新增：变更集形状一致的走 JDBC batch，否则逐条 {@link #save(MetaClass)}。 */
 	public List<MetaClass> saveAll(List<MetaClass> entities) {
 		if (entities == null || entities.isEmpty()) {
 			return List.of();
 		}
 		MetaTable table = table(entities.get(0));
-		List<MarkedSql> statements = new ArrayList<>(entities.size());
+		SqlTemplate statement = statement(table, MetaSqlGenerator.SAVE, StatementType.INSERT);
+		List<MarkedSql> rendered = new ArrayList<>(entities.size());
 		for (MetaClass entity : entities) {
-			statements.add(this.sqlBuilder.insert(table, entity));
+			validateWritable(table, entity, true);
+			rendered.add(tidy(render(table, statement, entity)));
 		}
-		String shape = statements.get(0).sql();
-		if (statements.stream().anyMatch(statement -> !statement.sql().equals(shape))) {
+		String shape = rendered.get(0).sql();
+		if (rendered.stream().anyMatch(marked -> !marked.sql().equals(shape))) {
 			for (MetaClass entity : entities) {
 				save(entity);
 			}
 			return entities;
 		}
-		MetaSqlPlan plan = this.plans.plan(table, statements.get(0));
-		List<Object[]> args = statements.stream().map(statement -> statement.values().toArray()).toList();
+		MetaSqlPlan plan = this.plans.plan(table, rendered.get(0));
+		List<Object[]> args = rendered.stream().map(marked -> marked.values().toArray()).toList();
 		MetaProperty pk = table.singlePrimaryKey();
 		if (pk != null && pk.isAutoIncrement()) {
 			List<Number> keys = withConnection(() -> this.jdbc.batchInsertReturningKeys(plan, args, pk.getName()));
@@ -302,16 +294,33 @@ public final class MetaMapperClient {
 		return entities;
 	}
 
-	/**
-	 * 部分更新：SET 只包含实体上写过的列，WHERE 用实体上的主键值。
-	 *
-	 * <p>成功写回（影响行数 &gt; 0）才清变更集；一行都没改到就把改动留着，调用方可以修正主键后重试。</p>
-	 *
-	 * @return 影响行数
-	 */
+	/** 部分更新：只写实体上改过的列，WHERE 用实体上的主键值。 */
 	public int update(MetaClass entity) {
 		MetaTable table = table(entity);
-		Bound sql = bind(table, this.sqlBuilder.update(table, entity));
+		validateWritable(table, entity, false);
+		SqlTemplate s = statement(table, MetaSqlGenerator.UPDATE, StatementType.UPDATE);
+		Bound sql = bind(table, tidy(render(table, s, entity)));
+		int rows = withConnection(() -> this.jdbc.update(sql.plan(), sql.args()));
+		if (rows > 0) {
+			entity.clearChanged();
+		}
+		return rows;
+	}
+
+	/**
+	 * 删除：执行 XML 里的 {@code delete} 语句。有逻辑删除列时默认语句是 {@code UPDATE ... SET deleted = 1}，
+	 * 没有时是物理 {@code DELETE}；使用方可以在自定义区覆盖这条语句。
+	 */
+	public int delete(MetaClass entity) {
+		MetaTable table = table(entity);
+		validateKey(table, entity);
+		SqlTemplate s = this.statements.requireStatement(this.poolName, this.namespace, table,
+				MetaSqlGenerator.DELETE);
+		if (s.type() == StatementType.SELECT || s.type() == StatementType.INSERT) {
+			throw new MetaSqlException("statement '" + MetaSqlGenerator.DELETE + "' of table '" + table.name()
+					+ "' must be a <delete>/<update>; it is " + tag(s));
+		}
+		Bound sql = bind(table, tidy(render(table, s, entity)));
 		int rows = withConnection(() -> this.jdbc.update(sql.plan(), sql.args()));
 		if (rows > 0) {
 			entity.clearChanged();
@@ -320,22 +329,16 @@ public final class MetaMapperClient {
 	}
 
 	// ------------------------------------------------------------------
-	// 命名语句（Mapper 文件）
+	// 自定义语句：同一个语句库，按 id 执行
 	// ------------------------------------------------------------------
 
-	/**
-	 * 抽取命名语句，只返回形状与实参、不执行；用来核对语句或交给别的执行器。
-	 *
-	 * <p>{@code params} 是参数对象：列名直接按元数据对上（传实体也行，传一个只 set 了参数的
-	 * {@link MetaClass} 也行），非列名的键（业务开关、排序字段、{@code <foreach>} 的集合）
-	 * 落在实体的动态属性上。</p>
-	 */
+	/** 抽取命名语句，只返回形状与实参、不执行。 */
 	public MarkedSql sqlFor(String tableName, String statementId, MetaClass params) {
 		MetaTable table = this.registry.require(tableName);
-		return render(table, this.statementStore.statement(table, statementId), params);
+		SqlTemplate s = require(table, statementId);
+		return render(table, s, params);
 	}
 
-	/** 执行 {@code <select>} 语句取列表，行数上限用默认值。 */
 	public List<MetaClass> selectList(String tableName, String statementId, MetaClass params) {
 		return selectList(tableName, statementId, params, this.defaultListLimit);
 	}
@@ -346,9 +349,9 @@ public final class MetaMapperClient {
 		}
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
-			SqlTemplate statement = selectStatement(table, statementId);
-			Bound sql = bind(table, render(table, statement, params));
-			return this.jdbc.query(sql.plan(), sql.args(), mapper(table, statement), limit);
+			SqlTemplate s = selectStatement(table, statementId);
+			Bound sql = bind(table, tidy(render(table, s, params)));
+			return this.jdbc.query(sql.plan(), sql.args(), mapper(table, s), limit);
 		});
 	}
 
@@ -361,326 +364,58 @@ public final class MetaMapperClient {
 	public long selectCount(String tableName, String statementId, MetaClass params) {
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
-			Bound sql = bind(table, render(table, selectStatement(table, statementId), params));
+			Bound sql = bind(table, tidy(render(table, selectStatement(table, statementId), params)));
 			return this.jdbc.count(sql.plan(), sql.args());
 		});
 	}
 
-	/** 执行 {@code <insert>}/{@code <update>} 语句，返回影响行数。 */
+	/** 执行 {@code <insert>}/{@code <update>}/{@code <delete>} 语句，返回影响行数。 */
 	public int execute(String tableName, String statementId, MetaClass params) {
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
-			SqlTemplate statement = this.statementStore.statement(table, statementId);
-			if (statement.type() == StatementType.SELECT) {
+			SqlTemplate s = require(table, statementId);
+			if (s.type() == StatementType.SELECT) {
 				throw new MetaSqlException("statement '" + statementId + "' of table '" + table.name()
 						+ "' is a <select>; use selectList/selectCount(...)");
 			}
-			if (statement.type() == StatementType.DELETE) {
-				throw new MetaSqlException("statement '" + statementId + "' of table '" + table.name()
-						+ "' is a <delete>; the dynamic layer does not run physical deletes");
-			}
-			Bound sql = bind(table, render(table, statement, params));
+			Bound sql = bind(table, tidy(render(table, s, params)));
 			return this.jdbc.update(sql.plan(), sql.args());
 		});
 	}
 
-	// ------------------------------------------------------------------
-	// metaFind / metaSave / metaUpdate / metaDelete
-	// ------------------------------------------------------------------
-
-	/**
-	 * 列表查询：优先用 {@code meta/{数据源}/{命名空间}/{表}.xml} 里的 {@code <select id="metaFind">}
-	 * （数据源 = 本客户端绑定的池名，命名空间 = {@link MetaMapper#DEFAULT_NAMESPACE}）；
-	 * 文件或语句缺失时回退到按元数据现拼的 SQL，两条路对调用方是同一个结果。
-	 */
-	public List<MetaClass> metaFind(String tableName, MetaQuery query) {
-		return metaFind(tableName, query, this.defaultListLimit);
+	/** 把一段手写 SQL 注册成命名语句（同一套语法的内存覆盖层，同 id 覆盖）。 */
+	public MetaMapperClient registerStatement(String tableName, String statementId, StatementType type, String sql) {
+		this.statements.register(this.poolName, this.namespace, tableName, statementId, type, sql);
+		return this;
 	}
 
-	/** 同 {@link #metaFind(String, MetaQuery)}，额外指定行数上限。 */
-	public List<MetaClass> metaFind(String tableName, MetaQuery query, long limit) {
-		if (limit <= 0) {
-			throw new IllegalArgumentException("limit must be > 0");
-		}
-		MetaTable table = this.registry.require(tableName);
-		SqlTemplate statement = metaStatement(table, this.poolName, MetaMapper.DEFAULT_NAMESPACE,
-				MetaMapper.META_FIND);
-		if (statement != null && statement.type() != StatementType.SELECT) {
-			throw new MetaSqlException("statement '" + MetaMapper.META_FIND + "' of " + metaLocation(table,
-					this.poolName, MetaMapper.DEFAULT_NAMESPACE) + " must be a <select>; it is " + tag(statement));
-		}
-		return withConnection(() -> {
-			MarkedSql marked = statement == null
-					? this.sqlBuilder.select(table, query == null ? MetaQuery.all() : query)
-					: overlay(table, tidy(render(table, statement, null)), query);
-			Bound sql = bind(table, marked);
-			RowMapper<MetaClass> mapper = statement == null ? mapper(table) : mapper(table, statement);
-			return this.jdbc.query(sql.plan(), sql.args(), mapper, limit);
-		});
+	/** 同上，语句类型按 SQL 开头关键字推断。 */
+	public MetaMapperClient registerStatement(String tableName, String statementId, String sql) {
+		return registerStatement(tableName, statementId, statementType(sql), sql);
 	}
 
-	/**
-	 * 新增：优先用文件里的 {@code <insert id="metaSave">}，没有就等价于 {@link #save(MetaClass)}。
-	 *
-	 * <p>自增主键在语句没写它的时候按 {@code getGeneratedKeys} 回填到实体上，写成功即清变更集——
-	 * 与 {@link #save(MetaClass)} 的手感一致，换不换文件不影响调用方。</p>
-	 */
-	public MetaClass metaSave(MetaClass entity) {
-		MetaTable table = table(entity);
-		SqlTemplate statement = metaStatement(table, this.poolName, MetaMapper.DEFAULT_NAMESPACE,
-				MetaMapper.META_SAVE);
-		if (statement == null) {
-			return save(entity);
-		}
-		if (statement.type() != StatementType.INSERT) {
-			throw new MetaSqlException("statement '" + MetaMapper.META_SAVE + "' of " + metaLocation(table,
-					this.poolName, MetaMapper.DEFAULT_NAMESPACE) + " must be an <insert>; it is " + tag(statement));
-		}
-		Bound sql = bind(table, tidy(render(table, statement, entity)));
-		MetaProperty pk = table.singlePrimaryKey();
-		if (pk != null && pk.isAutoIncrement() && !entity.isChanged(pk.getName())) {
-			Object key = withConnection(() -> this.jdbc.insertReturningKey(sql.plan(), sql.args(), pk.getName()));
-			if (key != null) {
-				entity.set(pk.getName(), key);
-			}
-		}
-		else {
-			withConnection(() -> this.jdbc.update(sql.plan(), sql.args()));
-		}
-		entity.clearChanged();
-		return entity;
+	public boolean unregisterStatement(String tableName, String statementId) {
+		return this.statements.unregister(this.poolName, this.namespace, tableName, statementId);
 	}
 
-	/**
-	 * 部分更新：优先用文件里的 {@code <update id="metaUpdate">}，没有就等价于 {@link #update(MetaClass)}。
-	 *
-	 * @return 影响行数
-	 */
-	public int metaUpdate(MetaClass entity) {
-		MetaTable table = table(entity);
-		SqlTemplate statement = metaStatement(table, this.poolName, MetaMapper.DEFAULT_NAMESPACE,
-				MetaMapper.META_UPDATE);
-		if (statement == null) {
-			return update(entity);
-		}
-		if (statement.type() != StatementType.UPDATE) {
-			throw new MetaSqlException("statement '" + MetaMapper.META_UPDATE + "' of " + metaLocation(table,
-					this.poolName, MetaMapper.DEFAULT_NAMESPACE) + " must be an <update>; it is " + tag(statement));
-		}
-		Bound sql = bind(table, tidy(render(table, statement, entity)));
-		int rows = withConnection(() -> this.jdbc.update(sql.plan(), sql.args()));
-		if (rows > 0) {
-			entity.clearChanged();
-		}
-		return rows;
+	/** 该表全部可见的语句 id：七条默认 + 文件里的自定义 + 代码注册的。 */
+	public List<String> statementIds(String tableName) {
+		return this.statements.statementIds(this.poolName, this.namespace, this.registry.require(tableName));
 	}
 
-	/**
-	 * 删除：<b>物理删除只在文件里显式写了 {@code <delete id="metaDelete">}（或写成
-	 * {@code <update id="metaDelete">} 的逻辑删除）时才执行</b>，动态层不会自己拼 {@code DELETE}。
-	 *
-	 * <p>没有该语句时，若表配置了逻辑删除列就退化成
-	 * {@code UPDATE ... SET deleted = 1 WHERE 主键}；连逻辑删除都没配置就报错，把「删一行」这件事
-	 * 留给写语句的人明确表态。</p>
-	 *
-	 * @return 影响行数
-	 */
-	public int metaDelete(MetaClass entity) {
-		MetaTable table = table(entity);
-		SqlTemplate statement = metaStatement(table, this.poolName, MetaMapper.DEFAULT_NAMESPACE,
-				MetaMapper.META_DELETE);
-		MarkedSql marked;
-		if (statement != null) {
-			if (statement.type() == StatementType.SELECT) {
-				throw new MetaSqlException("statement '" + MetaMapper.META_DELETE + "' of " + metaLocation(table,
-						this.poolName, MetaMapper.DEFAULT_NAMESPACE) + " must be a <delete>/<update>; it is "
-						+ tag(statement));
-			}
-			marked = tidy(render(table, statement, entity));
-		}
-		else {
-			marked = this.sqlBuilder.logicDelete(table, entity);
-			if (marked == null) {
-				throw new MetaSqlException("table '" + table.name() + "' has no <delete id=\"" + MetaMapper.META_DELETE
-						+ "\"> in " + metaLocation(table, this.poolName, MetaMapper.DEFAULT_NAMESPACE)
-						+ " and no logic-delete column is configured; the dynamic layer does not generate"
-						+ " physical deletes — write the statement into the file, or set logic-delete-columns");
-			}
-		}
-		Bound sql = bind(table, marked);
-		int rows = withConnection(() -> this.jdbc.update(sql.plan(), sql.args()));
-		if (rows > 0) {
-			entity.clearChanged();
-		}
-		return rows;
-	}
-
-	/**
-	 * 完整形态的查询：语句 id 由调用方给，SQL 一律来自
-	 * {@code meta/{datasource}/{namespace}/{table}.xml}（没有文件/没有该 id 就报错，不猜）。
-	 *
-	 * @param params 语句参数，按列名对上 {@code #{}}；非列名的键（业务开关、{@code <foreach>} 的集合）
-	 *               落在实体的动态属性上
-	 */
-	public List<MetaClass> metaFind(String datasource, String namespace, String tableName, String statementId,
-			MetaClass params) {
-		MetaTable table = this.registry.require(tableName);
-		SqlTemplate statement = requireMetaStatement(table, datasource, namespace, statementId);
-		if (statement.type() != StatementType.SELECT) {
-			throw new MetaSqlException("statement '" + statementId + "' of " + metaLocation(table, datasource,
-					namespace) + " must be a <select>; it is " + tag(statement));
-		}
-		return withConnection(() -> {
-			Bound sql = bind(table, tidy(render(table, statement, params)));
-			return this.jdbc.query(sql.plan(), sql.args(), mapper(table, statement), this.defaultListLimit);
-		});
-	}
-
-	/** 完整形态的新增：执行文件里的 {@code <insert>}，自增主键能取到就回填到 {@code params}。 */
-	public int metaSave(String datasource, String namespace, String tableName, String statementId, MetaClass params) {
-		MetaTable table = this.registry.require(tableName);
-		SqlTemplate statement = requireMetaStatement(table, datasource, namespace, statementId);
-		if (statement.type() != StatementType.INSERT) {
-			throw new MetaSqlException("statement '" + statementId + "' of " + metaLocation(table, datasource,
-					namespace) + " must be an <insert>; it is " + tag(statement));
-		}
-		Bound sql = bind(table, tidy(render(table, statement, params)));
-		MetaProperty pk = table.singlePrimaryKey();
-		if (params != null && pk != null && pk.isAutoIncrement() && !params.isChanged(pk.getName())) {
-			Object key = withConnection(() -> this.jdbc.insertReturningKey(sql.plan(), sql.args(), pk.getName()));
-			if (key != null) {
-				params.set(pk.getName(), key);
-			}
-			return 1;
-		}
-		return withConnection(() -> this.jdbc.update(sql.plan(), sql.args()));
-	}
-
-	/** 完整形态的更新：执行文件里的 {@code <update>}（{@code <delete>} 也放行，逻辑删除常写成 UPDATE）。 */
-	public int metaUpdate(String datasource, String namespace, String tableName, String statementId, MetaClass params) {
-		return executeMeta(this.registry.require(tableName), datasource, namespace, statementId, params);
-	}
-
-	/** 完整形态的删除：执行文件里的 {@code <delete>} / {@code <update>}。 */
-	public int metaDelete(String datasource, String namespace, String tableName, String statementId, MetaClass params) {
-		return executeMeta(this.registry.require(tableName), datasource, namespace, statementId, params);
-	}
-
-	/** 该表在指定数据源/命名空间下的可用语句 id（诊断用，不执行）。 */
-	public List<String> metaStatementIds(String datasource, String namespace, String tableName) {
-		return this.metaSqlStore.statementIds(datasource, namespace, this.registry.require(tableName).name());
-	}
-
-	/** 语句库（诊断 / 手工刷新用）。 */
-	public MetaSqlFileStore metaSqlStore() {
-		return this.metaSqlStore;
-	}
-
-	/** 丢掉该表在指定数据源/命名空间下的解析结果，下次访问重新读盘。 */
-	public void clearMetaSqlCache(String datasource, String namespace, String tableName) {
-		this.metaSqlStore.refresh(datasource, namespace, tableName);
-	}
-
-	private SqlTemplate metaStatement(MetaTable table, String datasource, String namespace, String statementId) {
-		return this.metaSqlStore.statement(datasource, namespace, table.name(), statementId);
-	}
-
-	/** 文件路径全称（错误信息用）：带上真正的数据源/命名空间，而不是只报表名。 */
-	private String metaLocation(MetaTable table, String datasource, String namespace) {
-		return datasource + "/" + namespace + " (" + this.metaSqlStore.location(datasource, namespace, table.name())
-				+ ")";
-	}
-
-	private SqlTemplate requireMetaStatement(MetaTable table, String datasource, String namespace,
-			String statementId) {
-		SqlTemplate statement = metaStatement(table, datasource, namespace, statementId);
-		if (statement != null) {
-			return statement;
-		}
-		List<String> available = this.metaSqlStore.statementIds(datasource, namespace, table.name());
-		throw new MetaSqlException("no statement '" + statementId + "' for table '" + table.name() + "' under "
-				+ metaLocation(table, datasource, namespace)
-				+ (available.isEmpty() ? "; the file was not found" : "; available: " + available));
-	}
-
-	private int executeMeta(MetaTable table, String datasource, String namespace, String statementId,
-			MetaClass params) {
-		SqlTemplate statement = requireMetaStatement(table, datasource, namespace, statementId);
-		if (statement.type() == StatementType.SELECT) {
-			throw new MetaSqlException("statement '" + statementId + "' of " + metaLocation(table, datasource,
-					namespace) + " is a <select>; use metaFind(...)");
-		}
-		Bound sql = bind(table, tidy(render(table, statement, params)));
-		return withConnection(() -> this.jdbc.update(sql.plan(), sql.args()));
-	}
-
-	/** {@code <select>} / {@code <insert>} … 供错误信息说清「这条语句其实是什么类型」。 */
-	private static String tag(SqlTemplate statement) {
-		return switch (statement.type()) {
-			case SELECT -> "a <select>";
-			case INSERT -> "an <insert>";
-			case UPDATE -> "an <update>";
-			case DELETE -> "a <delete>";
-		};
-	}
-
-	/**
-	 * 把 {@link MetaQuery} 叠在文件里的基础语句外面：文件那半句原样放进派生表，条件与排序加在最外层。
-	 *
-	 * <p>不去猜基础语句的 {@code WHERE}/{@code ORDER BY} 在哪——文本手术在 {@code <if>}/{@code <foreach>}
-	 * 展开出来的 SQL 上没有可靠切点。没有条件也没有排序时直接返回原文，不额外包一层。</p>
-	 *
-	 * <p>派生表只做投影透传（{@code SELECT *}），因此条件里引用的列必须出现在基础语句的投影里；
-	 * 逻辑删除过滤也不在这里补——那是文件那份语句自己的责任。</p>
-	 */
-	private MarkedSql overlay(MetaTable table, MarkedSql base, MetaQuery query) {
-		MetaQuery effective = query == null ? MetaQuery.all() : query;
-		if (effective.conditions().isEmpty() && effective.orders().isEmpty()) {
-			return base;
-		}
-		MarkedSql filter = this.sqlBuilder.where(table, effective);
-		List<String> refs = new ArrayList<>(base.refs());
-		refs.addAll(filter.refs());
-		List<Object> values = new ArrayList<>(base.values());
-		values.addAll(filter.values());
-		return new MarkedSql("SELECT * FROM (" + base.sql() + ") " + OVERLAY_ALIAS + filter.sql(), refs, values);
-	}
-
-	/** 去掉文件里常见的收尾分号：派生表包裹与部分驱动都不接受它。 */
-	private static MarkedSql tidy(MarkedSql marked) {
-		String sql = marked.sql();
-		int end = sql.length();
-		while (end > 0 && (Character.isWhitespace(sql.charAt(end - 1)) || sql.charAt(end - 1) == ';')) {
-			end--;
-		}
-		if (end == sql.length()) {
-			return marked;
-		}
-		if (end == 0) {
-			throw new MetaSqlException("statement renders to empty SQL; check the placeholders and <if> conditions");
-		}
-		return new MarkedSql(sql.substring(0, end), marked.refs(), marked.values());
+	/** 显式生成 / 更新该表的 XML 文件并返回其位置（表结构变化后想立刻看到文件时用）。 */
+	public String ensureStatementFile(String tableName) {
+		return this.statements.ensure(this.poolName, this.namespace, this.registry.require(tableName));
 	}
 
 	// ------------------------------------------------------------------
-	// 手写 SQL：一次性查询 + 代码注册语句
+	// 手写 SQL：一次性模板，不落文件
 	// ------------------------------------------------------------------
 
-	/**
-	 * 直接把一段手写 SQL 当查询执行，不用建 Mapper 文件、也不用先注册。
-	 *
-	 * <p>占位符只有两种：{@code #{name}} 走 JDBC 绑定（值不进 SQL 文本），{@code ${name}} 只展开
-	 * 标识符片段（{@code ${table}} 由客户端按方言填好）。裸 {@code ?} 会在解析阶段被拒绝——
-	 * 没有名字的槽无法按列类型收口，也就进不了计划缓存。</p>
-	 *
-	 * <p>结果仍按这张表的运行时实体映射：SQL 里 SELECT 了哪些列就填哪些列，没投影的列保持 null，
-	 * 多出来的表达式列不会串位。</p>
-	 */
 	public List<MetaClass> findListBySql(String tableName, String sql, MetaClass params) {
 		return findListBySql(tableName, sql, params, this.defaultListLimit);
 	}
 
-	/** 同 {@link #findListBySql(String, String, MetaClass)}，额外指定行数上限。 */
 	public List<MetaClass> findListBySql(String tableName, String sql, MetaClass params, long limit) {
 		if (limit <= 0) {
 			throw new IllegalArgumentException("limit must be > 0");
@@ -697,7 +432,6 @@ public final class MetaMapperClient {
 		return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
 	}
 
-	/** 手写的计数语句（{@code SELECT COUNT(*)} 之类），返回单个数字。 */
 	public long countBySql(String tableName, String sql, MetaClass params) {
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
@@ -706,13 +440,7 @@ public final class MetaMapperClient {
 		});
 	}
 
-	/**
-	 * 手写 SQL 分页：{@code sql} 是内容查询，{@code countSql} 为 {@code null} 时自动包成
-	 * {@code SELECT COUNT(*) FROM (原查询)}（参数不变、绑定仍按形状走）。
-	 *
-	 * <p>内容与计数各自按自己的 {@code #{}} 顺序绑定，因此 {@code countSql} 可以只带 WHERE 需要的参数，
-	 * 不要求和内容查询的参数顺序一致。</p>
-	 */
+	/** 手写 SQL 分页；{@code countSql} 为空时自动包一层子查询计数。 */
 	public Page<MetaClass> findPageBySql(String tableName, String sql, String countSql, MetaClass params,
 			Pageable pageable) {
 		if (pageable == null) {
@@ -733,7 +461,7 @@ public final class MetaMapperClient {
 		});
 	}
 
-	/** 手写 INSERT / UPDATE，返回影响行数；DELETE 与 SELECT 在这里都会被拒绝。 */
+	/** 手写 INSERT / UPDATE / DELETE，返回影响行数；SELECT 在这里会被拒绝。 */
 	public int executeBySql(String tableName, String sql, MetaClass params) {
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
@@ -742,48 +470,13 @@ public final class MetaMapperClient {
 		});
 	}
 
-	/**
-	 * 只抽取不执行：看看这段手写 SQL 拼成了什么、绑了哪几个值（注入相关的自检也走这里）。
-	 */
+	/** 只抽取不执行：看看这段手写 SQL 拼成了什么、绑了哪几个值。 */
 	public MarkedSql sqlForText(String tableName, String sql, MetaClass params) {
 		MetaTable table = this.registry.require(tableName);
 		return render(table, customSql(sql, StatementType.SELECT), params);
 	}
 
-	/**
-	 * 把一段手写 SQL 注册成该表的命名语句，之后 {@code selectList/selectOne/selectCount/execute/sqlFor}
-	 * 用同一个 id 就能复用，效果等价于在 Mapper 文件里写一条语句，但不需要落文件。
-	 *
-	 * <p>同一个 id 重复注册即覆盖；{@link #refresh(String)} 只丢文件解析缓存，不会撤销代码注册的语句。
-	 * 注册时只做 SQL 文本解析，不要求表此刻已存在（低代码平台的表可能稍后才被设计出来）。</p>
-	 */
-	public MetaMapperClient registerStatement(String tableName, String statementId, StatementType type, String sql) {
-		this.statementStore.register(tableName, statementId, type, sql);
-		return this;
-	}
-
-	/** 同上，语句类型按 SQL 开头关键字推断（SELECT / WITH / INSERT / UPDATE）。 */
-	public MetaMapperClient registerStatement(String tableName, String statementId, String sql) {
-		return registerStatement(tableName, statementId, statementType(sql), sql);
-	}
-
-	/** 撤销一条代码注册的语句；文件里的同 id 语句会重新可见。 */
-	public boolean unregisterStatement(String tableName, String statementId) {
-		return this.statementStore.unregister(tableName, statementId);
-	}
-
-	/** 该表全部可见的语句 id：代码注册的 + Mapper 文件里的（诊断用，不触发执行）。 */
-	public List<String> statementIds(String tableName) {
-		return this.statementStore.statementIds(this.registry.require(tableName));
-	}
-
-	/**
-	 * 当前表结构对应的动态实体类。
-	 *
-	 * <p>这是运行期生成 + javac 编译出来的 {@link MetaClass} 子类：每个列都有真实类型的字段、
-	 * getter/setter 和 {@code getProperties()} 里的类型描述。调用方可以据此检查字段类型、
-	 * 做校验或走框架集成，而不必面对一个没有类型的 Map。</p>
-	 */
+	/** 当前表结构对应的动态实体类。 */
 	public Class<? extends MetaClass> entityType(String tableName) {
 		return this.entityRegistry.entityType(this.registry.require(tableName));
 	}
@@ -792,74 +485,47 @@ public final class MetaMapperClient {
 	// 缓存：分级清理 / 重新加载 / 诊断
 	// ------------------------------------------------------------------
 
-	/**
-	 * 只清该表的元数据快照（{@code MetaTable}）：下次访问回源 {@code DatabaseMetaData}。
-	 *
-	 * <p>已编译的实体类与语句缓存保持不动，所以「表结构可能没变、只是想重读一次」时用这个，
-	 * 不会顺带让所有行都换一个 Class。</p>
-	 */
 	public void clearTableCache(String tableName) {
 		this.registry.refresh(tableName);
 	}
 
-	/** 清空当前池的全部元数据快照（含手工登记覆盖）。 */
 	public void clearTableCache() {
 		this.registry.refreshAll();
 	}
 
-	/**
-	 * 只清该表运行期编译的实体类（{@code MetaClass} 子类）：下次访问重新生成源码并编译。
-	 *
-	 * <p>表结构快照不动，因此同一个结构会生成同名不同 ClassLoader 的新类；旧实例仍由旧类持有、
-	 * 继续可用。适合「改了代码生成器 / 怀疑类被玩坏，想强制重编一次」这类场景。</p>
-	 */
 	public void clearEntityCache(String tableName) {
 		this.entityRegistry.refresh(tableName);
 	}
 
-	/** 清空全部已编译实体类；所有表下次访问都会重新生成。 */
 	public void clearEntityCache() {
 		this.entityRegistry.refreshAll();
 	}
 
-	/** 只清 Mapper 语句 AST 与执行计划缓存（表结构与实体类不动）。 */
+	/** 只清语句 AST 与执行计划缓存（表结构与实体类不动）；代码注册的语句保留。 */
 	public void clearStatementCache(String tableName) {
-		this.statementStore.refresh(tableName);
+		this.statements.refresh(this.poolName, this.namespace, tableName);
 		this.plans.invalidate(tableName);
 	}
 
 	public void clearStatementCache() {
-		this.statementStore.refreshAll();
+		this.statements.refreshAll();
 		this.plans.invalidateAll();
 	}
 
-	/**
-	 * 表结构变化后的标准入口：清掉该表的元数据快照、实体类、语句与执行计划缓存；
-	 * 只重读文件，不重写文件，也不动代码里注册的语句。
-	 *
-	 * <p>{@link #refresh(String)} 是本方法的别名，保留给已有调用方。</p>
-	 */
+	/** 表结构变化后的标准入口：清元数据、实体类、语句与计划缓存。 */
 	public void clearCache(String tableName) {
 		clearTableCache(tableName);
 		clearEntityCache(tableName);
 		clearStatementCache(tableName);
 	}
 
-	/** 清空当前池的全部派生缓存（每张表下次访问都重新加载）。 */
 	public void clearAllCaches() {
 		clearTableCache();
 		clearEntityCache();
 		clearStatementCache();
-		this.metaSqlStore.refreshAll();
 	}
 
-	/**
-	 * 清缓存并<b>立即重新加载</b>：元数据当场回读、实体类当场重新编译。
-	 *
-	 * <p>与 {@link #clearCache(String)} 的区别是「失败立刻可见」：表已经被删掉、元数据读不出来、
-	 * javac 编译不过，都会在这一行抛出，而不是等到下一次查询才炸。返回按新结构造出来的空实体，
-	 * 调用方可以直接拿它看新列。</p>
-	 */
+	/** 清缓存并立即重新加载：元数据当场回读、实体类当场重新编译。 */
 	public MetaClass reload(String tableName) {
 		clearCache(tableName);
 		MetaTable table = this.registry.require(tableName);
@@ -867,7 +533,6 @@ public final class MetaMapperClient {
 		return model.factory().get();
 	}
 
-	/** 当前池里已有快照的表全部重读一遍（逐表 {@link #reload(String)}，第一个失败即中止）。 */
 	public void reloadAll() {
 		List<String> tables = this.registry.tableNames();
 		clearAllCaches();
@@ -876,106 +541,104 @@ public final class MetaMapperClient {
 		}
 	}
 
-	/** 各级缓存当前条目数与上限（诊断 / 运维巡检用）。 */
 	public Map<String, Object> cacheStats() {
 		Map<String, Object> stats = new LinkedHashMap<>();
 		stats.put("pool", this.poolName);
+		stats.put("namespace", this.namespace);
 		stats.put("tables", this.registry.size());
 		stats.put("tableLimit", this.registry.maximumSize());
 		stats.put("entityModels", this.entityRegistry.size());
 		stats.put("entityLimit", this.entityRegistry.maximumSize());
-		stats.put("statementTables", this.statementStore.size());
-		stats.put("statementLimit", this.statementStore.maximumSize());
-		stats.put("registeredStatements", this.statementStore.declaredCount());
-		stats.put("metaSqlFiles", this.metaSqlStore.size());
-		stats.put("metaSqlLimit", this.metaSqlStore.maximumSize());
+		stats.put("statementTables", this.statements.size());
+		stats.put("statementLimit", this.statements.maximumSize());
+		stats.put("registeredStatements", this.statements.declaredCount());
 		stats.put("compiledShapes", this.plans.size());
 		stats.put("planLimit", this.plans.maximumSize());
 		return stats;
 	}
 
-	/** 表结构变化后刷新元数据快照、实体类、Mapper 语句与执行计划缓存；等价于 {@link #clearCache(String)}。 */
+	/** 表结构变化后刷新元数据、实体类、语句与执行计划缓存。 */
 	public void refresh(String tableName) {
 		clearCache(tableName);
 	}
 
-	/** 刷新当前客户端可见的全部表快照；等价于 {@link #clearAllCaches()}。 */
 	public void refreshAll() {
 		clearAllCaches();
 	}
 
-	/** 已编译形状数（诊断用）。 */
 	public long compiledShapes() {
 		return this.plans.size();
 	}
 
-	/** 结果集映射器：来自已编译实体类的 READER，逐行是写死的 setter 调用（零反射）。 */
-	private RowMapper<MetaClass> mapper(MetaTable table) {
-		return this.entityRegistry.model(table).mapper();
+	// ------------------------------------------------------------------
+	// 语句取值 / 渲染
+	// ------------------------------------------------------------------
+
+	private Optional<MetaClass> findOne(MetaTable table, String statementId, MetaClass params, long limit) {
+		return withConnection(() -> {
+			SqlTemplate s = selectStatement(table, statementId);
+			Bound sql = bind(table, tidy(render(table, s, params)));
+			List<MetaClass> rows = this.jdbc.query(sql.plan(), sql.args(), mapper(table, s), limit);
+			return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+		});
 	}
 
-	/**
-	 * 语句带 {@code <resultMap>} 时按映射逐列取值，否则用生成实体的固定列 READER。
-	 *
-	 * <p>{@code property} 允许写元数据列名，也允许写实体字段的驼峰名（{@code orderNo}），
-	 * 后者运行期换成 {@code order_no} 再交给生成类；都对不上时按动态属性处理，
-	 * 留给「SELECT 出一个表达式列、只想在返回对象上挂个名字」这种用法。</p>
-	 */
-	private RowMapper<MetaClass> mapper(MetaTable table, SqlTemplate statement) {
-		List<ResultMapping> mappings = statement.resultMappings();
-		if (mappings.isEmpty()) {
-			return mapper(table);
+	private SqlTemplate statement(MetaTable table, String statementId, StatementType expected) {
+		SqlTemplate s = this.statements.requireStatement(this.poolName, this.namespace, table, statementId);
+		if (s.type() != expected) {
+			throw new MetaSqlException("statement '" + statementId + "' of table '" + table.name()
+					+ "' must be " + expected + "; it is " + tag(s));
 		}
-		MetaEntityModel model = this.entityRegistry.model(table);
-		List<MetaMappedRowMapper.Column> columns = new ArrayList<>(mappings.size());
-		for (ResultMapping mapping : mappings) {
-			columns.add(MetaMappedRowMapper.Column.of(mapping.column(), propertyName(table, mapping.property())));
-		}
-		return new MetaMappedRowMapper(model.factory(), columns);
+		return s;
 	}
 
-	private static String propertyName(MetaTable table, String property) {
-		MetaProperty column = table.findColumn(property);
-		if (column != null) {
-			return column.getName();
-		}
-		column = table.findColumn(snakeCase(property));
-		return column == null ? property : column.getName();
+	private SqlTemplate require(MetaTable table, String statementId) {
+		return this.statements.requireStatement(this.poolName, this.namespace, table, statementId);
 	}
 
-	/** 驼峰 → 下划线：{@code orderNo} → {@code order_no}，{@code userId} → {@code user_id}。 */
-	private static String snakeCase(String name) {
-		if (name == null || name.isEmpty()) {
-			return name;
+	private SqlTemplate selectStatement(MetaTable table, String statementId) {
+		SqlTemplate s = require(table, statementId);
+		if (s.type() != StatementType.SELECT) {
+			throw new MetaSqlException("statement '" + statementId + "' of table '" + table.name()
+					+ "' is not a <select>; use execute(...) instead — it is " + tag(s));
 		}
-		StringBuilder out = new StringBuilder(name.length() + 4);
-		for (int i = 0; i < name.length(); i++) {
-			char c = name.charAt(i);
-			if (Character.isUpperCase(c)) {
-				boolean previousLower = i > 0 && Character.isLowerCase(name.charAt(i - 1));
-				boolean nextLower = i + 1 < name.length() && Character.isLowerCase(name.charAt(i + 1));
-				if (i > 0 && name.charAt(i - 1) != '_' && (previousLower || nextLower)) {
-					out.append('_');
-				}
-				out.append(Character.toLowerCase(c));
-			}
-			else {
-				out.append(c);
-			}
+		return s;
+	}
+
+	private static String tag(SqlTemplate statement) {
+		return switch (statement.type()) {
+			case SELECT -> "a <select>";
+			case INSERT -> "an <insert>";
+			case UPDATE -> "an <update>";
+			case DELETE -> "a <delete>";
+		};
+	}
+
+	/** 去掉文件里常见的收尾分号：子查询包裹与部分驱动都不接受它。 */
+	private static MarkedSql tidy(MarkedSql marked) {
+		String sql = marked.sql();
+		int end = sql.length();
+		while (end > 0 && (Character.isWhitespace(sql.charAt(end - 1)) || sql.charAt(end - 1) == ';')) {
+			end--;
 		}
-		return out.toString();
+		if (end == sql.length()) {
+			return marked;
+		}
+		if (end == 0) {
+			throw new MetaSqlException("statement renders to empty SQL; check the placeholders and <if> conditions");
+		}
+		return new MarkedSql(sql.substring(0, end), marked.refs(), marked.values());
+	}
+
+	private static MarkedSql derivedCount(MarkedSql select) {
+		return new MarkedSql("SELECT COUNT(*) FROM (" + select.sql() + ") autumn_page_count", select.refs(),
+				select.values());
 	}
 
 	// ------------------------------------------------------------------
 	// 手写 SQL 的类型判定
 	// ------------------------------------------------------------------
 
-	/**
-	 * 手写 SQL → 查询模板：开头必须是 {@code SELECT} / {@code WITH}，否则提示换入口。
-	 *
-	 * <p>提前校验是为了把「拿 UPDATE 去 {@code executeQuery}」这类错误挡在解析阶段，
-	 * 而不是让驱动抛一条看不懂的 SQLException。</p>
-	 */
 	private static SqlTemplate customSql(String sql, StatementType type) {
 		StatementType actual = statementType(sql);
 		if (type == StatementType.SELECT && actual != StatementType.SELECT) {
@@ -983,52 +646,37 @@ public final class MetaMapperClient {
 					+ "or use executeBySql(...) for " + actual + " statements");
 		}
 		if (type != StatementType.SELECT && actual == StatementType.SELECT) {
-			throw new MetaSqlException("this entry runs INSERT/UPDATE; use findListBySql / findOneBySql / "
+			throw new MetaSqlException("this entry runs INSERT/UPDATE/DELETE; use findListBySql / findOneBySql / "
 					+ "countBySql / findPageBySql for SELECT statements");
 		}
 		return SqlTemplate.ofText("custom-sql", type, sql);
 	}
 
-	/** 手写写语句：INSERT / UPDATE；SELECT 与 DELETE 都被拒绝（动态层不执行物理删除）。 */
 	private static SqlTemplate writeSql(String sql) {
 		StatementType type = statementType(sql);
 		if (type == StatementType.SELECT) {
-			throw new MetaSqlException("this entry runs INSERT/UPDATE; use findListBySql / findOneBySql / "
+			throw new MetaSqlException("this entry runs INSERT/UPDATE/DELETE; use findListBySql / findOneBySql / "
 					+ "countBySql / findPageBySql for SELECT statements");
 		}
 		return SqlTemplate.ofText("custom-sql", type, sql);
 	}
 
-	/** 按第一个关键字判定语句类型；判不出来时让调用方显式传 {@code StatementType}。 */
 	private static StatementType statementType(String sql) {
 		String keyword = SqlTextParser.leadingKeyword(sql);
 		return switch (keyword) {
 			case "SELECT", "WITH" -> StatementType.SELECT;
 			case "INSERT" -> StatementType.INSERT;
 			case "UPDATE" -> StatementType.UPDATE;
-			case "DELETE" -> throw new MetaSqlException("the dynamic layer does not run physical deletes; "
-					+ "write a status-column update instead");
+			case "DELETE" -> StatementType.DELETE;
 			default -> throw new MetaSqlException("cannot tell the statement type of raw SQL from its first keyword '"
-					+ keyword + "'; start with SELECT/WITH/INSERT/UPDATE, or pass StatementType explicitly");
+					+ keyword + "'; start with SELECT/WITH/INSERT/UPDATE/DELETE, or pass StatementType explicitly");
 		};
-	}
-
-	/** 没给计数语句时的兜底：把同一条 SELECT 包成子查询计数（参数顺序不变，绑定仍按形状走）。 */
-	private static MarkedSql derivedCount(MarkedSql select) {
-		return new MarkedSql("SELECT COUNT(*) FROM (" + select.sql() + ") autumn_page_count", select.refs(),
-				select.values());
 	}
 
 	// ------------------------------------------------------------------
 	// 抽取 → 再转换
 	// ------------------------------------------------------------------
 
-	/**
-	 * 一次执行的两个部件：编译好的形状（可复用）与这次的实参（同序）。
-	 *
-	 * <p>所有入口都收敛到这里再交给 {@link AutumnJdbc}，因此「同一条动态语句一会儿走 PreparedStatement、
-	 * 一会儿走另一套绑定」这种情况不存在：走哪条路只由 {@link MetaSqlPlan#parameterCount()} 决定。</p>
-	 */
 	private record Bound(MetaSqlPlan plan, Object[] args) {
 	}
 
@@ -1041,24 +689,23 @@ public final class MetaMapperClient {
 	}
 
 	/**
-	 * 参数摊成模板可见的名字→值。
-	 *
-	 * <p>列名先按元数据归一：语句里的 {@code test}/{@code #{}} 引用的就是列名本身，调用方传
-	 * {@code ORDER_NO} 还是 {@code order_no} 都能对上；非列名的键（循环变量、业务开关）走实体的
-	 * 动态属性，名字原样保留。</p>
-	 *
-	 * <p>查表也大小写不敏感：H2/Oracle 的元数据列名是大写，手写文件里通常按 MySQL 习惯写小写，
-	 * 两边必须能对上，否则 {@code #{order_no}} 会静默绑成 {@code null}。</p>
-	 *
-	 * <p>这里只归一<b>名字</b>，不碰<b>值</b>：值按列类型收口是槽位编译时定好的事
-	 * （{@link MetaPlanCompiler}），每次渲染再转一边是重复劳动。</p>
+	 * 参数摊成模板可见的名字 → 值：
+	 * <ul>
+	 *   <li>列名按元数据归一，大小写不敏感（{@code ORDER_NO} 与 {@code order_no} 都能对上）；</li>
+	 *   <li>{@code table} 是方言引号后的表名，供自定义语句的 {@code ${table}} 使用；</li>
+	 *   <li>{@link SqlTemplate#CHANGED_KEY} 是实体变更集，供默认 {@code save}/{@code update} 的
+	 *       {@code changed('col')} 判断这一列有没有被写过。</li>
+	 * </ul>
+	 * 值本身不转换：类型收口是槽位编译时定好的事（{@code MetaPlanCompiler}）。
 	 */
 	private Map<String, Object> model(MetaTable table, MetaClass params) {
 		Map<String, Object> model = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
-		model.put("table", this.sqlBuilder.quoteTable(table));
+		model.put("table", this.statements.generator().quoteIdentifier(table.name()));
 		if (params == null) {
+			model.put(SqlTemplate.CHANGED_KEY, java.util.Set.of());
 			return model;
 		}
+		model.put(SqlTemplate.CHANGED_KEY, params.changedNames());
 		List<MetaProperty> properties = params.getProperties();
 		if (properties == null) {
 			return model;
@@ -1085,22 +732,103 @@ public final class MetaMapperClient {
 		return this.registry.require(entity.getName());
 	}
 
-	private SqlTemplate selectStatement(MetaTable table, String statementId) {
-		SqlTemplate statement = this.statementStore.statement(table, statementId);
-		if (statement.type() != StatementType.SELECT) {
-			throw new MetaSqlException("statement '" + statementId + "' of table '" + table.name()
-					+ "' is not a <select>; use execute(...)");
+	/**
+	 * 写库前把三类错误挡在 SQL 之外：一列没写、写了不存在的列、主键缺失/被改。
+	 * 默认语句靠 {@code changed('col')} 决定列清单，静默忽略这些情况比直接报错更危险。
+	 */
+	private void validateWritable(MetaTable table, MetaClass entity, boolean insert) {
+		Set<String> changed = entity.changedNames();
+		if (changed.isEmpty()) {
+			throw new MetaSqlException("entity for table '" + table.name() + "' has no values written");
 		}
-		return statement;
+		for (String name : changed) {
+			MetaProperty column = table.findColumn(name);
+			if (column == null) {
+				throw new MetaSqlException("unknown column '" + name + "' for table '" + table.name() + "'");
+			}
+			if (!insert && column.isPrimaryKey()) {
+				throw new MetaSqlException("primary key column '" + column.getName() + "' cannot be updated");
+			}
+		}
+		for (MetaProperty key : table.primaryKeys()) {
+			if (!key.isAutoIncrement() && entity.get(key.getName()) == null) {
+				throw new MetaSqlException("non-generated primary key '" + key.getName()
+						+ "' must be written for table '" + table.name() + "'");
+			}
+		}
+		if (!insert) {
+			validateKey(table, entity);
+		}
+	}
+
+	/** 更新/删除的 WHERE 全靠主键值：缺一列都会让语句绑上 NULL，静默命中 0 行。 */
+	private void validateKey(MetaTable table, MetaClass entity) {
+		for (MetaProperty key : table.primaryKeys()) {
+			if (entity.get(key.getName()) == null) {
+				throw new MetaSqlException("primary key column '" + key.getName()
+						+ "' must not be null for table '" + table.name() + "'");
+			}
+		}
+	}
+
+	// ------------------------------------------------------------------
+	// 结果集映射
+	// ------------------------------------------------------------------
+
+	private RowMapper<MetaClass> mapper(MetaTable table) {
+		return this.entityRegistry.model(table).mapper();
+	}
+
+	/** 语句带 {@code <resultMap>} 时按映射逐列取值，否则用生成实体的固定列 READER。 */
+	private RowMapper<MetaClass> mapper(MetaTable table, SqlTemplate statement) {
+		List<ResultMapping> mappings = statement.resultMappings();
+		if (mappings.isEmpty()) {
+			return mapper(table);
+		}
+		MetaEntityModel model = this.entityRegistry.model(table);
+		List<MetaMappedRowMapper.Column> columns = new ArrayList<>(mappings.size());
+		for (ResultMapping mapping : mappings) {
+			columns.add(MetaMappedRowMapper.Column.of(mapping.column(), propertyName(table, mapping.property())));
+		}
+		return new MetaMappedRowMapper(model.factory(), columns);
+	}
+
+	private static String propertyName(MetaTable table, String property) {
+		MetaProperty column = table.findColumn(property);
+		if (column != null) {
+			return column.getName();
+		}
+		column = table.findColumn(snakeCase(property));
+		return column == null ? property : column.getName();
+	}
+
+	/** 驼峰 → 下划线：{@code orderNo} → {@code order_no}。 */
+	private static String snakeCase(String name) {
+		if (name == null || name.isEmpty()) {
+			return name;
+		}
+		StringBuilder out = new StringBuilder(name.length() + 4);
+		for (int i = 0; i < name.length(); i++) {
+			char c = name.charAt(i);
+			if (Character.isUpperCase(c)) {
+				boolean previousLower = i > 0 && Character.isLowerCase(name.charAt(i - 1));
+				boolean nextLower = i + 1 < name.length() && Character.isLowerCase(name.charAt(i + 1));
+				if (i > 0 && name.charAt(i - 1) != '_' && (previousLower || nextLower)) {
+					out.append('_');
+				}
+				out.append(Character.toLowerCase(c));
+			}
+			else {
+				out.append(c);
+			}
+		}
+		return out.toString();
 	}
 
 	// ------------------------------------------------------------------
 	// 连接生命周期
 	// ------------------------------------------------------------------
 
-	/**
-	 * 每次操作取当前线程的连接，结束后归还/关闭；同一操作内的多条语句共用同一条连接。
-	 */
 	private <T> T withConnection(java.util.function.Supplier<T> action) {
 		try {
 			T result = action.get();

@@ -17,9 +17,8 @@ import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaModelStore;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaPlanCache;
-import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlBuilder;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlFileStore;
-import xyz.wewin.autumn.data.meta.jdbc.sql.MetaStatementStore;
+import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
 import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCache;
 import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCaches;
 import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
@@ -153,11 +152,13 @@ public final class MetaMapperEngine {
 				options.tableCacheSize());
 		MetaTableRegistry registry = new MetaTableRegistry(dataSource, dialect, options.logicDeleteColumns(),
 				models, options.tableCacheSize());
-		MetaStatementStore statementStore = new MetaStatementStore(directories.mapperDirectory(),
-				options.generateFiles(), dialect, options.tableCacheSize());
-		return new MetaMapperClient(poolName, jdbc, connectionSource, registry, new MetaSqlBuilder(dialect),
-				statementStore, entities, new MetaPlanCache(options.tableCacheSize()), options.defaultListLimit(),
-				MetaSqlFileStore.classpath());
+		// 唯一的语句库：一张表一个 XML，按 数据源/命名空间/表名 寻址；方言决定生成语句里的标识符引号。
+		MetaSqlGenerator generator = new MetaSqlGenerator(dialect);
+		MetaSqlFileStore statements = new MetaSqlFileStore(directories.sqlDirectory(),
+				MetaMapperEngine.class.getClassLoader(), options.tableCacheSize(), generator,
+				options.generateFiles());
+		return new MetaMapperClient(poolName, jdbc, connectionSource, registry, entities,
+				new MetaPlanCache(options.tableCacheSize()), options.defaultListLimit(), statements);
 	}
 
 	/** 默认池名。 */
@@ -187,6 +188,14 @@ public final class MetaMapperEngine {
 			}
 			return client;
 		});
+	}
+
+	/**
+	 * 指定池 + 命名空间的客户端：在池客户端上切一个轻量命名空间视图，共享全部注册表与缓存。
+	 * 语句落到 {@code {根}/{数据源}/{命名空间}/{表名}.xml}。
+	 */
+	public MetaMapperClient client(String poolName, String namespace) {
+		return client(poolName).forNamespace(namespace);
 	}
 
 	/** 已实例化的池名 → client（只读快照，诊断用）。 */

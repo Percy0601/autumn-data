@@ -37,7 +37,6 @@ import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 import xyz.wewin.autumn.data.jdbc.runtime.JdbcConnectionSource;
 import xyz.wewin.autumn.data.jdbc.runtime.PerThreadConnectionSource;
 import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityColumns;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityModel;
@@ -48,8 +47,8 @@ import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTable;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MarkedSql;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaPlanCache;
-import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlBuilder;
-import xyz.wewin.autumn.data.meta.jdbc.sql.MetaStatementStore;
+import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlFileStore;
+import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -63,6 +62,53 @@ class MetaMapperDynamicTest {
 
 	/** 同构的表只编译一次：所有用例共享注册表，避免每个用例都跑一遍 javac。 */
 	private static final MetaEntityRegistry ENTITIES = new MetaEntityRegistry();
+
+	/**
+	 * 使用方手写的自定义语句区：没有 GENERATED 标记，框架不会改写它，只在内存补上七条默认语句。
+	 * 于是 {@code selectList/selectCount/insert/updateByKey} 与默认 CRUD 在同一份文件里共存。
+	 */
+	private static final String CUSTOM_STATEMENTS = """
+			<?xml version="1.0" encoding="UTF-8"?>
+			<mapper namespace="test/default/form_order">
+			    <select id="selectList">
+			        SELECT id, order_no, amount, status, create_time, deleted_flag FROM ${table}
+			        <where>
+			            AND deleted_flag = 0
+			            <if test="id != null">AND id = #{id}</if>
+			            <if test="order_no != null">AND order_no = #{order_no}</if>
+			            <if test="amount != null">AND amount = #{amount}</if>
+			            <if test="status != null">AND status = #{status}</if>
+			            <if test="create_time != null">AND create_time = #{create_time}</if>
+			        </where>
+			        ORDER BY id
+			    </select>
+			    <select id="selectCount">
+			        SELECT COUNT(*) FROM ${table}
+			        <where>
+			            AND deleted_flag = 0
+			            <if test="status != null">AND status = #{status}</if>
+			        </where>
+			    </select>
+			    <insert id="insert">
+			        INSERT INTO ${table}
+			        <trim prefix="(" suffix=")" suffixOverrides=",">
+			            <if test="order_no != null">order_no,</if>
+			            <if test="amount != null">amount,</if>
+			            <if test="status != null">status,</if>
+			            <if test="create_time != null">create_time,</if>
+			        </trim>
+			        <trim prefix="VALUES (" suffix=")" suffixOverrides=",">
+			            <if test="order_no != null">#{order_no},</if>
+			            <if test="amount != null">#{amount},</if>
+			            <if test="status != null">#{status},</if>
+			            <if test="create_time != null">#{create_time},</if>
+			        </trim>
+			    </insert>
+			    <update id="updateByKey">
+			        UPDATE ${table} SET status = #{status} WHERE id = #{id}
+			    </update>
+			</mapper>
+			""";
 
 	private JdbcDataSource dataSource;
 
@@ -90,12 +136,23 @@ class MetaMapperDynamicTest {
 					+ "create_time TIMESTAMP, "
 					+ "deleted_flag INT NOT NULL DEFAULT 0)");
 		}
+		// 预置一份「使用方手写」的 XML：自定义语句归使用方，框架不改写，只补七条默认语句。
+		Path file = statementFile();
+		Files.createDirectories(file.getParent());
+		Files.writeString(file, CUSTOM_STATEMENTS);
 		this.connectionSource = new PerThreadConnectionSource(() -> new JdbcConnectionSource(this.dataSource));
 		AutumnJdbc jdbc = new AutumnJdbc(this.connectionSource, new H2Dialect(), FetchPolicy.defaults());
 		this.registry = new MetaTableRegistry(this.dataSource, new H2Dialect(), Set.of("deleted_flag"));
-		MetaStatementStore statementStore = new MetaStatementStore(this.xmlDirectory, true, new H2Dialect());
+		MetaSqlGenerator generator = new MetaSqlGenerator(new H2Dialect());
+		MetaSqlFileStore statements = new MetaSqlFileStore(this.xmlDirectory, getClass().getClassLoader(),
+				10_000, generator, true);
 		this.client = new MetaMapperClient("test", jdbc, this.connectionSource, this.registry,
-				new MetaSqlBuilder(new H2Dialect()), statementStore, ENTITIES, new MetaPlanCache(), 1000);
+				ENTITIES, new MetaPlanCache(), 1000, statements);
+	}
+
+	/** 新语句库按 {数据源}/{命名空间}/{表名}.xml 寻址；这里的池名是 test，命名空间是 default。 */
+	private Path statementFile() {
+		return this.xmlDirectory.resolve("test").resolve("default").resolve("form_order.xml");
 	}
 
 	@Test
@@ -153,40 +210,41 @@ class MetaMapperDynamicTest {
 	}
 
 	@Test
-	void findListAppliesConditionsOrderAndLimit() {
+	void findListUsesParamsAndCustomStatementsCarryComplexConditions() {
 		this.client.save(row("form_order", "order_no", "B001", "amount", "5.00", "status", 1));
 		this.client.save(row("form_order", "order_no", "B002", "amount", "15.00", "status", 1));
 		this.client.save(row("form_order", "order_no", "B003", "amount", "25.00", "status", 2));
 
-		List<MetaClass> rows = this.client.findList("form_order",
-				MetaQuery.by("status", 1).and("amount", MetaQuery.Op.GE, "10")
-						.orderBy("id", MetaQuery.Direction.DESC));
+		// 默认 findList 只做「赋了值的列 = ?」；比较、排序这类条件写在 XML 命名语句里，参数实体负责喂值。
+		this.client.registerStatement("form_order", "highValue",
+				"SELECT id, order_no, amount, status FROM ${table} "
+						+ "WHERE status = #{status} AND amount >= #{minAmount} ORDER BY id DESC");
+		List<MetaClass> rows = this.client.selectList("form_order", "highValue",
+				params("status", 1, "minAmount", new BigDecimal("10")));
 
 		assertThat(rows).hasSize(1);
 		assertThat(rows.get(0).getString("order_no")).isEqualTo("B002");
 
-		List<MetaClass> limited = this.client.findList("form_order", MetaQuery.all(), 2);
+		assertThat(this.client.findList("form_order", params("status", 1))).hasSize(2);
+		List<MetaClass> limited = this.client.findList("form_order", params(), 2);
 		assertThat(limited).hasSize(2);
 	}
 
 	@Test
-	void nullChecksUseTheirOwnBuilders() {
+	void nullChecksAreExpressedInXmlStatements() {
 		this.client.save(row("form_order",
 				"order_no", "N001", "status", 1, "create_time", "2026-01-01 10:00:00"));
 		this.client.save(row("form_order", "order_no", "N002", "status", 1));
 
-		assertThat(this.client.findList("form_order", MetaQuery.by("status", 1).isNotNull("create_time")))
-				.extracting(row -> row.getString("order_no")).containsExactly("N001");
-		assertThat(this.client.findList("form_order", MetaQuery.by("status", 1).isNull("create_time")))
-				.extracting(row -> row.getString("order_no")).containsExactly("N002");
+		this.client.registerStatement("form_order", "createdNotNull",
+				"SELECT order_no FROM ${table} WHERE status = #{status} AND create_time IS NOT NULL");
+		this.client.registerStatement("form_order", "createdNull",
+				"SELECT order_no FROM ${table} WHERE status = #{status} AND create_time IS NULL");
 
-		// 把 Op 当条件值传会选中 and(String, Object) 重载：拒绝掉，而不是把枚举绑进 SQL
-		assertThatThrownBy(() -> MetaQuery.by("status", MetaQuery.Op.IS_NULL))
-				.isInstanceOf(IllegalArgumentException.class)
-				.hasMessageContaining("isNull");
-		assertThatThrownBy(() -> MetaQuery.all().and("status", MetaQuery.Op.IS_NOT_NULL))
-				.isInstanceOf(IllegalArgumentException.class)
-				.hasMessageContaining("isNotNull");
+		assertThat(this.client.selectList("form_order", "createdNotNull", params("status", 1)))
+				.extracting(row -> row.getString("order_no")).containsExactly("N001");
+		assertThat(this.client.selectList("form_order", "createdNull", params("status", 1)))
+				.extracting(row -> row.getString("order_no")).containsExactly("N002");
 	}
 
 	@Test
@@ -195,13 +253,14 @@ class MetaMapperDynamicTest {
 			this.client.save(row("form_order", "order_no", "P00" + i, "status", 1, "amount", i * 10));
 		}
 
-		Page<MetaClass> page = this.client.findPage("form_order", MetaQuery.by("status", 1), Pageable.of(0, 2));
+		MetaClass query = params("status", 1);
+		Page<MetaClass> page = this.client.findPage("form_order", query, Pageable.of(0, 2));
 
 		assertThat(page.content()).hasSize(2);
 		assertThat(page.total()).isEqualTo(3);
 		assertThat(page.totalPages()).isEqualTo(2);
-		assertThat(this.client.count("form_order", MetaQuery.by("status", 1))).isEqualTo(3);
-		assertThat(this.client.exists("form_order", MetaQuery.by("order_no", "P002"))).isTrue();
+		assertThat(this.client.count("form_order", query)).isEqualTo(3);
+		assertThat(this.client.exists("form_order", params("order_no", "P002"))).isTrue();
 	}
 
 	@Test
@@ -225,7 +284,7 @@ class MetaMapperDynamicTest {
 				row("form_order", "order_no", "S002", "amount", "8.00")));
 
 		assertThat(saved).allSatisfy(entity -> assertThat(entity.get("id")).isNotNull());
-		MetaClass second = this.client.findOne("form_order", MetaQuery.by("order_no", "S002")).orElseThrow();
+		MetaClass second = this.client.findOne("form_order", params("order_no", "S002")).orElseThrow();
 		assertThat(second.getBigDecimal("amount")).isEqualByComparingTo("8.00");
 		assertThat(second.get("status")).isNull(); // 这条没写 status，交给数据库默认，不是被刷成 0
 	}
@@ -254,14 +313,14 @@ class MetaMapperDynamicTest {
 		assertThat(this.client.update(voided)).isEqualTo(1);
 
 		assertThat(this.client.findById("form_order", saved.get("id"))).isEmpty();
-		assertThat(this.client.count("form_order", MetaQuery.all())).isZero();
+		assertThat(this.client.count("form_order", params())).isZero();
 	}
 
 	@Test
-	void unknownColumnAndEmptyUpdateAreRejected() {
-		assertThatThrownBy(() -> this.client.findList("form_order", MetaQuery.by("missing_column", 1)))
-				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("missing_column");
+	void unknownColumnInParamsIsIgnoredAndEmptyWritesAreRejected() {
+		// 参数实体里的非列名字对默认语句不可见：不会被拼进 SQL，更不会造成注入。
+		this.client.save(row("form_order", "order_no", "U001", "status", 1));
+		assertThat(this.client.findList("form_order", params("missing_column", 1))).hasSize(1);
 
 		MetaClass entity = this.client.newEntity("form_order");
 		entity.set("order_no", "E001");
@@ -307,31 +366,33 @@ class MetaMapperDynamicTest {
 	}
 
 	@Test
-	void namedStatementsGenerateTheMapperFileOnce() throws Exception {
-		Path file = this.xmlDirectory.resolve("form_order.xml");
+	void generatedBlockIsRefreshedButCustomStatementsArePreserved() throws Exception {
+		// 手写文件（无 GENERATED 标记）框架一个字都不动，七条默认语句在内存里补齐。
+		String handwritten = Files.readString(statementFile());
 		this.client.save(row("form_order", "order_no", "G001", "status", 1));
-		assertThat(file).doesNotExist();
-
+		assertThat(this.client.statementIds("form_order"))
+				.contains("findList", "findPage", "findOne", "findById", "save", "update", "delete", "selectList");
 		assertThat(this.client.selectCount("form_order", "selectCount", params())).isEqualTo(1);
+		assertThat(Files.readString(statementFile())).isEqualTo(handwritten);
 
-		String content = Files.readString(file);
-		assertThat(content).contains("generated-by: autumn-data-meta-jdbc");
-		assertThat(content).contains("id=\"selectList\"").contains("id=\"selectCount\"");
-		assertThat(content).contains("id=\"insert\"").contains("id=\"updateByKey\"");
-		assertThat(content).contains("#{status}").contains("<where>").contains("<trim");
+		// 换成框架生成的完整文档：生成块与自定义语句共存在同一份文件里。
+		MetaTable table = this.registry.require("form_order");
+		String generated = this.client.statementStore().generator().fullDocument(table, "default");
+		String custom = "    <select id=\"myCustom\">SELECT COUNT(*) FROM ${table}</select>\n";
+		Files.writeString(statementFile(), generated.replace("</mapper>", custom + "</mapper>"));
+		this.client.clearStatementCache("form_order");
 
-		// 文件已经在了：改表 + refresh 只重读，不重写
+		assertThat(this.client.statementIds("form_order")).contains("myCustom", "findList", "delete");
+		assertThat(this.client.selectCount("form_order", "myCustom", params())).isEqualTo(1);
+
+		// 表结构变化：只重写 GENERATED 块，标记外的自定义语句逐字保留。
 		try (Connection connection = this.dataSource.getConnection(); Statement statement = connection.createStatement()) {
 			statement.execute("ALTER TABLE form_order ADD COLUMN remark VARCHAR(64)");
 		}
 		this.client.refresh("form_order");
-
-		assertThat(this.client.selectList("form_order", "selectList", params("order_no", "G001")))
-				.extracting(row -> row.getString("order_no")).containsExactly("G001");
-		// 传实体也行：列名按元数据对上，其余的动态属性原样进模板作用域
-		assertThat(this.client.selectList("form_order", "selectList", row("form_order", "order_no", "G001")))
-				.extracting(row -> row.getString("order_no")).containsExactly("G001");
-		assertThat(Files.readString(file)).isEqualTo(content);
+		assertThat(this.client.statementIds("form_order")).contains("myCustom", "findList");
+		String after = Files.readString(statementFile());
+		assertThat(after).contains("myCustom").contains("remark").contains("AUTUMN-DATA GENERATED START");
 	}
 
 	@Test
@@ -384,7 +445,7 @@ class MetaMapperDynamicTest {
 				    <delete id="dropById">DELETE FROM ${table} WHERE id = #{id}</delete>
 				</mapper>
 				""";
-		Path file = this.xmlDirectory.resolve("form_order.xml");
+		Path file = statementFile();
 		Files.writeString(file, custom);
 
 		MetaClass first = this.client.save(row("form_order", "order_no", "C001", "status", 1, "amount", "5.00"));
@@ -402,17 +463,17 @@ class MetaMapperDynamicTest {
 		assertThat(this.client.selectList("form_order", "orderNosByIds",
 				params("ids", List.of(first.get("id"), second.get("id"))))).hasSize(2);
 
-		assertThatThrownBy(() -> this.client.execute("form_order", "dropById", params("id", first.get("id"))))
-				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("does not run physical deletes");
-		assertThat(this.client.findById("form_order", first.get("id"))).isPresent();
+		// 删不删由语句决定：文件里显式写了 <delete> 就执行物理删除，框架不再额外拦截。
+		assertThat(this.client.execute("form_order", "dropById", params("id", first.get("id")))).isEqualTo(1);
+		assertThat(this.client.findById("form_order", first.get("id"))).isEmpty();
 
+		// 手写文件逐字保留，框架没有往里追加任何东西。
 		assertThat(Files.readString(file)).isEqualTo(custom);
 	}
 
 	@Test
 	void sqlFragmentsAreInlinedAndReusable() throws Exception {
-		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+		Files.writeString(statementFile(), """
 				<?xml version="1.0" encoding="UTF-8"?>
 				<mapper namespace="fragment.form_order">
 				    <sql id="allColumns">id, order_no, amount</sql>
@@ -439,7 +500,7 @@ class MetaMapperDynamicTest {
 
 	@Test
 	void cyclicSqlFragmentsFailAtParseTime() throws Exception {
-		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+		Files.writeString(statementFile(), """
 				<?xml version="1.0" encoding="UTF-8"?>
 				<mapper namespace="cycle.form_order">
 				    <sql id="a">SELECT 1 <include refid="b"/></sql>
@@ -453,7 +514,7 @@ class MetaMapperDynamicTest {
 				.hasMessageContaining("cyclic <sql> include")
 				.hasMessageContaining("a -> b -> a");
 		// 缺片段同样在解析期报错，并把可用片段列出来
-		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+		Files.writeString(statementFile(), """
 				<?xml version="1.0" encoding="UTF-8"?>
 				<mapper namespace="missing.form_order">
 				    <select id="broken">SELECT <include refid="nope"/> FROM ${table}</select>
@@ -470,7 +531,7 @@ class MetaMapperDynamicTest {
 	 */
 	@Test
 	void resultMapMapsAliasedColumnsToProperties() throws Exception {
-		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+		Files.writeString(statementFile(), """
 				<?xml version="1.0" encoding="UTF-8"?>
 				<mapper namespace="mapping.form_order">
 				    <resultMap id="orderView" type="form_order">
@@ -502,7 +563,7 @@ class MetaMapperDynamicTest {
 
 	@Test
 	void unknownResultMapFailsAtParseTime() throws Exception {
-		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+		Files.writeString(statementFile(), """
 				<?xml version="1.0" encoding="UTF-8"?>
 				<mapper namespace="badmap.form_order">
 				    <select id="broken" resultMap="noSuchMap">SELECT * FROM ${table}</select>
@@ -516,7 +577,7 @@ class MetaMapperDynamicTest {
 	void statementIdentifiersMatchColumnsRegardlessOfCase() throws Exception {
 		// 元数据列名是小写（H2 DATABASE_TO_LOWER），手写文件常按 MySQL/Oracle 习惯写大写：两边必须对上，
 		// 否则 #{ORDER_NO} 会静默绑成 null
-		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+		Files.writeString(statementFile(), """
 				<?xml version="1.0" encoding="UTF-8"?>
 				<mapper namespace="upper.form_order">
 				    <select id="byStatus">
@@ -540,7 +601,7 @@ class MetaMapperDynamicTest {
 
 	@Test
 	void dollarInterpolationRejectsNonIdentifierValues() throws Exception {
-		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+		Files.writeString(statementFile(), """
 				<?xml version="1.0" encoding="UTF-8"?>
 				<mapper namespace="custom.form_order">
 				    <select id="rawNo">SELECT order_no FROM ${table} WHERE order_no = ${order_no}</select>
@@ -568,7 +629,7 @@ class MetaMapperDynamicTest {
 	/** 命名语句的参数不止列名：业务开关、排序列名、循环集合都活在实体的动态属性上。 */
 	@Test
 	void nonColumnParametersLiveOnTheEntityAndReachTheStatement() throws Exception {
-		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+		Files.writeString(statementFile(), """
 				<?xml version="1.0" encoding="UTF-8"?>
 				<mapper namespace="dynamic.form_order">
 				    <select id="ordered">
@@ -696,7 +757,7 @@ class MetaMapperDynamicTest {
 
 	@Test
 	void projectionQuerySkipsMissingColumnsInsteadOfFailing() throws Exception {
-		Files.writeString(this.xmlDirectory.resolve("form_order.xml"), """
+		Files.writeString(statementFile(), """
 				<?xml version="1.0" encoding="UTF-8"?>
 				<mapper namespace="projection.form_order">
 				    <select id="onlyOrderNo">SELECT order_no FROM ${table} WHERE deleted_flag = 0</select>
@@ -828,12 +889,13 @@ class MetaMapperDynamicTest {
 		assertThat(reloaded.getName()).isEqualTo(first.getName());
 		assertThat(entities.size()).isEqualTo(1);
 
-		MetaStatementStore statements = new MetaStatementStore(null, true, new H2Dialect(), 1);
-		assertThat(statements.statements(x)).containsKey("selectList");
-		statements.statements(y);
+		MetaSqlFileStore statements = new MetaSqlFileStore(null, getClass().getClassLoader(), 1,
+				new MetaSqlGenerator(new H2Dialect()), false);
+		assertThat(statements.statements("test", "default", x)).containsKey("findList");
+		statements.statements("test", "default", y);
 		assertThat(statements.size()).isEqualTo(1);
-		// XML 文件归使用方所有：淘汰后重读/重新在内存生成，不会重写文件
-		assertThat(statements.statements(x)).containsKey("selectList");
+		// 纯内存模式：淘汰后按结构重新生成默认语句，不落盘、不重写任何文件
+		assertThat(statements.statements("test", "default", x)).containsKey("findList");
 		assertThat(statements.size()).isEqualTo(1);
 	}
 
@@ -842,7 +904,7 @@ class MetaMapperDynamicTest {
 		assertThat(MetaMapperOptions.defaults().tableCacheSize()).isEqualTo(10_000);
 		assertThat(this.registry.maximumSize()).isEqualTo(10_000);
 		assertThat(new MetaEntityRegistry().maximumSize()).isEqualTo(10_000);
-		assertThat(new MetaStatementStore(null, true, new H2Dialect()).maximumSize()).isEqualTo(10_000);
+		assertThat(new MetaSqlFileStore(null).maximumSize()).isEqualTo(10_000);
 		assertThat(new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), "", true, 7)
 				.tableCacheSize()).isEqualTo(7);
 		assertThatThrownBy(() -> new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), "", true, 0))
@@ -1025,7 +1087,7 @@ class MetaMapperDynamicTest {
 	}
 
 	@Test
-	void rawSqlRejectsBareQuestionMarksAndPhysicalDeletes() {
+	void rawSqlRejectsBareQuestionMarksAndHonoursStatementTypes() {
 		assertThatThrownBy(() -> this.client.findListBySql("form_order",
 				"SELECT id FROM ${table} WHERE status = ?", params("status", 1)))
 				.isInstanceOf(MetaSqlException.class)
@@ -1036,15 +1098,13 @@ class MetaMapperDynamicTest {
 				.isInstanceOf(MetaSqlException.class)
 				.hasMessageContaining("INSERT/UPDATE");
 
-		assertThatThrownBy(() -> this.client.executeBySql("form_order",
-				"DELETE FROM ${table} WHERE id = #{id}", params("id", 1)))
-				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("physical deletes");
-
-		assertThatThrownBy(() -> this.client.registerStatement("form_order", "deleteRow",
-				StatementType.DELETE, "DELETE FROM ${table}"))
-				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("physical deletes");
+		// 删不删由语句决定：框架不再默认拦物理删除。
+		assertThat(this.client.executeBySql("form_order", "DELETE FROM ${table} WHERE id = #{id}",
+				params("id", -1))).isZero();
+		this.client.registerStatement("form_order", "deleteRow", StatementType.DELETE,
+				"DELETE FROM ${table} WHERE id = #{id}");
+		MetaClass toDelete = this.client.save(row("form_order", "order_no", "DEL-1", "status", 1));
+		assertThat(this.client.execute("form_order", "deleteRow", params("id", toDelete.get("id")))).isEqualTo(1);
 
 		assertThatThrownBy(() -> this.client.registerStatement("form_order", "bad id", "SELECT 1 FROM ${table}"))
 				.isInstanceOf(MetaSqlException.class)

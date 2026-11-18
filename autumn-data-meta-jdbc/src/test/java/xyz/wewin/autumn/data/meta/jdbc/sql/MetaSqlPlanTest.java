@@ -23,7 +23,6 @@ import xyz.wewin.autumn.data.jdbc.runtime.ConnectionSource;
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 import xyz.wewin.autumn.data.jdbc.runtime.JdbcConnectionSource;
 import xyz.wewin.autumn.data.jdbc.runtime.PerThreadConnectionSource;
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperClient;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTable;
@@ -67,10 +66,10 @@ class MetaSqlPlanTest {
 				() -> new JdbcConnectionSource(this.dataSource));
 		AutumnJdbc jdbc = new AutumnJdbc(connectionSource, new H2Dialect(), FetchPolicy.defaults());
 		MetaTableRegistry registry = new MetaTableRegistry(this.dataSource, new H2Dialect(), Set.of("deleted_flag"));
-		MetaStatementStore statementStore = new MetaStatementStore(this.workDirectory, true, new H2Dialect());
+		MetaSqlFileStore statements = new MetaSqlFileStore(this.workDirectory, getClass().getClassLoader(),
+				10_000, new MetaSqlGenerator(new H2Dialect()), true);
 		this.client = new MetaMapperClient("test", jdbc, connectionSource, registry,
-				new MetaSqlBuilder(new H2Dialect()), statementStore, new MetaEntityRegistry(), new MetaPlanCache(),
-				1000);
+				new MetaEntityRegistry(), new MetaPlanCache(), 1000, statements);
 	}
 
 	/** 只有形状进缓存：换值是换数据，不是换形状，不该再编一次。 */
@@ -81,24 +80,31 @@ class MetaSqlPlanTest {
 		this.client.save(row("form_order", "order_no", "P2", "status", 2));
 		assertThat(this.client.compiledShapes()).isEqualTo(1); // 同样的列集合 = 同样的形状
 
-		this.client.findList("form_order", MetaQuery.by("status", 1));
+		// 默认 findList：赋了值的列决定 <if> 分支，同一组列换值仍是同一个形状。
+		this.client.findList("form_order", params("status", 1));
 		assertThat(this.client.compiledShapes()).isEqualTo(2);
 
-		this.client.findList("form_order", MetaQuery.by("status", 1));
-		this.client.findList("form_order", MetaQuery.by("status", 2));
-		this.client.findList("form_order", MetaQuery.by("status", 3).contains("order_no", "P"));
+		this.client.findList("form_order", params("status", 1));
+		this.client.findList("form_order", params("status", 2));
+		this.client.findList("form_order", params("status", 3));
+		assertThat(this.client.compiledShapes()).isEqualTo(2);
+
+		// 换一组列 -> 渲染出的 SQL 文本不同 -> 另一个形状
+		this.client.findList("form_order", params("status", 1, "order_no", "P1"));
 		assertThat(this.client.compiledShapes()).isEqualTo(3);
 
-		// IN 的长度参与文本，因而是另一个形状
-		this.client.findList("form_order", MetaQuery.by("status", MetaQuery.Op.IN, 1, 2));
-		this.client.findList("form_order", MetaQuery.by("status", MetaQuery.Op.IN, 3, 4));
+		// 自定义语句又是另一种形状
+		this.client.registerStatement("form_order", "byStatusAndAmount",
+				"SELECT id FROM ${table} WHERE status = #{status} AND amount >= #{minAmount}");
+		this.client.selectList("form_order", "byStatusAndAmount",
+				params("status", 1, "minAmount", BigDecimal.ONE));
 		assertThat(this.client.compiledShapes()).isEqualTo(4);
 	}
 
 	/** 改表之后旧形状的槽位已经对着不存在的列，必须整体作废而不是继续复用。 */
 	@Test
 	void schemaChangeInvalidatesCompiledShapes() throws Exception {
-		this.client.findList("form_order", MetaQuery.by("status", 1));
+		this.client.findList("form_order", params("status", 1));
 		assertThat(this.client.compiledShapes()).isEqualTo(1);
 
 		try (Connection connection = this.dataSource.getConnection(); Statement statement = connection.createStatement()) {
@@ -107,14 +113,16 @@ class MetaSqlPlanTest {
 		this.client.refresh("form_order");
 		assertThat(this.client.compiledShapes()).isZero();
 
-		assertThat(this.client.findList("form_order", MetaQuery.by("status", 1))).isEmpty();
+		assertThat(this.client.findList("form_order", params("status", 1))).isEmpty();
 		assertThat(this.client.compiledShapes()).isEqualTo(1);
 	}
 
 	/** 全 {@code ${}} 的语句没有槽位：按 MyBatis 语义就该走 {@link java.sql.Statement}，而不是空绑定的 prepared。 */
 	@Test
 	void placeholderFreeStatementRunsThroughPlainStatement() throws Exception {
-		Files.writeString(this.workDirectory.resolve("form_order.xml"), """
+		Path file = statementFile();
+		Files.createDirectories(file.getParent());
+		Files.writeString(file, """
 				<?xml version="1.0" encoding="UTF-8"?>
 				<mapper namespace="raw.form_order">
 				    <select id="allOrderNos">SELECT order_no FROM ${table}</select>
@@ -174,6 +182,18 @@ class MetaSqlPlanTest {
 
 	private MetaClass row(String table, Object... nameValues) {
 		MetaClass entity = this.client.newEntity(table);
+		for (int i = 0; i < nameValues.length; i += 2) {
+			entity.set((String) nameValues[i], nameValues[i + 1]);
+		}
+		return entity;
+	}
+
+	private Path statementFile() {
+		return this.workDirectory.resolve("test").resolve("default").resolve("form_order.xml");
+	}
+
+	private static MetaClass params(Object... nameValues) {
+		MetaClass entity = new MetaClass();
 		for (int i = 0; i < nameValues.length; i += 2) {
 			entity.set((String) nameValues[i], nameValues[i + 1]);
 		}

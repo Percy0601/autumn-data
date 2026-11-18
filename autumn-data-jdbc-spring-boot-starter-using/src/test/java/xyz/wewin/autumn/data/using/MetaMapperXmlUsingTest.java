@@ -2,6 +2,7 @@ package xyz.wewin.autumn.data.using;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -13,16 +14,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcOperations;
 
+import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.jdbc.page.Page;
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
-import xyz.wewin.autumn.data.meta.jdbc.sql.MarkedSql;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperClient;
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery;
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery.Direction;
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery.Op;
-import xyz.wewin.autumn.data.common.meta.MetaClass;
+import xyz.wewin.autumn.data.meta.jdbc.sql.MarkedSql;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -33,20 +32,27 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>引擎由 {@code autumn-data-jdbc-spring-boot-starter} 自动装配并装进 {@link MetaMapper} 门面，
  * 使用方只配了数据源（见 {@code src/test/resources/application.properties}）；
  * 工作目录配成 {@code autumn.data.meta.mapper.meta-directory=target/autumn-meta}，
- * 三类产物落在它的固定子目录里（{@code meta-class} 元类定义 / {@code entity} 生成的实体源码 /
- * {@code mapper} Mapper 文件），生成的文件不污染源码目录。</p>
+ * 产物落在它的固定子目录里（{@code meta-class} 元类定义 / {@code entity} 生成的实体源码 /
+ * {@code sql} 语句 XML），生成的文件不污染源码目录。</p>
+ *
+ * <p><b>SQL 只有一个来源</b>：一张表一个 XML 文件，路径
+ * {@code {语句根}/{数据源}/{命名空间}/{表名}.xml}。框架在文件里维护一个
+ * {@code AUTUMN-DATA GENERATED START/END} 自动生成区，按表结构生成七条默认语句
+ * （{@code findList/findPage/findOne/findById/save/update/delete}）；标记之外的使用方自定义语句
+ * 逐字保留。查询条件用「参数实体 + XML 里的 {@code <if>}」，不再有第二套语句库或 Java 侧现拼 SQL。</p>
  *
  * <p>操作对象始终是 {@link MetaClass}：写用的实体由 {@link MetaMapper#newEntity(String)} 按当前表结构
  * 生成，读回来的行也是同一个类的实例，「读出来 — 改几列 — 写回去」中间不需要任何转换。</p>
  *
- * <p>三组入口各走一条路，示例按这个分：</p>
+ * <p>示例按语句文件的三种状态分：</p>
  * <ul>
- *   <li>{@link #crudNeedsNoMapperFile()}：{@link MetaQuery} 驱动的 CRUD，SQL 按元数据现拼，
- *       <b>完全不读 Mapper 文件</b>；</li>
- *   <li>{@link #generatedMapperFileIsWrittenOnceThenOwnedByTheUser()}：命名语句第一次访问时
- *       按表结构生成 {@code <表名>.xml}，之后归使用方编辑；</li>
- *   <li>{@link #handWrittenMapperFileDrivesDynamicSql()}：文件已经存在（本模块的
- *       {@code src/test/resources/meta-mappers/demo_order.xml}）就只用文件，不再次生成。</li>
+ *   <li>{@link #sevenDefaultStatementsDriveCrudWithoutHandWrittenXml()}：文件不存在，框架生成默认语句区；</li>
+ *   <li>{@link #handWrittenStatementFileIsNeverRewritten()}：手写文件没有生成块，框架一个字都不动，
+ *       只在内存补齐默认语句；</li>
+ *   <li>{@link #generatedBlockIsRefreshedButCustomStatementsArePreserved()}：生成块与自定义语句共存，
+ *       表结构变化只重写生成块；</li>
+ *   <li>{@link #handWrittenMapperFileDrivesDynamicSql()}：classpath 里的手写文件
+ *       {@code meta/default/default/demo_order.xml} 直接生效。</li>
  * </ul>
  */
 @SpringBootTest(classes = UsingApplication.class)
@@ -55,10 +61,44 @@ class MetaMapperXmlUsingTest {
 	/** 运行期建出来的表：演示「文件不存在才生成一次」。 */
 	private static final String DYN = "dyn_form_demo";
 
-	/** 建表脚本里已有的表：它的 Mapper 文件是手写的。 */
+	/** 建表脚本里已有的表：它的语句文件是手写的。 */
 	private static final String ORDER = "demo_order";
 
-	private static final Path MAPPER_DIRECTORY = Path.of("target/autumn-meta/mapper");
+	private static final String META_DIRECTORY = "target/autumn-meta";
+
+	/**
+	 * 使用方手写的自定义语句区：没有 GENERATED 标记，框架不会改写它，只在内存补上七条默认语句，
+	 * 于是 {@code selectList/selectCount/insert/updateByKey} 与默认 CRUD 在同一份文件里共存。
+	 */
+	private static final String HAND_WRITTEN = """
+			<?xml version="1.0" encoding="UTF-8"?>
+			<mapper namespace="default/default/dyn_form_demo">
+			    <select id="selectList">
+			        SELECT id, order_no, amount, status, remark FROM ${table}
+			        <where>
+			            AND deleted_flag = 0
+			            <if test="status != null">AND status = #{status}</if>
+			            <if test="order_no != null">AND order_no = #{order_no}</if>
+			        </where>
+			        ORDER BY id
+			    </select>
+			    <select id="selectCount">SELECT COUNT(*) FROM ${table} WHERE deleted_flag = 0</select>
+			    <insert id="insert">
+			        INSERT INTO ${table}
+			        <trim prefix="(" suffix=")" suffixOverrides=",">
+			            <if test="order_no != null">order_no,</if>
+			            <if test="amount != null">amount,</if>
+			            <if test="status != null">status,</if>
+			        </trim>
+			        <trim prefix="VALUES (" suffix=")" suffixOverrides=",">
+			            <if test="order_no != null">#{order_no},</if>
+			            <if test="amount != null">#{amount},</if>
+			            <if test="status != null">#{status},</if>
+			        </trim>
+			    </insert>
+			    <update id="updateByKey">UPDATE ${table} SET remark = #{remark} WHERE id = #{id}</update>
+			</mapper>
+			""";
 
 	@Autowired
 	JdbcOperations jdbcOperations;
@@ -70,24 +110,26 @@ class MetaMapperXmlUsingTest {
 				+ " (id BIGINT AUTO_INCREMENT PRIMARY KEY, order_no VARCHAR(32) NOT NULL, amount DECIMAL(12,2),"
 				+ " status INT, remark VARCHAR(64), channel VARCHAR(32), deleted_flag INT DEFAULT 0)");
 		this.jdbcOperations.execute("DELETE FROM " + ORDER + " WHERE order_no LIKE 'SO-EX-%'");
-		deleteMapperFile(DYN);
+		deleteStatementFile(DYN);
+		deleteStatementFile(ORDER);
 		MetaMapper.refresh(DYN);
 		MetaMapper.defaultClient().refresh(ORDER);
 	}
 
 	/**
-	 * ① CRUD：只需要数据源，一条 XML 都不写。列名、类型、主键全从数据库元数据来，
-	 * 所以运行期建的表立刻能用。
+	 * ① 文件不存在：框架按表结构生成七条默认语句，CRUD 立刻可用；查询条件 = 参数实体 + {@code <if>}。
 	 */
 	@Test
-	void crudNeedsNoMapperFile() {
+	void sevenDefaultStatementsDriveCrudWithoutHandWrittenXml() {
+		assertThat(MetaMapper.DEFAULT_STATEMENT_IDS).containsExactly(
+				"findList", "findPage", "findOne", "findById", "save", "update", "delete");
+
 		MetaClass order = MetaMapper.save(form(DYN, "order_no", "SO-1", "amount", "12.50", "status", 1));
 		assertThat(order.get("id")).isNotNull(); // 自增主键回填在实体上
 
 		MetaClass saved = MetaMapper.findById(DYN, order.get("id")).orElseThrow();
 		assertThat(saved.getString("order_no")).isEqualTo("SO-1");
 		assertThat(saved.getBigDecimal("amount")).isEqualByComparingTo("12.50");
-		// 动态行就是「运行期实体」，直接能序列化给前端
 		assertThat(saved.toJson()).contains("SO-1");
 		assertThat(saved.toMap()).containsValue("SO-1");
 
@@ -108,101 +150,132 @@ class MetaMapperXmlUsingTest {
 		assertThat(MetaMapper.update(cleared)).isEqualTo(1);
 		assertThat(MetaMapper.findById(DYN, order.get("id")).orElseThrow().get("remark")).isNull();
 
-		// 条件运算符是开集：比较、模糊、IN、排序都不需要预先写死在文件里
-		assertThat(MetaMapper.findList(DYN, MetaQuery.by("amount", Op.GE, "50")))
-				.extracting(row -> row.getString("order_no")).containsExactly("SO-3");
-		assertThat(MetaMapper.findList(DYN, MetaQuery.all().contains("order_no", "SO-").isNotNull("amount")
-				.orderBy("amount", Direction.DESC)))
-						.extracting(row -> row.getString("order_no")).containsExactly("SO-3", "SO-1");
-		assertThat(MetaMapper.findList(DYN,
-				MetaQuery.by("id", Op.IN, order.get("id"), batch.get(0).get("id")))).hasSize(2);
-
-		// 分页：select 与 count 两条语句同一次调用
-		Page<MetaClass> page = MetaMapper.findPage(DYN, MetaQuery.by("status", 1), Pageable.of(0, 1));
+		// 赋了值的列才进 WHERE：这就是参数实体 + <if>
+		MetaClass query = params("status", 1);
+		assertThat(MetaMapper.findList(DYN, query)).hasSize(2);
+		Page<MetaClass> page = MetaMapper.findPage(DYN, query, Pageable.of(0, 1));
 		assertThat(page.total()).isEqualTo(2);
 		assertThat(page.content()).hasSize(1);
-		assertThat(MetaMapper.exists(DYN, MetaQuery.by("order_no", "SO-2"))).isTrue();
+		assertThat(MetaMapper.count(DYN, query)).isEqualTo(2);
+		assertThat(MetaMapper.exists(DYN, params("order_no", "SO-2"))).isTrue();
 
-		// 这条路不读 Mapper 文件，也就不会替谁生成一份
-		assertThat(mapperFile(DYN)).isNull();
-	}
+		// 比较 / 模糊 / 排序这类复杂条件写在 XML 自定义语句里：代码注册是同一套语法的内存覆盖层
+		MetaMapperClient client = MetaMapper.defaultClient();
+		try {
+			client.registerStatement(DYN, "highValue",
+					"SELECT order_no FROM ${table} WHERE amount >= #{min} ORDER BY amount DESC");
+			assertThat(client.selectList(DYN, "highValue", params("min", new BigDecimal("50"))))
+					.extracting(row -> row.getString("order_no")).containsExactly("SO-3");
+			client.registerStatement(DYN, "byNo",
+					"SELECT id FROM ${table} WHERE order_no LIKE #{kw} ORDER BY id");
+			assertThat(client.selectList(DYN, "byNo", params("kw", "SO-%"))).hasSize(3);
+		}
+		finally {
+			client.unregisterStatement(DYN, "highValue");
+			client.unregisterStatement(DYN, "byNo");
+		}
 
-	/**
-	 * ② 命名语句 + 自动生成的 Mapper 文件：第一次访问按表结构生成，之后文件归使用方，
-	 * 改表不会回头覆盖它。
-	 */
-	@Test
-	void generatedMapperFileIsWrittenOnceThenOwnedByTheUser() {
-		// 多数据源就把池名换掉：MetaMapper.of("tenant-a")
-		MetaMapperClient client = MetaMapper.of("default");
-
-		MetaClass order = MetaMapper.save(form(DYN, "order_no", "SO-1", "amount", "12.50", "status", 1));
-
-		// 生成只由「第一次走命名语句」触发
-		assertThat(client.selectCount(DYN, "selectCount", params())).isEqualTo(1);
-		Path file = mapperFile(DYN);
+		// 文件按 {语句根}/{数据源}/{命名空间}/{表名}.xml 生成，自动生成区里就是那七条语句
+		Path file = statementFile(DYN);
 		assertThat(file).isNotNull();
 		String generated = read(file);
-		assertThat(generated).contains("generated-by: autumn-data-meta-jdbc");
-		assertThat(generated).contains("<select id=\"selectList\">", "<select id=\"selectCount\">",
-				"<insert id=\"insert\">", "<update id=\"updateByKey\">");
+		assertThat(generated).contains("AUTUMN-DATA GENERATED START", "AUTUMN-DATA GENERATED END");
+		for (String id : MetaMapper.DEFAULT_STATEMENT_IDS) {
+			assertThat(generated).contains("id=\"" + id + "\"");
+		}
+		assertThat(generated).contains("changed('"); // save/update 靠变更集区分「没动」与「置 NULL」
+		assertThat(client.statementIds(DYN)).containsAll(MetaMapper.DEFAULT_STATEMENT_IDS);
 
-		// 生成的四条语句照常能跑
-		assertThat(client.selectList(DYN, "selectList", params("status", 1)))
-				.extracting(row -> row.getString("order_no")).containsExactly("SO-1");
-		assertThat(client.execute(DYN, "insert", params("order_no", "SO-2", "status", 2))).isEqualTo(1);
-		assertThat(client.selectOne(DYN, "selectList", params("order_no", "SO-2"))).isPresent();
-		assertThat(client.execute(DYN, "updateByKey", params("id", order.get("id"), "remark", "用生成语句改的")))
-				.isEqualTo(1);
-		assertThat(MetaMapper.findById(DYN, order.get("id")).orElseThrow().getString("remark"))
-				.isEqualTo("用生成语句改的");
-
-		// 自增主键不进列清单，没传的列交给数据库默认值
-		MarkedSql inserted = client.sqlFor(DYN, "insert", params("order_no", "SO-3"));
-		assertThat(inserted.sql()).doesNotContainIgnoringCase("\"id\"").containsIgnoringCase("order_no");
-		assertThat(inserted.values()).containsExactly("SO-3");
-
-		// 逻辑删除列被写进了文件：作废的行两条路都查不出来
-		MetaClass voided = MetaMapper.save(form(DYN, "order_no", "SO-9", "status", 1));
-		voided.set("deleted_flag", 1);
-		assertThat(MetaMapper.update(voided)).isEqualTo(1);
-		assertThat(client.selectList(DYN, "selectList", params("status", 1)))
-				.extracting(row -> row.getString("order_no")).doesNotContain("SO-9");
-		assertThat(MetaMapper.findList(DYN, MetaQuery.by("status", 1)))
-				.extracting(row -> row.getString("order_no")).doesNotContain("SO-9");
-
-		// 改表加列：refresh 之后 CRUD 立刻认得新列，Mapper 文件一个字都不被改写
-		this.jdbcOperations.execute("ALTER TABLE " + DYN + " ADD COLUMN courier VARCHAR(32)");
-		MetaMapper.refresh(DYN);
-		MetaClass courierRow = MetaMapper.findById(DYN, order.get("id")).orElseThrow();
-		courierRow.set("courier", "SF");
-		assertThat(MetaMapper.update(courierRow)).isEqualTo(1);
-		assertThat(MetaMapper.findById(DYN, order.get("id")).orElseThrow().getString("courier")).isEqualTo("SF");
-		assertThat(read(mapperFile(DYN))).isEqualTo(generated);
-		assertThat(client.sqlFor(DYN, "updateByKey", params("id", order.get("id"), "status", 3)).sql())
-				.doesNotContainIgnoringCase("courier");
-
-		// 要让新列进语句就手工编辑文件；想整个按新表结构重来，删掉文件即可
-		client.execute(DYN, "updateByKey", params("id", order.get("id"), "status", 3));
-		deleteMapperFile(DYN);
-		MetaMapper.refresh(DYN);
-		assertThat(client.sqlFor(DYN, "selectList", params("courier", "SF")).sql())
-				.containsIgnoringCase("courier");
+		// 多数据源 / 业务划分：of(池, 命名空间) 把边界固定在客户端句柄上，各自一份语句文件
+		MetaMapperClient erp = MetaMapper.of(MetaMapper.engine().defaultPoolName(), "erp");
+		assertThat(erp.poolName()).isEqualTo(MetaMapper.engine().defaultPoolName());
+		assertThat(erp.namespace()).isEqualTo("erp");
+		assertThat(erp.statementIds(DYN)).containsAll(MetaMapper.DEFAULT_STATEMENT_IDS);
+		assertThat(statementFile("erp", DYN)).isNotNull();
 	}
 
 	/**
-	 * ③ 命名语句 + 手写 Mapper 文件：文件存在就只用文件，动态 SQL 的写法全在 XML 里。
-	 * 语句来自 {@code src/test/resources/meta-mappers/demo_order.xml}。
+	 * ② 手写文件（无 GENERATED 标记）是使用方资产：框架一个字都不改写，只在内存补齐七条默认语句。
+	 */
+	@Test
+	void handWrittenStatementFileIsNeverRewritten() throws Exception {
+		Files.createDirectories(statementDirectory());
+		Path target = statementDirectory().resolve(DYN + ".xml");
+		Files.writeString(target, HAND_WRITTEN);
+		MetaMapper.clearStatementCache(DYN);
+
+		MetaMapperClient client = MetaMapper.defaultClient();
+		assertThat(client.statementIds(DYN))
+				.contains("selectList", "selectCount", "insert", "updateByKey")
+				.containsAll(MetaMapper.DEFAULT_STATEMENT_IDS);
+		assertThat(Files.readString(target)).isEqualTo(HAND_WRITTEN);
+
+		MetaClass order = MetaMapper.save(form(DYN, "order_no", "SO-1", "amount", "12.50", "status", 1));
+		assertThat(client.selectCount(DYN, "selectCount", params())).isEqualTo(1);
+		assertThat(client.selectList(DYN, "selectList", params("status", 1)))
+				.extracting(row -> row.getString("order_no")).containsExactly("SO-1");
+		assertThat(client.execute(DYN, "updateByKey",
+				params("id", order.get("id"), "remark", "手写语句改的"))).isEqualTo(1);
+		assertThat(MetaMapper.findById(DYN, order.get("id")).orElseThrow().getString("remark"))
+				.isEqualTo("手写语句改的");
+		assertThat(Files.readString(target)).isEqualTo(HAND_WRITTEN);
+
+		// 表结构变化只刷新缓存，手写文件依然一个字不动
+		this.jdbcOperations.execute("ALTER TABLE " + DYN + " ADD COLUMN courier VARCHAR(32)");
+		MetaMapper.refresh(DYN);
+		assertThat(Files.readString(target)).isEqualTo(HAND_WRITTEN);
+		assertThat(client.statementIds(DYN)).contains("selectList", "findList");
+	}
+
+	/**
+	 * ③ 生成块与自定义语句共存：改表加列后框架<b>只重写 GENERATED 块</b>，标记外内容逐字保留。
+	 */
+	@Test
+	void generatedBlockIsRefreshedButCustomStatementsArePreserved() throws Exception {
+		MetaClass order = MetaMapper.save(form(DYN, "order_no", "SO-1", "status", 1));
+		Path file = statementFile(DYN);
+		assertThat(file).isNotNull();
+		String generated = read(file);
+
+		String custom = "    <select id=\"myCustom\">SELECT COUNT(*) FROM ${table}</select>\n";
+		Files.writeString(file, generated.replace("</mapper>", custom + "</mapper>"));
+		MetaMapper.clearStatementCache(DYN);
+
+		MetaMapperClient client = MetaMapper.defaultClient();
+		assertThat(client.statementIds(DYN)).contains("myCustom", "findList", "delete");
+		assertThat(client.selectCount(DYN, "myCustom", params())).isEqualTo(1);
+
+		// 加列 + refresh：新列立刻可读写，生成块被重写，自定义语句还在
+		this.jdbcOperations.execute("ALTER TABLE " + DYN + " ADD COLUMN courier VARCHAR(32)");
+		MetaMapper.refresh(DYN);
+		MetaClass row = MetaMapper.findById(DYN, order.get("id")).orElseThrow();
+		row.set("courier", "SF");
+		assertThat(MetaMapper.update(row)).isEqualTo(1);
+		assertThat(MetaMapper.findById(DYN, order.get("id")).orElseThrow().getString("courier"))
+				.isEqualTo("SF");
+
+		String after = read(statementFile(DYN));
+		assertThat(after).contains("AUTUMN-DATA GENERATED START", "AUTUMN-DATA GENERATED END");
+		assertThat(after).contains("myCustom").containsIgnoringCase("courier");
+		assertThat(client.statementIds(DYN)).contains("myCustom", "findList");
+	}
+
+	/**
+	 * ④ 语句来自 classpath 的 {@code meta/default/default/demo_order.xml}：手写文件命中后不再落盘生成，
+	 * 动态 SQL 的写法全在 XML 里，七条默认语句在内存补齐。
 	 */
 	@Test
 	void handWrittenMapperFileDrivesDynamicSql() {
 		MetaMapperClient client = MetaMapper.defaultClient();
+		assertThat(statementFile(ORDER)).isNull(); // classpath 资源不会被复制到工作目录再生成一份
+		assertThat(client.statementIds(ORDER))
+				.contains("quickAdd", "search", "byOrderNo", "countMatching", "listSorted", "patch", "setAmount")
+				.containsAll(MetaMapper.DEFAULT_STATEMENT_IDS);
+
 		assertThat(client.execute(ORDER, "quickAdd",
 				params("order_no", "SO-EX-1", "user_id", 9001, "amount", "10.00"))).isEqualTo(1);
 		assertThat(client.execute(ORDER, "quickAdd",
 				params("order_no", "SO-EX-2", "user_id", 9001, "amount", "90.00"))).isEqualTo(1);
-		// 手写文件优先，且不会在 meta-directory 的 mapper 子目录里再落一份
-		assertThat(mapperFile(ORDER)).isNull();
 
 		// <where> + <if>：给了什么条件拼什么条件；排序字段走 ${} 标识符
 		assertThat(client.selectList(ORDER, "search", params("user_id", 9001, "orderBy", "amount")))
@@ -215,7 +288,6 @@ class MetaMapperXmlUsingTest {
 		MarkedSql plain = client.sqlFor(ORDER, "search", params());
 		assertThat(plain.sql()).doesNotContain("WHERE").doesNotContain("ORDER BY");
 		assertThat(plain.values()).isEmpty();
-		// 没有绑定槽 = 纯 ${} 拼出的成品 SQL，执行层走 Statement
 		assertThat(plain.literalOnly()).isTrue();
 
 		// <foreach> 展开 IN：占位符个数跟着集合长度走，值仍然只进绑定
@@ -246,15 +318,14 @@ class MetaMapperXmlUsingTest {
 		args.set("orderBy", "amount");
 		assertThat(client.selectList(ORDER, "search", args)).hasSize(2);
 
-		// selectCount 吃返回单个数字的 <select>
 		assertThat(client.selectCount(ORDER, "countMatching", params("user_id", 9001))).isEqualTo(2);
 	}
 
 	/**
-	 * ④ 入口与语句类型要对得上：写错不会静默跑偏，id 拼错时把文件里可用的 id 一起报出来。
+	 * ⑤ 入口与语句类型要对得上；删除语义由 XML 里的 {@code delete} 语句决定，框架不再自行禁止物理删除。
 	 */
 	@Test
-	void namedStatementsEnforceTheirTypeAndIds() {
+	void statementTypesIdsAndDeletionAreControlledByXml() {
 		MetaMapperClient client = MetaMapper.defaultClient();
 
 		assertThatThrownBy(() -> client.execute(ORDER, "search", params()))
@@ -264,20 +335,23 @@ class MetaMapperXmlUsingTest {
 				.isInstanceOf(MetaSqlException.class)
 				.hasMessageContaining("is not a <select>");
 
-		// 物理删除可以写在文件里，但动态层拒绝执行，行还在
-		assertThatThrownBy(() -> client.execute(ORDER, "purgeById", params("id", 1L)))
-				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("does not run physical deletes");
+		// 文件显式写了 <delete id="purgeById"> 就能执行；用不存在的 id 验证「允许执行」而不动种子数据
+		assertThat(client.sqlFor(ORDER, "purgeById", params("id", -1L)).sql()).contains("DELETE FROM");
+		assertThat(client.execute(ORDER, "purgeById", params("id", -1L))).isZero();
 		assertThat(MetaMapper.findById(ORDER, 1L)).isPresent();
+
+		// 默认 delete：没有逻辑删除列 → 物理 DELETE；有 deleted_flag → 逻辑删除 UPDATE
+		assertThat(client.sqlFor(ORDER, "delete", params("id", -1L)).sql()).contains("DELETE FROM");
+		assertThat(client.sqlFor(DYN, "delete", params("id", -1L)).sql()).contains("UPDATE");
 
 		assertThatThrownBy(() -> client.selectList(ORDER, "byOrderNO", params("order_no", "SO-1001")))
 				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("has no statement 'byOrderNO'")
+				.hasMessageContaining("no statement 'byOrderNO'")
 				.hasMessageContaining("byOrderNo");
 	}
 
 	/**
-	 * ⑤ 防注入的两条边界：{@code #{}} 的值永远不进 SQL 文本，{@code ${}} 只让标识符过白名单。
+	 * ⑥ 防注入的两条边界：{@code #{}} 的值永远不进 SQL 文本，{@code ${}} 只让标识符过白名单。
 	 */
 	@Test
 	void valuesBindAndIdentifierFragmentsAreWhitelisted() {
@@ -289,7 +363,6 @@ class MetaMapperXmlUsingTest {
 		assertThat(bound.values()).containsExactly(payload);
 		assertThat(client.selectList(ORDER, "byOrderNo", params("order_no", payload))).isEmpty();
 
-		// ${} 是拼接，所以先过标识符白名单：分号、注释符、比较符都进不来
 		assertThatThrownBy(() -> client.sqlFor(ORDER, "search", params("orderBy", "amount; DROP TABLE demo_order")))
 				.isInstanceOf(MetaSqlException.class)
 				.hasMessageContaining("not an identifier fragment");
@@ -300,14 +373,22 @@ class MetaMapperXmlUsingTest {
 				.isInstanceOf(MetaSqlException.class)
 				.hasMessageContaining("not an identifier fragment");
 
-		// CRUD 这条路：列名必须是元数据里真实存在的列，用户字符串根本进不了 SQL 文本
-		assertThatThrownBy(() -> MetaMapper.findList(ORDER, MetaQuery.by("order_no = 'x' OR 1=1", "y")))
+		// 参数实体里不是元数据的列名根本进不了默认语句（逐列 <if> 只认真实列）
+		MetaClass injected = params("order_no = 'x' OR 1=1", "y");
+		assertThat(client.sqlFor(ORDER, "findList", injected).sql())
+				.doesNotContain("OR 1=1").doesNotContain("'x'");
+		assertThat(MetaMapper.findList(ORDER, injected)).hasSize(3);
+
+		// 写方向：未知列在拼 SQL 之前就被拦下
+		MetaClass bad = new MetaClass();
+		bad.setName(ORDER);
+		bad.set("not_a_column", 1);
+		assertThatThrownBy(() -> MetaMapper.save(bad))
 				.isInstanceOf(MetaSqlException.class)
 				.hasMessageContaining("unknown column");
 
-		// 上面这些尝试都没动到数据，表也还在
-		assertThat(client.selectCount(ORDER, "countMatching", params("user_id", 9001))).isEqualTo(0);
-		assertThat(MetaMapper.findList(ORDER, MetaQuery.by("order_no", "SO-1001"))).hasSize(1);
+		assertThat(client.selectCount(ORDER, "countMatching", params("user_id", 9001))).isZero();
+		assertThat(MetaMapper.findList(ORDER, params("order_no", "SO-1001"))).hasSize(1);
 	}
 
 	/** 待写入的实体：形参是「列名, 值」成对，写过的列才是这次 INSERT/UPDATE 的范围。 */
@@ -315,7 +396,7 @@ class MetaMapperXmlUsingTest {
 		return fill(MetaMapper.newEntity(table), nameValues);
 	}
 
-	/** 命名语句的参数：列以外的开关、集合与排序名也放这里（实体上的动态属性）。 */
+	/** 语句参数：列以外的开关、集合与排序名也放这里（动态属性）。 */
 	private static MetaClass params(Object... nameValues) {
 		return fill(new MetaClass(), nameValues);
 	}
@@ -331,12 +412,30 @@ class MetaMapperXmlUsingTest {
 		return rows.stream().map(row -> row.getString("order_no")).toList();
 	}
 
-	/** 生成的文件名跟着元数据里的表名大小写走（H2 是大写、MySQL 习惯小写），这里按忽略大小写找。 */
-	private static Path mapperFile(String table) {
-		if (!Files.isDirectory(MAPPER_DIRECTORY)) {
+	/** 语句目录 = {语句根}/{数据源}/{命名空间}，路径与引擎里的唯一语句库保持一致。 */
+	private Path statementDirectory() {
+		return statementDirectory(MetaMapper.DEFAULT_NAMESPACE);
+	}
+
+	private Path statementDirectory(String namespace) {
+		Path sql = MetaDirectories.of(META_DIRECTORY).sqlDirectory();
+		if (sql == null) {
 			return null;
 		}
-		try (Stream<Path> files = Files.list(MAPPER_DIRECTORY)) {
+		return sql.resolve(MetaMapper.engine().defaultPoolName()).resolve(namespace);
+	}
+
+	/** 生成的文件名跟着元数据里的表名大小写走（H2 是大写、MySQL 习惯小写），这里按忽略大小写找。 */
+	private Path statementFile(String table) {
+		return statementFile(MetaMapper.DEFAULT_NAMESPACE, table);
+	}
+
+	private Path statementFile(String namespace, String table) {
+		Path directory = statementDirectory(namespace);
+		if (directory == null || !Files.isDirectory(directory)) {
+			return null;
+		}
+		try (Stream<Path> files = Files.list(directory)) {
 			return files.filter(path -> path.getFileName().toString().equalsIgnoreCase(table + ".xml"))
 					.findFirst().orElse(null);
 		}
@@ -345,8 +444,8 @@ class MetaMapperXmlUsingTest {
 		}
 	}
 
-	private static void deleteMapperFile(String table) {
-		Path file = mapperFile(table);
+	private void deleteStatementFile(String table) {
+		Path file = statementFile(table);
 		if (file != null) {
 			try {
 				Files.delete(file);

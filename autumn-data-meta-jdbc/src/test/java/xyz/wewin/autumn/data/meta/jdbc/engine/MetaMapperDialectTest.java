@@ -20,12 +20,11 @@ import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 import xyz.wewin.autumn.data.jdbc.runtime.JdbcConnectionSource;
-import xyz.wewin.autumn.data.meta.jdbc.MetaQuery;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaPlanCache;
-import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlBuilder;
-import xyz.wewin.autumn.data.meta.jdbc.sql.MetaStatementStore;
+import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlFileStore;
+import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -71,9 +70,10 @@ class MetaMapperDialectTest {
 		JdbcConnectionSource connections = new JdbcConnectionSource(dataSource);
 		AutumnJdbc jdbc = new AutumnJdbc(connections, dialect, FetchPolicy.defaults());
 		MetaTableRegistry registry = new MetaTableRegistry(dataSource, dialect, Set.of("deleted_flag"));
-		MetaStatementStore statements = new MetaStatementStore(this.mapperDirectory, true, dialect);
+		MetaSqlFileStore statements = new MetaSqlFileStore(this.mapperDirectory, getClass().getClassLoader(),
+				10_000, new MetaSqlGenerator(dialect), true);
 		MetaMapperClient client = new MetaMapperClient("test", jdbc, connections, registry,
-				new MetaSqlBuilder(dialect), statements, new MetaEntityRegistry(), new MetaPlanCache(), 1000);
+				new MetaEntityRegistry(), new MetaPlanCache(), 1000, statements);
 
 		MetaClass first = client.save(row(client, "order_no", "D001", "amount", "10.00", "status", 1));
 		client.save(row(client, "order_no", "D002", "amount", "20.00", "status", 1));
@@ -87,17 +87,15 @@ class MetaMapperDialectTest {
 		assertThat(client.update(loaded)).isEqualTo(1);
 		assertThat(client.findById("dialect_order", first.get("id")).orElseThrow().getInt("status")).isEqualTo(2);
 
-		assertThat(client.findList("dialect_order", MetaQuery.by("status", 1)))
+		assertThat(client.findList("dialect_order", params("status", 1)))
 				.extracting(row -> row.getString("order_no")).containsExactly("D002");
-		Page<MetaClass> page = client.findPage("dialect_order", MetaQuery.all(), Pageable.of(0, 1));
+		Page<MetaClass> page = client.findPage("dialect_order", params(), Pageable.of(0, 1));
 		assertThat(page.total()).isEqualTo(2);
 		assertThat(page.content()).hasSize(1);
 
-		// 命名语句：第一次访问按表结构生成 Mapper XML，SQL 用当前方言的引号与 LIMIT
-		assertThat(client.selectCount("dialect_order", "selectCount", params())).isEqualTo(2);
-		assertThat(client.selectList("dialect_order", "selectList", params("status", 1)))
-				.extracting(row -> row.getString("order_no")).containsExactly("D002");
-		assertThat(client.sqlFor("dialect_order", "selectList", params("status", 1)).sql())
+		// 默认语句按表结构生成，SQL 用当前方言的标识符引号；分页与命名语句走同一套 XML。
+		assertThat(client.count("dialect_order", params())).isEqualTo(2);
+		assertThat(client.sqlFor("dialect_order", "findList", params("status", 1)).sql())
 				.contains(dialect.quoteIdentifier("order_no"))
 				.contains("FROM " + dialect.quoteIdentifier("dialect_order"));
 	}

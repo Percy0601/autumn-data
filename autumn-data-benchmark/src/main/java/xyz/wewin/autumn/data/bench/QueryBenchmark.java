@@ -99,7 +99,7 @@ public class QueryBenchmark {
 			case "jdbc" -> this::jdbcQuery;
 			case "mybatis-per-call" -> this::mybatisPerCall;
 			case "mybatis-shared" -> this::mybatisShared;
-			case "meta-code", "meta-generic" -> this::metaFindById;
+			case "meta-code", "meta-generic" -> this::dynamicFindById;
 			case "meta-code-statement" -> this::metaStatement;
 			default -> throw new IllegalArgumentException("unknown impl: " + this.impl);
 		};
@@ -140,7 +140,7 @@ public class QueryBenchmark {
 		return this.sharedMapper.selectOne(1L);
 	}
 
-	private Object metaFindById() {
+	private Object dynamicFindById() {
 		return this.metaClient.findById(BenchDatabase.READ_TABLE, 1L).orElseThrow();
 	}
 

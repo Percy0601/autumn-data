@@ -95,7 +95,7 @@ public class InsertBenchmark {
 			case "jdbc" -> this::jdbcInsert;
 			case "mybatis-per-call" -> this::mybatisPerCall;
 			case "mybatis-shared" -> this::mybatisShared;
-			case "meta-code", "meta-generic" -> this::metaSave;
+			case "meta-code", "meta-generic" -> this::dynamicSave;
 			default -> throw new IllegalArgumentException("unknown impl: " + this.impl);
 		};
 	}
@@ -140,7 +140,7 @@ public class InsertBenchmark {
 		return this.sharedMapper.insert(newOrder());
 	}
 
-	private Object metaSave() {
+	private Object dynamicSave() {
 		MetaClass entity = this.metaClient.newEntity(BenchDatabase.WRITE_TABLE);
 		entity.set("user_id", USER_ID);
 		entity.set("order_no", ORDER_NO);
