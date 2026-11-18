@@ -87,3 +87,17 @@
 ## 协作归属（用户陈述）
 方向/创意=用户；既有实现的落地部分由豆包、通义千问产出，用户对其中很多地方不满意，
 正在逐步重构；**上层 API 用户后续还要自己调整**，改动时优先把底层能力做扎实、别替他把上层形态定死。
+
+## 动态层唯一语句库（2026-11-18 收口，提交 9782c9d）
+用户明确「metaXXX() 一次删到底」「不要两套语句库并行，只维护一套类似 MyBatis 语法的语句」，
+且只把控 API 使用方式、实现细节交助手/豆包。
+
+- **最终形态**：`MetaSqlFileStore` 是唯一语句库，路径 `sql/{数据源}/{命名空间}/{表名}.xml`
+  （classpath 兜底 `meta/{...}`）；删除 `MetaQuery` / `MetaSqlBuilder` / `MetaStatementStore` 旧双轨。
+- 新增 `MetaSqlGenerator`：七条默认语句 `findList/findPage/findOne/findById/save/update/delete`
+  生成在 `AUTUMN-DATA GENERATED START/END` 块（带结构指纹），表结构变化只重写该块，
+  标记外自定义语句逐字保留；无标记手写文件不改写、只内存补默认语句。
+- **API 口径（用户把控）**：`of(池, 命名空间)` 绑定；查询=参数实体 `MetaClass` + XML `<if>`；
+  写入=变更集 `changed('col')`；删除语义由 XML 的 `delete` 语句决定（逻辑列→逻辑删，否则物理删，可覆盖）。
+- `SqlTemplate` 新增 `changed('col')`；`MetaMapperClient` 补 `validateWritable/validateKey`。
+- README + docs/meta-dynamic-crud.md 已同步重写；`mvn -B clean test` 294 用例全绿。
