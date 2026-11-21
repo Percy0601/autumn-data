@@ -32,7 +32,6 @@ import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlFileStore;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlPlan;
 import xyz.wewin.autumn.data.meta.jdbc.sql.SqlTemplate;
-import xyz.wewin.autumn.data.meta.jdbc.sql.SqlTextParser;
 
 /**
  * 绑定「数据源 + 命名空间」的动态客户端。
@@ -44,10 +43,10 @@ import xyz.wewin.autumn.data.meta.jdbc.sql.SqlTextParser;
  * findList / findPage / findOne / findById / save / update / delete
  * </pre>
  *
- * <p>这七条由框架按表结构默认生成在 {@code GENERATED START/END} 之间；标记之外的使用方自定义语句
- * 由 {@code sqlFor/selectList/selectOne/selectCount/execute} 按 id 调用。表结构变化时只重写生成块，
- * 自定义语句逐字保留。手写 SQL（{@code findListBySql} 等）是 {@link SqlTemplate#ofText} 的一次性模板，
- * 不落文件、不进语句库，属于同一套语法的临时用法。</p>
+ * <p>这七条由框架按表结构默认生成在 {@code GENERATED START/END} 之间，并<b>落进那份 XML 文件</b>：
+ * {@code findOne} 之类的语句都能在文件里看到、也能直接改。标记之外的使用方自定义语句
+ * 由 {@code sqlFor/selectList/selectOne/selectCount/selectPage/execute} 按 id 调用；
+ * 表结构变化时只重写生成块，自定义语句逐字保留，同名 id 以自定义语句为准。</p>
  *
  * <p><b>查询条件用参数实体 + {@code <if>}</b>：传 {@link MetaClass}，赋了值的列才进 WHERE；复杂条件
  * （比较、模糊、IN、排序）写在 XML 自定义语句里，用 {@code <if>/<foreach>/<choose>} 表达，
@@ -148,34 +147,17 @@ public final class MetaMapperClient {
 	// 核心 CRUD：SQL 一律来自 XML 里同 id 的语句
 	// ------------------------------------------------------------------
 
-	/** 按单主键取一行；复合主键用 {@link #findByKey(MetaClass)}。 */
+	/** 按单主键取一行；复合主键把各主键列都写进参数实体交给 {@link #findOne(String, MetaClass)}。 */
 	public Optional<MetaClass> findById(String tableName, Object id) {
 		MetaTable table = this.registry.require(tableName);
 		MetaProperty pk = table.singlePrimaryKey();
 		if (pk == null) {
-			throw new MetaSqlException("table '" + tableName + "' has no single primary key; use findByKey(...)");
+			throw new MetaSqlException("table '" + tableName + "' has no single primary key; "
+					+ "fill every primary-key column into a params entity and use findOne(...)");
 		}
 		MetaClass params = new MetaClass();
 		params.set(pk.getName(), id);
 		return findOne(table, MetaSqlGenerator.FIND_BY_ID, params, 1);
-	}
-
-	/**
-	 * 按主键取一行：主键值读自实体，表名读自 {@link MetaClass#getName()}。
-	 * 复合主键每一列都必须有值，少一列就是少一个条件。
-	 */
-	public Optional<MetaClass> findByKey(MetaClass key) {
-		MetaTable table = table(key);
-		if (table.primaryKeys().isEmpty()) {
-			throw new MetaSqlException("table '" + table.name() + "' has no primary key");
-		}
-		for (MetaProperty column : table.primaryKeys()) {
-			if (key.get(column.getName()) == null) {
-				throw new MetaSqlException("primary key column '" + column.getName()
-						+ "' must not be null for table '" + table.name() + "'");
-			}
-		}
-		return findOne(table, MetaSqlGenerator.FIND_BY_ID, key, 1);
 	}
 
 	public Optional<MetaClass> findOne(String tableName, MetaClass params) {
@@ -183,20 +165,15 @@ public final class MetaMapperClient {
 	}
 
 	public List<MetaClass> findList(String tableName, MetaClass params) {
-		return findList(tableName, params, this.defaultListLimit);
+		return query(tableName, MetaSqlGenerator.FIND_LIST, params, this.defaultListLimit);
 	}
 
-	/** 查询列表并限制返回行数（防止动态查询一次拉全表）。 */
+	/**
+	 * 限行列表：只跑一条 SELECT，不再算总数。需要总数用 {@link #findPage}；
+	 * 这个重载留给批量拉取 / 压测这类对「少一次 count」敏感的场景。
+	 */
 	public List<MetaClass> findList(String tableName, MetaClass params, long limit) {
-		if (limit <= 0) {
-			throw new IllegalArgumentException("limit must be > 0");
-		}
-		return withConnection(() -> {
-			MetaTable table = this.registry.require(tableName);
-			SqlTemplate statement = selectStatement(table, MetaSqlGenerator.FIND_LIST);
-			Bound sql = bind(table, tidy(render(table, statement, params)));
-			return this.jdbc.query(sql.plan(), sql.args(), mapper(table, statement), limit);
-		});
+		return query(tableName, MetaSqlGenerator.FIND_LIST, params, limit);
 	}
 
 	public Page<MetaClass> findPage(String tableName, MetaClass params, Pageable pageable) {
@@ -211,19 +188,6 @@ public final class MetaMapperClient {
 			MetaSqlPlan countPlan = this.plans.plan(table, derivedCount(select));
 			return this.jdbc.page(selectPlan, countPlan, select.values().toArray(), mapper(table, statement), pageable);
 		});
-	}
-
-	public long count(String tableName, MetaClass params) {
-		return withConnection(() -> {
-			MetaTable table = this.registry.require(tableName);
-			SqlTemplate statement = selectStatement(table, MetaSqlGenerator.FIND_LIST);
-			MarkedSql select = tidy(render(table, statement, params));
-			return this.jdbc.count(this.plans.plan(table, derivedCount(select)), select.values().toArray());
-		});
-	}
-
-	public boolean exists(String tableName, MetaClass params) {
-		return count(tableName, params) > 0;
 	}
 
 	// ------------------------------------------------------------------
@@ -340,23 +304,11 @@ public final class MetaMapperClient {
 	}
 
 	public List<MetaClass> selectList(String tableName, String statementId, MetaClass params) {
-		return selectList(tableName, statementId, params, this.defaultListLimit);
-	}
-
-	public List<MetaClass> selectList(String tableName, String statementId, MetaClass params, long limit) {
-		if (limit <= 0) {
-			throw new IllegalArgumentException("limit must be > 0");
-		}
-		return withConnection(() -> {
-			MetaTable table = this.registry.require(tableName);
-			SqlTemplate s = selectStatement(table, statementId);
-			Bound sql = bind(table, tidy(render(table, s, params)));
-			return this.jdbc.query(sql.plan(), sql.args(), mapper(table, s), limit);
-		});
+		return query(tableName, statementId, params, this.defaultListLimit);
 	}
 
 	public Optional<MetaClass> selectOne(String tableName, String statementId, MetaClass params) {
-		List<MetaClass> rows = selectList(tableName, statementId, params, 1);
+		List<MetaClass> rows = query(tableName, statementId, params, 1);
 		return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
 	}
 
@@ -383,22 +335,28 @@ public final class MetaMapperClient {
 		});
 	}
 
-	/** 把一段手写 SQL 注册成命名语句（同一套语法的内存覆盖层，同 id 覆盖）。 */
-	public MetaMapperClient registerStatement(String tableName, String statementId, StatementType type, String sql) {
-		this.statements.register(this.poolName, this.namespace, tableName, statementId, type, sql);
-		return this;
+	/**
+	 * 按命名语句分页：内容用语句本身，计数自动包一层 {@code SELECT COUNT(*) FROM (...)}。
+	 * 这样分页不依赖「默认 findPage 一条语句」，自定义的复杂查询也能直接翻页。
+	 */
+	public Page<MetaClass> selectPage(String tableName, String statementId, MetaClass params, Pageable pageable) {
+		if (pageable == null) {
+			throw new IllegalArgumentException("pageable must not be null");
+		}
+		return withConnection(() -> {
+			MetaTable table = this.registry.require(tableName);
+			SqlTemplate statement = selectStatement(table, statementId);
+			MarkedSql select = tidy(render(table, statement, params));
+			MetaSqlPlan selectPlan = this.plans.plan(table, select);
+			MetaSqlPlan countPlan = this.plans.plan(table, derivedCount(select));
+			List<MetaClass> content = this.jdbc.query(selectPlan, select.values().toArray(), mapper(table, statement),
+					pageable.limit(), pageable.offset());
+			long total = this.jdbc.count(countPlan, select.values().toArray());
+			return Page.of(content, pageable, total);
+		});
 	}
 
-	/** 同上，语句类型按 SQL 开头关键字推断。 */
-	public MetaMapperClient registerStatement(String tableName, String statementId, String sql) {
-		return registerStatement(tableName, statementId, statementType(sql), sql);
-	}
-
-	public boolean unregisterStatement(String tableName, String statementId) {
-		return this.statements.unregister(this.poolName, this.namespace, tableName, statementId);
-	}
-
-	/** 该表全部可见的语句 id：七条默认 + 文件里的自定义 + 代码注册的。 */
+	/** 该表全部可见的语句 id：七条默认 + 文件里的自定义。 */
 	public List<String> statementIds(String tableName) {
 		return this.statements.statementIds(this.poolName, this.namespace, this.registry.require(tableName));
 	}
@@ -409,72 +367,8 @@ public final class MetaMapperClient {
 	}
 
 	// ------------------------------------------------------------------
-	// 手写 SQL：一次性模板，不落文件
+	// 实体类 / 语句文件
 	// ------------------------------------------------------------------
-
-	public List<MetaClass> findListBySql(String tableName, String sql, MetaClass params) {
-		return findListBySql(tableName, sql, params, this.defaultListLimit);
-	}
-
-	public List<MetaClass> findListBySql(String tableName, String sql, MetaClass params, long limit) {
-		if (limit <= 0) {
-			throw new IllegalArgumentException("limit must be > 0");
-		}
-		return withConnection(() -> {
-			MetaTable table = this.registry.require(tableName);
-			Bound bound = bind(table, render(table, customSql(sql, StatementType.SELECT), params));
-			return this.jdbc.query(bound.plan(), bound.args(), mapper(table), limit);
-		});
-	}
-
-	public Optional<MetaClass> findOneBySql(String tableName, String sql, MetaClass params) {
-		List<MetaClass> rows = findListBySql(tableName, sql, params, 1);
-		return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
-	}
-
-	public long countBySql(String tableName, String sql, MetaClass params) {
-		return withConnection(() -> {
-			MetaTable table = this.registry.require(tableName);
-			Bound bound = bind(table, render(table, customSql(sql, StatementType.SELECT), params));
-			return this.jdbc.count(bound.plan(), bound.args());
-		});
-	}
-
-	/** 手写 SQL 分页；{@code countSql} 为空时自动包一层子查询计数。 */
-	public Page<MetaClass> findPageBySql(String tableName, String sql, String countSql, MetaClass params,
-			Pageable pageable) {
-		if (pageable == null) {
-			throw new IllegalArgumentException("pageable must not be null");
-		}
-		return withConnection(() -> {
-			MetaTable table = this.registry.require(tableName);
-			MarkedSql select = render(table, customSql(sql, StatementType.SELECT), params);
-			MarkedSql count = countSql == null || countSql.isBlank()
-					? derivedCount(select)
-					: render(table, customSql(countSql, StatementType.SELECT), params);
-			MetaSqlPlan selectPlan = this.plans.plan(table, select);
-			MetaSqlPlan countPlan = this.plans.plan(table, count);
-			List<MetaClass> content = this.jdbc.query(selectPlan, select.values().toArray(), mapper(table),
-					pageable.limit(), pageable.offset());
-			long total = this.jdbc.count(countPlan, count.values().toArray());
-			return Page.of(content, pageable, total);
-		});
-	}
-
-	/** 手写 INSERT / UPDATE / DELETE，返回影响行数；SELECT 在这里会被拒绝。 */
-	public int executeBySql(String tableName, String sql, MetaClass params) {
-		return withConnection(() -> {
-			MetaTable table = this.registry.require(tableName);
-			Bound bound = bind(table, render(table, writeSql(sql), params));
-			return this.jdbc.update(bound.plan(), bound.args());
-		});
-	}
-
-	/** 只抽取不执行：看看这段手写 SQL 拼成了什么、绑了哪几个值。 */
-	public MarkedSql sqlForText(String tableName, String sql, MetaClass params) {
-		MetaTable table = this.registry.require(tableName);
-		return render(table, customSql(sql, StatementType.SELECT), params);
-	}
 
 	/** 当前表结构对应的动态实体类。 */
 	public Class<? extends MetaClass> entityType(String tableName) {
@@ -501,7 +395,7 @@ public final class MetaMapperClient {
 		this.entityRegistry.refreshAll();
 	}
 
-	/** 只清语句 AST 与执行计划缓存（表结构与实体类不动）；代码注册的语句保留。 */
+	/** 只清语句 AST 与执行计划缓存（表结构与实体类不动）。 */
 	public void clearStatementCache(String tableName) {
 		this.statements.refresh(this.poolName, this.namespace, tableName);
 		this.plans.invalidate(tableName);
@@ -513,13 +407,13 @@ public final class MetaMapperClient {
 	}
 
 	/** 表结构变化后的标准入口：清元数据、实体类、语句与计划缓存。 */
-	public void clearCache(String tableName) {
+	public void refresh(String tableName) {
 		clearTableCache(tableName);
 		clearEntityCache(tableName);
 		clearStatementCache(tableName);
 	}
 
-	public void clearAllCaches() {
+	public void refreshAll() {
 		clearTableCache();
 		clearEntityCache();
 		clearStatementCache();
@@ -527,7 +421,7 @@ public final class MetaMapperClient {
 
 	/** 清缓存并立即重新加载：元数据当场回读、实体类当场重新编译。 */
 	public MetaClass reload(String tableName) {
-		clearCache(tableName);
+		refresh(tableName);
 		MetaTable table = this.registry.require(tableName);
 		MetaEntityModel model = this.entityRegistry.model(table);
 		return model.factory().get();
@@ -535,7 +429,7 @@ public final class MetaMapperClient {
 
 	public void reloadAll() {
 		List<String> tables = this.registry.tableNames();
-		clearAllCaches();
+		refreshAll();
 		for (String tableName : tables) {
 			reload(tableName);
 		}
@@ -551,21 +445,12 @@ public final class MetaMapperClient {
 		stats.put("entityLimit", this.entityRegistry.maximumSize());
 		stats.put("statementTables", this.statements.size());
 		stats.put("statementLimit", this.statements.maximumSize());
-		stats.put("registeredStatements", this.statements.declaredCount());
 		stats.put("compiledShapes", this.plans.size());
 		stats.put("planLimit", this.plans.maximumSize());
 		return stats;
 	}
 
-	/** 表结构变化后刷新元数据、实体类、语句与执行计划缓存。 */
-	public void refresh(String tableName) {
-		clearCache(tableName);
-	}
-
-	public void refreshAll() {
-		clearAllCaches();
-	}
-
+	/** 编译产物数量（计划缓存里已编译的物理语句形状数）。 */
 	public long compiledShapes() {
 		return this.plans.size();
 	}
@@ -574,13 +459,22 @@ public final class MetaMapperClient {
 	// 语句取值 / 渲染
 	// ------------------------------------------------------------------
 
-	private Optional<MetaClass> findOne(MetaTable table, String statementId, MetaClass params, long limit) {
+	/** 一条 SELECT 语句的统一执行路径：默认语句与自定义语句都汇到这里。 */
+	private List<MetaClass> query(String tableName, String statementId, MetaClass params, long limit) {
+		if (limit <= 0) {
+			throw new IllegalArgumentException("limit must be > 0");
+		}
 		return withConnection(() -> {
+			MetaTable table = this.registry.require(tableName);
 			SqlTemplate s = selectStatement(table, statementId);
 			Bound sql = bind(table, tidy(render(table, s, params)));
-			List<MetaClass> rows = this.jdbc.query(sql.plan(), sql.args(), mapper(table, s), limit);
-			return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+			return this.jdbc.query(sql.plan(), sql.args(), mapper(table, s), limit);
 		});
+	}
+
+	private Optional<MetaClass> findOne(MetaTable table, String statementId, MetaClass params, long limit) {
+		List<MetaClass> rows = query(table.name(), statementId, params, limit);
+		return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
 	}
 
 	private SqlTemplate statement(MetaTable table, String statementId, StatementType expected) {
@@ -633,44 +527,6 @@ public final class MetaMapperClient {
 	private static MarkedSql derivedCount(MarkedSql select) {
 		return new MarkedSql("SELECT COUNT(*) FROM (" + select.sql() + ") autumn_page_count", select.refs(),
 				select.values());
-	}
-
-	// ------------------------------------------------------------------
-	// 手写 SQL 的类型判定
-	// ------------------------------------------------------------------
-
-	private static SqlTemplate customSql(String sql, StatementType type) {
-		StatementType actual = statementType(sql);
-		if (type == StatementType.SELECT && actual != StatementType.SELECT) {
-			throw new MetaSqlException("this entry runs a SELECT; write the statement as SELECT/WITH, "
-					+ "or use executeBySql(...) for " + actual + " statements");
-		}
-		if (type != StatementType.SELECT && actual == StatementType.SELECT) {
-			throw new MetaSqlException("this entry runs INSERT/UPDATE/DELETE; use findListBySql / findOneBySql / "
-					+ "countBySql / findPageBySql for SELECT statements");
-		}
-		return SqlTemplate.ofText("custom-sql", type, sql);
-	}
-
-	private static SqlTemplate writeSql(String sql) {
-		StatementType type = statementType(sql);
-		if (type == StatementType.SELECT) {
-			throw new MetaSqlException("this entry runs INSERT/UPDATE/DELETE; use findListBySql / findOneBySql / "
-					+ "countBySql / findPageBySql for SELECT statements");
-		}
-		return SqlTemplate.ofText("custom-sql", type, sql);
-	}
-
-	private static StatementType statementType(String sql) {
-		String keyword = SqlTextParser.leadingKeyword(sql);
-		return switch (keyword) {
-			case "SELECT", "WITH" -> StatementType.SELECT;
-			case "INSERT" -> StatementType.INSERT;
-			case "UPDATE" -> StatementType.UPDATE;
-			case "DELETE" -> StatementType.DELETE;
-			default -> throw new MetaSqlException("cannot tell the statement type of raw SQL from its first keyword '"
-					+ keyword + "'; start with SELECT/WITH/INSERT/UPDATE/DELETE, or pass StatementType explicitly");
-		};
 	}
 
 	// ------------------------------------------------------------------

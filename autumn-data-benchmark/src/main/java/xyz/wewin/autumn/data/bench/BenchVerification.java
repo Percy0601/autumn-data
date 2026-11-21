@@ -10,7 +10,7 @@ import java.util.List;
 
 import org.apache.ibatis.session.SqlSession;
 
-import xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementType;
+import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperClient;
 
@@ -45,10 +45,8 @@ public final class BenchVerification {
 
 		MetaClass params = code.newEntity(BenchDatabase.READ_TABLE);
 		params.set("id", 1L);
-		code.registerStatement(BenchDatabase.READ_TABLE, "byId", StatementType.SELECT,
-				BenchDatabase.SELECT_ONE_TEMPLATE);
 		check("meta-statement", expected,
-				signature(code.selectOne(BenchDatabase.READ_TABLE, "byId", params).orElseThrow()));
+				signature(code.selectOne(BenchDatabase.READ_TABLE, "findById", params).orElseThrow()));
 
 		// 100 行列表：条数 + 首末行签名
 		try (SqlSession session = MyBatisBench.factory().openSession(true)) {
@@ -57,8 +55,8 @@ public final class BenchVerification {
 			check("mybatis-list-first", jdbcRow(1L), signature(rows.get(0)));
 			check("mybatis-list-last", jdbcRow(BenchDatabase.LIST_ROWS), signature(rows.get(rows.size() - 1)));
 		}
-		List<MetaClass> codeRows = code.findList(BenchDatabase.READ_TABLE, new MetaClass(),
-				BenchDatabase.LIST_ROWS);
+		List<MetaClass> codeRows = code.findPage(BenchDatabase.READ_TABLE, new MetaClass(),
+				Pageable.of(0, BenchDatabase.LIST_ROWS)).content();
 		check("meta-list-size", String.valueOf(BenchDatabase.LIST_ROWS), String.valueOf(codeRows.size()));
 		check("meta-list-first", jdbcRow(1L), signature(codeRows.get(0)));
 		check("meta-list-last", jdbcRow(BenchDatabase.LIST_ROWS),

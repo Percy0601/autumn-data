@@ -70,11 +70,22 @@ class MetaSqlPlanTest {
 				10_000, new MetaSqlGenerator(new H2Dialect()), true);
 		this.client = new MetaMapperClient("test", jdbc, connectionSource, registry,
 				new MetaEntityRegistry(), new MetaPlanCache(), 1000, statements);
+		// 预置一条自定义语句：SQL 只在 XML 里，下面用它验证「换语句 = 换形状」。
+		Path file = statementFile();
+		Files.createDirectories(file.getParent());
+		Files.writeString(file, """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<mapper namespace="plan.form_order">
+				    <select id="byStatusAndAmount">
+				        SELECT id FROM ${table} WHERE status = #{status} AND amount &gt;= #{minAmount}
+				    </select>
+				</mapper>
+				""");
 	}
 
 	/** 只有形状进缓存：换值是换数据，不是换形状，不该再编一次。 */
 	@Test
-	void eachShapeIsCompiledOnceAndReusedAcrossCalls() {
+	void eachShapeIsCompiledOnceAndReusedAcrossCalls() throws Exception {
 		this.client.save(row("form_order", "order_no", "P1", "status", 1));
 		assertThat(this.client.compiledShapes()).isEqualTo(1);
 		this.client.save(row("form_order", "order_no", "P2", "status", 2));
@@ -93,9 +104,7 @@ class MetaSqlPlanTest {
 		this.client.findList("form_order", params("status", 1, "order_no", "P1"));
 		assertThat(this.client.compiledShapes()).isEqualTo(3);
 
-		// 自定义语句又是另一种形状
-		this.client.registerStatement("form_order", "byStatusAndAmount",
-				"SELECT id FROM ${table} WHERE status = #{status} AND amount >= #{minAmount}");
+		// 自定义语句又是另一种形状：SQL 同样放在语句 XML 里，不在 Java 侧拼。
 		this.client.selectList("form_order", "byStatusAndAmount",
 				params("status", 1, "minAmount", BigDecimal.ONE));
 		assertThat(this.client.compiledShapes()).isEqualTo(4);

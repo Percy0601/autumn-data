@@ -206,12 +206,12 @@ public final class MetaMapperEngine {
 	/**
 	 * 清掉<b>所有已创建池</b>的派生缓存（表结构、实体类、语句、执行计划）。
 	 *
-	 * <p>实体类注册表在引擎内共享，逐池清一次即可覆盖所有池；代码里注册的语句由代码持有，
-	 * 不会被顺手删掉。没有实例化过的池不在内存里，自然无需处理。</p>
+	 * <p>实体类注册表在引擎内共享，逐池清一次即可覆盖所有池；语句只有 XML 一个来源，
+	 * 清掉的是解析结果与执行计划缓存，磁盘文件不动。没有实例化过的池不在内存里，自然无需处理。</p>
 	 */
 	public void clearCaches() {
 		for (MetaMapperClient client : this.clients.asMap().values()) {
-			client.clearAllCaches();
+			client.refreshAll();
 		}
 		this.entityRegistry.refreshAll();
 	}

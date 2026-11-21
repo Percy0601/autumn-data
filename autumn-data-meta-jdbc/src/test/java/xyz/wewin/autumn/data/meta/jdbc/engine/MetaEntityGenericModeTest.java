@@ -14,6 +14,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import xyz.wewin.autumn.data.common.dialect.H2Dialect;
 import xyz.wewin.autumn.data.common.meta.MetaClass;
+import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 import xyz.wewin.autumn.data.jdbc.runtime.JdbcConnectionSource;
@@ -95,7 +96,7 @@ class MetaEntityGenericModeTest {
 		assertThat(client.findById("generic_order", saved.get("id")).orElseThrow().getInt("status")).isEqualTo(3);
 
 		// 默认语句首次访问时生成到 {数据源}/{命名空间}/{表名}.xml，GENERIC 下同样可用。
-		assertThat(client.count("generic_order", params())).isEqualTo(2);
+		assertThat(client.findPage("generic_order", params(), Pageable.of(0, 1)).total()).isEqualTo(2);
 		assertThat(client.findList("generic_order", params("status", 3)))
 				.extracting(item -> item.getString("order_no")).containsExactly("G001");
 		assertThat(Files.exists(this.mapperDirectory.resolve("test").resolve("default")

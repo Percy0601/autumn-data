@@ -24,7 +24,6 @@ import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.Threads;
 import org.openjdk.jmh.annotations.Warmup;
 
-import xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementType;
 import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperClient;
 
@@ -90,10 +89,6 @@ public class QueryBenchmark {
 			this.metaClient.findById(BenchDatabase.READ_TABLE, 1L).orElseThrow();
 			this.params = this.metaClient.newEntity(BenchDatabase.READ_TABLE);
 			this.params.set("id", 1L);
-			if ("meta-code-statement".equals(this.impl)) {
-				this.metaClient.registerStatement(BenchDatabase.READ_TABLE, "byId", StatementType.SELECT,
-						BenchDatabase.SELECT_ONE_TEMPLATE);
-			}
 		}
 		this.op = switch (this.impl) {
 			case "jdbc" -> this::jdbcQuery;
@@ -145,7 +140,8 @@ public class QueryBenchmark {
 	}
 
 	private Object metaStatement() {
-		return this.metaClient.selectOne(BenchDatabase.READ_TABLE, "byId", this.params).orElseThrow();
+		// 命名语句入口：SQL 同样来自语句 XML（这里用默认生成的 findById），只是不走专用方法。
+		return this.metaClient.selectOne(BenchDatabase.READ_TABLE, "findById", this.params).orElseThrow();
 	}
 
 }

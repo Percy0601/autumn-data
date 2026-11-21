@@ -64,8 +64,9 @@ class MetaMapperDynamicTest {
 	private static final MetaEntityRegistry ENTITIES = new MetaEntityRegistry();
 
 	/**
-	 * 使用方手写的自定义语句区：没有 GENERATED 标记，框架不会改写它，只在内存补上七条默认语句。
-	 * 于是 {@code selectList/selectCount/insert/updateByKey} 与默认 CRUD 在同一份文件里共存。
+	 * 使用方手写的自定义语句区：没有 GENERATED 标记时，框架第一次访问会把默认语句生成块插到
+	 * mapper 开头，于是 {@code findOne/findList/save} 等默认语句和这里的
+	 * {@code selectList/selectCount/insert/updateByKey} 在同一份文件里共存。
 	 */
 	private static final String CUSTOM_STATEMENTS = """
 			<?xml version="1.0" encoding="UTF-8"?>
@@ -107,6 +108,31 @@ class MetaMapperDynamicTest {
 			    <update id="updateByKey">
 			        UPDATE ${table} SET status = #{status} WHERE id = #{id}
 			    </update>
+			    <select id="highValue">
+			        SELECT id, order_no, amount, status FROM ${table}
+			        WHERE status = #{status} AND amount &gt;= #{minAmount} ORDER BY id DESC
+			    </select>
+			    <select id="createdNotNull">
+			        SELECT order_no FROM ${table} WHERE status = #{status} AND create_time IS NOT NULL
+			    </select>
+			    <select id="createdNull">
+			        SELECT order_no FROM ${table} WHERE status = #{status} AND create_time IS NULL
+			    </select>
+			    <delete id="deleteRow">DELETE FROM ${table} WHERE id = #{id}</delete>
+			    <select id="rawHot">
+			        SELECT id, order_no, amount FROM ${table} WHERE status = #{status} ORDER BY amount DESC
+			    </select>
+			    <insert id="insertRaw">
+			        INSERT INTO ${table} (order_no, amount, status) VALUES (#{order_no}, #{amount}, #{status})
+			    </insert>
+			    <select id="countStatus">SELECT COUNT(*) FROM ${table} WHERE status = #{status}</select>
+			    <update id="updateAmount">
+			        UPDATE ${table} SET amount = #{amount} WHERE order_no = #{order_no}
+			    </update>
+			    <select id="byOrderNo">
+			        SELECT id, order_no, amount FROM ${table} WHERE order_no = #{order_no}
+			    </select>
+			    <select id="rawStats">SELECT id FROM ${table}</select>
 			</mapper>
 			""";
 
@@ -136,7 +162,7 @@ class MetaMapperDynamicTest {
 					+ "create_time TIMESTAMP, "
 					+ "deleted_flag INT NOT NULL DEFAULT 0)");
 		}
-		// 预置一份「使用方手写」的 XML：自定义语句归使用方，框架不改写，只补七条默认语句。
+		// 预置一份「使用方手写」的 XML：首次访问时框架把默认语句生成块插进来，自定义语句保留。
 		Path file = statementFile();
 		Files.createDirectories(file.getParent());
 		Files.writeString(file, CUSTOM_STATEMENTS);
@@ -216,9 +242,6 @@ class MetaMapperDynamicTest {
 		this.client.save(row("form_order", "order_no", "B003", "amount", "25.00", "status", 2));
 
 		// 默认 findList 只做「赋了值的列 = ?」；比较、排序这类条件写在 XML 命名语句里，参数实体负责喂值。
-		this.client.registerStatement("form_order", "highValue",
-				"SELECT id, order_no, amount, status FROM ${table} "
-						+ "WHERE status = #{status} AND amount >= #{minAmount} ORDER BY id DESC");
 		List<MetaClass> rows = this.client.selectList("form_order", "highValue",
 				params("status", 1, "minAmount", new BigDecimal("10")));
 
@@ -226,7 +249,7 @@ class MetaMapperDynamicTest {
 		assertThat(rows.get(0).getString("order_no")).isEqualTo("B002");
 
 		assertThat(this.client.findList("form_order", params("status", 1))).hasSize(2);
-		List<MetaClass> limited = this.client.findList("form_order", params(), 2);
+		List<MetaClass> limited = this.client.findPage("form_order", params(), Pageable.of(0, 2)).content();
 		assertThat(limited).hasSize(2);
 	}
 
@@ -236,11 +259,7 @@ class MetaMapperDynamicTest {
 				"order_no", "N001", "status", 1, "create_time", "2026-01-01 10:00:00"));
 		this.client.save(row("form_order", "order_no", "N002", "status", 1));
 
-		this.client.registerStatement("form_order", "createdNotNull",
-				"SELECT order_no FROM ${table} WHERE status = #{status} AND create_time IS NOT NULL");
-		this.client.registerStatement("form_order", "createdNull",
-				"SELECT order_no FROM ${table} WHERE status = #{status} AND create_time IS NULL");
-
+		// IS NULL / IS NOT NULL 这类条件在 XML 里写死，Java 侧只传参数实体
 		assertThat(this.client.selectList("form_order", "createdNotNull", params("status", 1)))
 				.extracting(row -> row.getString("order_no")).containsExactly("N001");
 		assertThat(this.client.selectList("form_order", "createdNull", params("status", 1)))
@@ -259,8 +278,7 @@ class MetaMapperDynamicTest {
 		assertThat(page.content()).hasSize(2);
 		assertThat(page.total()).isEqualTo(3);
 		assertThat(page.totalPages()).isEqualTo(2);
-		assertThat(this.client.count("form_order", query)).isEqualTo(3);
-		assertThat(this.client.exists("form_order", params("order_no", "P002"))).isTrue();
+		assertThat(this.client.findOne("form_order", params("order_no", "P002"))).isPresent();
 	}
 
 	@Test
@@ -273,7 +291,7 @@ class MetaMapperDynamicTest {
 		assertThat(saved).hasSize(3);
 		assertThat(saved).allSatisfy(entity -> assertThat(entity.get("id")).isInstanceOf(Number.class));
 		assertThat(saved.get(0).get("id")).isNotEqualTo(saved.get(2).get("id"));
-		assertThat(this.client.findByKey(row("form_order", "id", saved.get(2).get("id")))
+		assertThat(this.client.findOne("form_order", row("form_order", "id", saved.get(2).get("id")))
 				.orElseThrow().getString("order_no")).isEqualTo("M003");
 	}
 
@@ -313,7 +331,7 @@ class MetaMapperDynamicTest {
 		assertThat(this.client.update(voided)).isEqualTo(1);
 
 		assertThat(this.client.findById("form_order", saved.get("id"))).isEmpty();
-		assertThat(this.client.count("form_order", params())).isZero();
+		assertThat(this.client.findPage("form_order", params(), Pageable.of(0, 1)).total()).isZero();
 	}
 
 	@Test
@@ -357,42 +375,39 @@ class MetaMapperDynamicTest {
 
 		this.client.save(row("form_link", "a", 1L, "b", 2L, "label", "first"));
 		MetaClass key = row("form_link", "a", 1L, "b", 2L);
-		MetaClass row = this.client.findByKey(key).orElseThrow();
+		MetaClass row = this.client.findOne("form_link", key).orElseThrow();
 		assertThat(row.getString("label")).isEqualTo("first");
 
 		row.set("label", "second");
 		assertThat(this.client.update(row)).isEqualTo(1);
-		assertThat(this.client.findByKey(key).orElseThrow().getString("label")).isEqualTo("second");
+		assertThat(this.client.findOne("form_link", key).orElseThrow().getString("label")).isEqualTo("second");
 	}
 
 	@Test
-	void generatedBlockIsRefreshedButCustomStatementsArePreserved() throws Exception {
-		// 手写文件（无 GENERATED 标记）框架一个字都不动，七条默认语句在内存里补齐。
-		String handwritten = Files.readString(statementFile());
+	void handwrittenFileGetsGeneratedBlockAndCustomStatementsArePreserved() throws Exception {
+		// ① 手写文件（无 GENERATED 标记）：首次访问把七条默认语句写进文件，findOne 等在 XML 里可见
 		this.client.save(row("form_order", "order_no", "G001", "status", 1));
-		assertThat(this.client.statementIds("form_order"))
-				.contains("findList", "findPage", "findOne", "findById", "save", "update", "delete", "selectList");
+		assertThat(this.client.statementIds("form_order")).contains("findList", "findPage", "findOne", "findById",
+				"save", "update", "delete", "selectList");
+		String injected = Files.readString(statementFile());
+		assertThat(injected).contains("AUTUMN-DATA GENERATED START", "AUTUMN-DATA GENERATED END",
+				"id=\"findOne\"", "id=\"__autumn_where\"", "id=\"__autumn_columns\"");
+		// 使用方手写的语句逐字保留，生成块只出现在文件开头
+		assertThat(injected).contains("id=\"selectList\"", "id=\"countStatus\"");
+		assertThat(injected.indexOf("AUTUMN-DATA GENERATED START"))
+				.isEqualTo(injected.lastIndexOf("AUTUMN-DATA GENERATED START"));
 		assertThat(this.client.selectCount("form_order", "selectCount", params())).isEqualTo(1);
-		assertThat(Files.readString(statementFile())).isEqualTo(handwritten);
 
-		// 换成框架生成的完整文档：生成块与自定义语句共存在同一份文件里。
-		MetaTable table = this.registry.require("form_order");
-		String generated = this.client.statementStore().generator().fullDocument(table, "default");
-		String custom = "    <select id=\"myCustom\">SELECT COUNT(*) FROM ${table}</select>\n";
-		Files.writeString(statementFile(), generated.replace("</mapper>", custom + "</mapper>"));
-		this.client.clearStatementCache("form_order");
-
-		assertThat(this.client.statementIds("form_order")).contains("myCustom", "findList", "delete");
-		assertThat(this.client.selectCount("form_order", "myCustom", params())).isEqualTo(1);
-
-		// 表结构变化：只重写 GENERATED 块，标记外的自定义语句逐字保留。
+		// ② 表结构变化：只重写生成块，标记外的自定义语句照旧在文件里
 		try (Connection connection = this.dataSource.getConnection(); Statement statement = connection.createStatement()) {
 			statement.execute("ALTER TABLE form_order ADD COLUMN remark VARCHAR(64)");
 		}
 		this.client.refresh("form_order");
-		assertThat(this.client.statementIds("form_order")).contains("myCustom", "findList");
+		assertThat(this.client.statementIds("form_order")).contains("selectList", "findList");
 		String after = Files.readString(statementFile());
-		assertThat(after).contains("myCustom").contains("remark").contains("AUTUMN-DATA GENERATED START");
+		assertThat(after).contains("id=\"selectList\"").contains("remark").contains("AUTUMN-DATA GENERATED START");
+		assertThat(after.indexOf("AUTUMN-DATA GENERATED START"))
+				.isEqualTo(after.lastIndexOf("AUTUMN-DATA GENERATED START"));
 	}
 
 	@Test
@@ -426,7 +441,7 @@ class MetaMapperDynamicTest {
 	}
 
 	@Test
-	void customMapperFileWinsAndIsNeverRewritten() throws Exception {
+	void customMapperFileGetsDefaultsInjectedAndItsStatementsStillWork() throws Exception {
 		String custom = """
 				<?xml version="1.0" encoding="UTF-8"?>
 				<mapper namespace="custom.form_order">
@@ -467,8 +482,10 @@ class MetaMapperDynamicTest {
 		assertThat(this.client.execute("form_order", "dropById", params("id", first.get("id")))).isEqualTo(1);
 		assertThat(this.client.findById("form_order", first.get("id"))).isEmpty();
 
-		// 手写文件逐字保留，框架没有往里追加任何东西。
-		assertThat(Files.readString(file)).isEqualTo(custom);
+		// 自定义语句先生效；框架另外把默认语句生成块插进文件，两者共存
+		assertThat(Files.readString(file)).contains("AUTUMN-DATA GENERATED START", "id=\"findOne\"");
+		assertThat(Files.readString(file)).contains("id=\"byStatus\"", "id=\"orderNosByIds\"", "id=\"dropById\"");
+		assertThat(this.client.statementIds("form_order")).contains("findList", "findOne", "delete", "byStatus");
 	}
 
 	@Test
@@ -1032,130 +1049,97 @@ class MetaMapperDynamicTest {
 	}
 
 	// ------------------------------------------------------------------
-	// 手写 SQL / 代码注册语句 / 缓存分级清理
+	// 命名语句 / 缓存分级清理
 	// ------------------------------------------------------------------
 
 	@Test
-	void rawSqlBindsValuesAndExpandsOnlyTheTableIdentifier() {
+	void namedStatementsBindValuesAndHonourStatementTypes() {
 		this.client.save(row("form_order", "order_no", "RS-1", "amount", "88.00", "status", 1));
 		this.client.save(row("form_order", "order_no", "RS-2", "amount", "12.00", "status", 2));
 		MetaClass query = params("status", 1, "minAmount", new BigDecimal("50.00"));
 
-		MarkedSql marked = this.client.sqlForText("form_order",
-				"SELECT id, order_no, amount FROM ${table} "
-						+ "WHERE status = #{status} AND amount >= #{minAmount}", query);
+		MarkedSql marked = this.client.sqlFor("form_order", "highValue", query);
 		assertThat(marked.sql()).contains("\"form_order\"").doesNotContain("88.00").doesNotContain("50.00");
 		assertThat(marked.values()).containsExactly(1, new BigDecimal("50.00"));
 
-		List<MetaClass> rows = this.client.findListBySql("form_order",
-				"SELECT id, order_no, amount FROM ${table} "
-						+ "WHERE status = #{status} AND amount >= #{minAmount} ORDER BY amount DESC", query, 10);
+		List<MetaClass> rows = this.client.selectPage("form_order", "highValue", query, Pageable.of(0, 10)).content();
 		assertThat(rows).hasSize(1);
 		assertThat(rows.get(0).getString("order_no")).isEqualTo("RS-1");
 		assertThat(rows.get(0).getBigDecimal("amount")).isEqualByComparingTo("88.00");
 
-		// ${} 只放标识符片段：参数化的列名照样过白名单，注入串不会进 SQL
-		assertThatThrownBy(() -> this.client.findListBySql("form_order",
-				"SELECT id FROM ${table} WHERE ${column} = 1", params("column", "status; DROP TABLE form_order")))
+		// 语句类型由 XML 标签决定：<select> 不能用 execute，<delete> 不能用 selectList
+		assertThatThrownBy(() -> this.client.execute("form_order", "highValue", query))
 				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("not an identifier fragment");
+				.hasMessageContaining("is a <select>");
+		assertThatThrownBy(() -> this.client.selectList("form_order", "deleteRow", params("id", -1)))
+				.isInstanceOf(MetaSqlException.class)
+				.hasMessageContaining("is not a <select>");
 	}
 
 	@Test
-	void rawSqlPagingSupportsExplicitAndDerivedCount() {
+	void selectPageUsesTheStatementForContentAndDerivedCount() {
 		for (int i = 1; i <= 3; i++) {
 			this.client.save(row("form_order", "order_no", "RP-" + i, "amount", String.valueOf(i * 10),
 					"status", 1));
 		}
-		MetaClass query = params("status", 1);
-		String selectSql = "SELECT id, order_no, amount FROM ${table} WHERE status = #{status}";
+		Page<MetaClass> first = this.client.selectPage("form_order", "highValue",
+				params("status", 1, "minAmount", "0"), Pageable.of(0, 2));
+		assertThat(first.total()).isEqualTo(3);
+		assertThat(first.content()).hasSize(2);
+		assertThat(first.totalPages()).isEqualTo(2);
 
-		// 不给计数语句：自动包一层 SELECT COUNT(*) FROM (...)
-		Page<MetaClass> derived = this.client.findPageBySql("form_order", selectSql, null, query, Pageable.of(0, 2));
-		assertThat(derived.total()).isEqualTo(3);
-		assertThat(derived.content()).hasSize(2);
-		assertThat(derived.totalPages()).isEqualTo(2);
-
-		// 自己给计数语句：内容与计数各按各的占位符顺序绑定
-		String orderedSql = selectSql + " ORDER BY id";
-		String countSql = "SELECT COUNT(*) FROM ${table} WHERE status = #{status} AND amount < #{limit}";
-		Page<MetaClass> explicit = this.client.findPageBySql("form_order", orderedSql, countSql,
-				params("status", 1, "limit", new BigDecimal("25.00")), Pageable.of(1, 2));
-		assertThat(explicit.total()).isEqualTo(2);
-		assertThat(explicit.content()).hasSize(1);
-		assertThat(explicit.content().get(0).getString("order_no")).isEqualTo("RP-3");
+		Page<MetaClass> second = this.client.selectPage("form_order", "highValue",
+				params("status", 1, "minAmount", "0"), Pageable.of(1, 2));
+		assertThat(second.total()).isEqualTo(3);
+		assertThat(second.content()).hasSize(1);
 	}
 
 	@Test
-	void rawSqlRejectsBareQuestionMarksAndHonoursStatementTypes() {
-		assertThatThrownBy(() -> this.client.findListBySql("form_order",
-				"SELECT id FROM ${table} WHERE status = ?", params("status", 1)))
-				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("bare '?'");
-
-		assertThatThrownBy(() -> this.client.executeBySql("form_order",
-				"SELECT id FROM ${table}", params()))
-				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("INSERT/UPDATE");
-
-		// 删不删由语句决定：框架不再默认拦物理删除。
-		assertThat(this.client.executeBySql("form_order", "DELETE FROM ${table} WHERE id = #{id}",
-				params("id", -1))).isZero();
-		this.client.registerStatement("form_order", "deleteRow", StatementType.DELETE,
-				"DELETE FROM ${table} WHERE id = #{id}");
-		MetaClass toDelete = this.client.save(row("form_order", "order_no", "DEL-1", "status", 1));
-		assertThat(this.client.execute("form_order", "deleteRow", params("id", toDelete.get("id")))).isEqualTo(1);
-
-		assertThatThrownBy(() -> this.client.registerStatement("form_order", "bad id", "SELECT 1 FROM ${table}"))
-				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("invalid statement id");
-	}
-
-	@Test
-	void rawSqlInsertUpdateCountAndFindOne() {
-		int inserted = this.client.executeBySql("form_order",
-				"INSERT INTO ${table} (order_no, amount, status) VALUES (#{order_no}, #{amount}, #{status})",
+	void namedStatementInsertUpdateCountAndFindOne() {
+		int inserted = this.client.execute("form_order", "insertRaw",
 				params("order_no", "RW-1", "amount", "7.70", "status", 9));
 		assertThat(inserted).isEqualTo(1);
 
-		long counted = this.client.countBySql("form_order",
-				"SELECT COUNT(*) FROM ${table} WHERE status = #{status}", params("status", 9));
+		long counted = this.client.selectCount("form_order", "countStatus", params("status", 9));
 		assertThat(counted).isEqualTo(1);
 
-		int updated = this.client.executeBySql("form_order",
-				"UPDATE ${table} SET amount = #{amount} WHERE order_no = #{order_no}",
+		int updated = this.client.execute("form_order", "updateAmount",
 				params("amount", "9.90", "order_no", "RW-1"));
 		assertThat(updated).isEqualTo(1);
 
-		MetaClass row = this.client.findOneBySql("form_order",
-				"SELECT id, order_no, amount FROM ${table} WHERE order_no = #{order_no}",
-				params("order_no", "RW-1")).orElseThrow();
+		MetaClass row = this.client.selectOne("form_order", "byOrderNo", params("order_no", "RW-1")).orElseThrow();
 		assertThat(row.getBigDecimal("amount")).isEqualByComparingTo("9.90");
-		assertThat(this.client.findOneBySql("form_order",
-				"SELECT id FROM ${table} WHERE order_no = #{order_no}", params("order_no", "NOPE"))).isEmpty();
+		assertThat(this.client.selectOne("form_order", "byOrderNo", params("order_no", "NOPE"))).isEmpty();
 	}
 
 	@Test
-	void registeredStatementsWinOverFilesAndSurviveRefresh() {
+	void customStatementOverridesGeneratedOneAndSurvivesRefresh() throws Exception {
 		this.client.save(row("form_order", "order_no", "RG-1", "amount", "30.00", "status", 1));
 		this.client.save(row("form_order", "order_no", "RG-2", "amount", "60.00", "status", 1));
 
-		this.client.registerStatement("form_order", "rawHot",
-				"SELECT id, order_no, amount FROM ${table} WHERE status = #{status} ORDER BY amount DESC");
-		MarkedSql preview = this.client.sqlFor("form_order", "rawHot", params("status", 1));
+		// 同 id 的自定义语句写在生成块之后，后出现者优先：findOne 改按金额倒序取第一条
+		String file = Files.readString(statementFile());
+		Files.writeString(statementFile(), file.replace("</mapper>", """
+				    <select id="findOne">
+				        SELECT id, order_no, amount, status FROM ${table}
+				        WHERE status = #{status} ORDER BY amount DESC
+				    </select>
+				</mapper>"""));
+		this.client.clearStatementCache("form_order");
+
+		MarkedSql preview = this.client.sqlFor("form_order", "findOne", params("status", 1));
 		assertThat(preview.sql()).contains("ORDER BY amount DESC").doesNotContain("30.00");
-		assertThat(this.client.statementIds("form_order")).contains("rawHot");
+		assertThat(this.client.findOne("form_order", params("status", 1)).orElseThrow().getString("order_no"))
+				.isEqualTo("RG-2");
 
+		// 表结构变化刷新后，自定义语句仍在文件里，语义不变
+		try (Connection connection = this.dataSource.getConnection(); Statement statement = connection.createStatement()) {
+			statement.execute("ALTER TABLE form_order ADD COLUMN remark VARCHAR(64)");
+		}
 		this.client.refresh("form_order");
-		List<MetaClass> rows = this.client.selectList("form_order", "rawHot", params("status", 1));
-		assertThat(rows).hasSize(2);
-		assertThat(rows.get(0).getString("order_no")).isEqualTo("RG-2");
-
-		assertThat(this.client.unregisterStatement("form_order", "rawHot")).isTrue();
-		assertThat(this.client.statementIds("form_order")).doesNotContain("rawHot");
-		assertThatThrownBy(() -> this.client.selectList("form_order", "rawHot", params("status", 1)))
-				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("rawHot");
+		assertThat(this.client.findOne("form_order", params("status", 1)).orElseThrow().getString("order_no"))
+				.isEqualTo("RG-2");
+		assertThat(Files.readString(statementFile())).contains("ORDER BY amount DESC");
 	}
 
 	@Test
@@ -1199,14 +1183,14 @@ class MetaMapperDynamicTest {
 	@Test
 	void cacheStatsReportsEveryBoundedLayer() {
 		this.client.entityType("form_order");
-		this.client.registerStatement("form_order", "rawStats", "SELECT id FROM ${table}");
+		this.client.ensureStatementFile("form_order");
 		Map<String, Object> stats = this.client.cacheStats();
 		assertThat(stats).containsEntry("pool", "test")
-				.containsKeys("tables", "entityModels", "statementTables", "registeredStatements", "compiledShapes",
+				.containsKeys("tables", "entityModels", "statementTables", "compiledShapes",
 						"tableLimit", "entityLimit", "statementLimit", "planLimit");
 		assertThat(((Number) stats.get("tables")).longValue()).isGreaterThanOrEqualTo(1);
 		assertThat(((Number) stats.get("entityModels")).longValue()).isGreaterThanOrEqualTo(1);
-		assertThat(((Number) stats.get("registeredStatements")).longValue()).isGreaterThanOrEqualTo(1);
+		assertThat(((Number) stats.get("statementTables")).longValue()).isGreaterThanOrEqualTo(1);
 	}
 
 	private static MetaTable tableWithColumns(String name, String... columnNames) {

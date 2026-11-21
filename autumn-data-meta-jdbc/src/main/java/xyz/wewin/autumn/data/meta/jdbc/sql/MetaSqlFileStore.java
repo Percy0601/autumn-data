@@ -14,14 +14,11 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
-import java.util.regex.Pattern;
 
 import xyz.wewin.autumn.data.common.dialect.DefaultDialect;
 import xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementDefinition;
-import xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementType;
 import xyz.wewin.autumn.data.common.mapper.MapperXmlParser;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTable;
@@ -51,15 +48,15 @@ import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
  *
  * <p>标记头里带结构指纹。表结构变化时框架<b>只替换标记之间的内容</b>，标记之前的注释、
  * 标记之后的自定义语句、缩进与空行逐字保留（{@link MetaSqlGenerator#merge}）。没有标记的文件
- * 视为使用方手写资产，框架不改写，只在内存里补上缺失的默认语句。</p>
+ * 第一次被访问时，框架把生成块<b>插进文件</b>（{@link MetaSqlGenerator#inject}），默认语句因此
+ * 在 XML 里可见、可改；文件后半段的自定义语句照旧逐字保留。</p>
  *
  * <h2>生成 / 更新的时机</h2>
  * <ul>
- *   <li>磁盘根可写且 {@code generateFiles=true}：文件不存在时写一份完整文档；已有生成块但指纹
- *       过期时只重写生成块；</li>
- *   <li>只读 classpath 或纯内存模式：不落盘，解析出的默认语句直接在内存里兜底；</li>
- *   <li>代码注册的语句（{@link #register}）是同一套语法的内存覆盖层，优先级高于文件，
- *       {@code refresh} 不会撤销它们。</li>
+ *   <li>磁盘根可写且 {@code generateFiles=true}：文件不存在时写一份完整文档；没有生成块时插入
+ *       生成块；已有生成块但指纹过期时只重写生成块；</li>
+ *   <li>只读 classpath 或纯内存模式（{@code generateFiles=false}）：不落盘，改写后的内容只在
+ *       内存里使用，默认语句照样可用；classpath 里的手写文件保持只读，不会被复制到磁盘根。</li>
  * </ul>
  *
  * <h2>缓存</h2>
@@ -81,9 +78,7 @@ public final class MetaSqlFileStore {
 
 	private static final String XML_EXTENSION = ".xml";
 
-	/** 语句 id 的允许写法：字母或下划线开头，其后字母/数字/下划线/点/横线。 */
-	private static final Pattern STATEMENT_ID = Pattern.compile("[A-Za-z_][A-Za-z0-9_.-]*");
-
+	/** 语句根目录；{@code null} 表示只读 classpath。 */
 	private final Path rootDirectory;
 
 	private final ClassLoader classLoader;
@@ -97,9 +92,6 @@ public final class MetaSqlFileStore {
 
 	/** 结构指纹 → 七条默认语句（避免每次访问都重新解析同一份生成模板）。 */
 	private final BoundedCache<String, Map<String, SqlTemplate>> defaults;
-
-	/** 代码注册语句（数据源/命名空间/表 → id → 模板）；refresh 不动它。 */
-	private final BoundedCache<String, Map<String, SqlTemplate>> declared;
 
 	// ------------------------------------------------------------------
 	// 构造
@@ -133,7 +125,6 @@ public final class MetaSqlFileStore {
 		this.generateFiles = generateFiles;
 		this.files = BoundedCaches.lru(maximumSize);
 		this.defaults = BoundedCaches.lru(maximumSize);
-		this.declared = BoundedCaches.lru(maximumSize);
 	}
 
 	/** 只读 classpath；文件系统根取系统属性 {@value #ROOT_PROPERTY}。 */
@@ -157,7 +148,7 @@ public final class MetaSqlFileStore {
 	// ------------------------------------------------------------------
 
 	/**
-	 * 该 (数据源, 命名空间, 表) 下的全部语句：文件里的自定义语句 + 七条默认语句 + 代码注册语句。
+	 * 该 (数据源, 命名空间, 表) 下的全部语句：文件里的自定义语句 + 七条默认语句。
 	 *
 	 * <p>传入 {@link MetaTable} 才会触发生成/合并与默认语句兜底；返回的是解析后的
 	 * {@link SqlTemplate}（AST + 解释器），不可修改。</p>
@@ -219,61 +210,16 @@ public final class MetaSqlFileStore {
 		String fingerprint = meta == null ? null : this.generator.fingerprint(meta);
 		SqlFile cached = this.files.getIfPresent(key);
 		if (cached != null && !cached.stale() && sameFingerprint(cached.fingerprint(), fingerprint)) {
-			return withDeclared(key, cached.statements());
+			return cached.statements();
 		}
 		// 过期 / 结构变化：先失效再走 get，让单飞语义管住并发重载
 		this.files.invalidate(key);
 		SqlFile loaded = this.files.get(key, ignored -> load(datasource, namespace, table, meta, fingerprint));
-		return withDeclared(key, loaded == null ? Map.of() : loaded.statements());
+		return loaded == null ? Map.of() : loaded.statements();
 	}
 
 	private static boolean sameFingerprint(String cached, String requested) {
 		return requested == null ? cached == null : requested.equals(cached);
-	}
-
-	// ------------------------------------------------------------------
-	// 代码注册语句（同一套 SqlTemplate 语法的内存覆盖层）
-	// ------------------------------------------------------------------
-
-	/** 注册一条语句；同 id 覆盖。{@code DELETE} 也允许（默认 delete 语句本身可能就是物理删除）。 */
-	public SqlTemplate register(String datasource, String namespace, String table, String statementId,
-			StatementType type, String sql) {
-		String key = key(datasource, namespace, table);
-		String id = requireId(statementId);
-		if (!STATEMENT_ID.matcher(id).matches()) {
-			throw new MetaSqlException("invalid statement id '" + id
-					+ "'; use letters/digits/underscore/dot/dash and start with a letter or underscore");
-		}
-		if (type == null) {
-			throw new MetaSqlException("statement type must not be null");
-		}
-		SqlTemplate template = SqlTemplate.ofText(id, type, sql);
-		this.declared.get(key, ignored -> new ConcurrentHashMap<>()).put(id, template);
-		return template;
-	}
-
-	public boolean unregister(String datasource, String namespace, String table, String statementId) {
-		Map<String, SqlTemplate> registered = this.declared.getIfPresent(key(datasource, namespace, table));
-		return registered != null && registered.remove(requireId(statementId)) != null;
-	}
-
-	/** 代码注册的语句条数（跨表求和，诊断用）。 */
-	public long declaredCount() {
-		long count = 0;
-		for (Map<String, SqlTemplate> statements : this.declared.asMap().values()) {
-			count += statements.size();
-		}
-		return count;
-	}
-
-	private Map<String, SqlTemplate> withDeclared(String key, Map<String, SqlTemplate> statements) {
-		Map<String, SqlTemplate> registered = this.declared.getIfPresent(key);
-		if (registered == null || registered.isEmpty()) {
-			return statements;
-		}
-		Map<String, SqlTemplate> merged = new LinkedHashMap<>(statements);
-		merged.putAll(registered);
-		return Collections.unmodifiableMap(merged);
 	}
 
 	// ------------------------------------------------------------------
@@ -319,36 +265,40 @@ public final class MetaSqlFileStore {
 			if (content == null) {
 				// 文件不存在：落一份完整文档，或在内存里用默认语句
 				String generated = this.generator.fullDocument(meta, namespace);
-				if (this.generateFiles && source.target() != null && write(source.target(), generated)) {
+				if (this.generateFiles && source.writeTarget() != null && write(source.writeTarget(), generated)) {
 					content = generated;
-					location = source.target().toString();
-					stampPath = source.target();
-					stamp = stamp(source.target());
+					location = source.writeTarget().toString();
+					stampPath = source.writeTarget();
+					stamp = stamp(source.writeTarget());
 				}
 				else {
 					content = this.generator.statementsDocument(meta);
 					location = "generated in memory for " + table + " (" + location + ")";
 				}
 			}
-			else if (this.generator.hasGeneratedBlock(content)) {
-				// 有生成块：指纹变了才重写，且只替换标记之间那一段
-				String merged = this.generator.merge(content, meta);
-				if (merged != null) {
-					content = merged;
-					if (this.generateFiles && source.onDisk() && source.target() != null
-							&& write(source.target(), content)) {
-						stampPath = source.target();
-						stamp = stamp(source.target());
+			else {
+				// 有生成块：指纹变了才重写，且只替换标记之间那一段；
+				// 没有生成块：把默认语句插进文件（findOne 等因此在 XML 里可见、可改），自定义语句逐字保留
+				String rewritten = this.generator.hasGeneratedBlock(content)
+						? this.generator.merge(content, meta)
+						: this.generator.inject(content, meta, namespace);
+				if (rewritten != null) {
+					content = rewritten;
+					// 只回写磁盘上真实存在的文件；classpath 资源保持只读，改写结果只在内存里生效
+					if (this.generateFiles && source.writeTarget() != null
+							&& write(source.writeTarget(), rewritten)) {
+						location = source.writeTarget().toString();
+						stampPath = source.writeTarget();
+						stamp = stamp(source.writeTarget());
 					}
 				}
 			}
-			// 没有生成块 = 使用方手写资产：文件一个字都不动
 		}
 
 		Map<String, SqlTemplate> parsed = content == null ? Map.of() : parse(withMapperRoot(content), location);
 		Map<String, SqlTemplate> result = new LinkedHashMap<>(parsed);
 		if (meta != null) {
-			// 手写文件 / 只读 classpath 可能缺默认语句：内存补齐，文件里已有的同名 id 优先
+			// 只读 classpath / 落盘失败时文件里可能仍缺默认语句：内存补齐，文件里已有的同名 id 优先
 			for (Map.Entry<String, SqlTemplate> entry : defaults(meta).entrySet()) {
 				result.putIfAbsent(entry.getKey(), entry.getValue());
 			}
@@ -380,7 +330,7 @@ public final class MetaSqlFileStore {
 			for (String name : names) {
 				Path file = base.resolve(name);
 				if (Files.isRegularFile(file)) {
-					return new Source(read(file), file, file.toString(), true, file, stamp(file));
+					return new Source(read(file), file.toString(), file, stamp(file), file);
 				}
 			}
 		}
@@ -391,12 +341,12 @@ public final class MetaSqlFileStore {
 				continue;
 			}
 			Path asFile = asFile(url);
-			Path target = base == null ? null : base.resolve(names.get(0));
-			return new Source(read(url, resource), target, "classpath:" + resource, false, asFile,
-					asFile == null ? -1L : stamp(asFile));
+			// classpath 资源只读：不复制、不回写，生成块只在内存里补
+			return new Source(read(url, resource), "classpath:" + resource, asFile,
+					asFile == null ? -1L : stamp(asFile), null);
 		}
 		Path target = base == null ? null : base.resolve(names.get(0));
-		return new Source(null, target, describe(datasource, namespace, table), false, null, -1L);
+		return new Source(null, describe(datasource, namespace, table), null, -1L, target);
 	}
 
 	/**
@@ -531,8 +481,11 @@ public final class MetaSqlFileStore {
 		return loader == null ? MetaSqlFileStore.class.getClassLoader() : loader;
 	}
 
-	/** 一次文件读取的结果：内容、建议写入路径、来源描述、可否回写、用于判活的磁盘文件与时间戳。 */
-	private record Source(String content, Path target, String location, boolean onDisk, Path stampPath, long stamp) {
+	/**
+	 * 一次文件读取的结果：内容、来源描述、判活用的磁盘文件与时间戳、可回写的目标。
+	 * {@code writeTarget} 为 {@code null} 表示来源只读（classpath 资源），框架不落盘。
+	 */
+	private record Source(String content, String location, Path stampPath, long stamp, Path writeTarget) {
 	}
 
 	/** 一份文件解析后的结果；{@link #stale()} 决定下次访问要不要重读。 */

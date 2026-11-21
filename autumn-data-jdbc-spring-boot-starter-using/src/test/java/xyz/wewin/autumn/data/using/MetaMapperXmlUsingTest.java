@@ -47,8 +47,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>示例按语句文件的三种状态分：</p>
  * <ul>
  *   <li>{@link #sevenDefaultStatementsDriveCrudWithoutHandWrittenXml()}：文件不存在，框架生成默认语句区；</li>
- *   <li>{@link #handWrittenStatementFileIsNeverRewritten()}：手写文件没有生成块，框架一个字都不动，
- *       只在内存补齐默认语句；</li>
+ *   <li>{@link #handWrittenFileGetsGeneratedBlockInjected()}：手写文件没有生成块，框架把默认语句
+ *       生成块<b>插进文件</b>，findOne 之类的 SQL 在 XML 里可见可改；</li>
  *   <li>{@link #generatedBlockIsRefreshedButCustomStatementsArePreserved()}：生成块与自定义语句共存，
  *       表结构变化只重写生成块；</li>
  *   <li>{@link #handWrittenMapperFileDrivesDynamicSql()}：classpath 里的手写文件
@@ -67,7 +67,7 @@ class MetaMapperXmlUsingTest {
 	private static final String META_DIRECTORY = "target/autumn-meta";
 
 	/**
-	 * 使用方手写的自定义语句区：没有 GENERATED 标记，框架不会改写它，只在内存补上七条默认语句，
+	 * 使用方手写的自定义语句区：首次访问时框架会把默认语句生成块插到 mapper 开头，
 	 * 于是 {@code selectList/selectCount/insert/updateByKey} 与默认 CRUD 在同一份文件里共存。
 	 */
 	private static final String HAND_WRITTEN = """
@@ -120,7 +120,7 @@ class MetaMapperXmlUsingTest {
 	 * ① 文件不存在：框架按表结构生成七条默认语句，CRUD 立刻可用；查询条件 = 参数实体 + {@code <if>}。
 	 */
 	@Test
-	void sevenDefaultStatementsDriveCrudWithoutHandWrittenXml() {
+	void sevenDefaultStatementsDriveCrudWithoutHandWrittenXml() throws Exception {
 		assertThat(MetaMapper.DEFAULT_STATEMENT_IDS).containsExactly(
 				"findList", "findPage", "findOne", "findById", "save", "update", "delete");
 
@@ -156,24 +156,25 @@ class MetaMapperXmlUsingTest {
 		Page<MetaClass> page = MetaMapper.findPage(DYN, query, Pageable.of(0, 1));
 		assertThat(page.total()).isEqualTo(2);
 		assertThat(page.content()).hasSize(1);
-		assertThat(MetaMapper.count(DYN, query)).isEqualTo(2);
-		assertThat(MetaMapper.exists(DYN, params("order_no", "SO-2"))).isTrue();
+		assertThat(MetaMapper.findOne(DYN, params("order_no", "SO-2"))).isPresent();
 
-		// 比较 / 模糊 / 排序这类复杂条件写在 XML 自定义语句里：代码注册是同一套语法的内存覆盖层
+		// 比较 / 模糊 / 排序这类复杂条件写在语句 XML 的自定义区；总数用分页的 total
 		MetaMapperClient client = MetaMapper.defaultClient();
-		try {
-			client.registerStatement(DYN, "highValue",
-					"SELECT order_no FROM ${table} WHERE amount >= #{min} ORDER BY amount DESC");
-			assertThat(client.selectList(DYN, "highValue", params("min", new BigDecimal("50"))))
-					.extracting(row -> row.getString("order_no")).containsExactly("SO-3");
-			client.registerStatement(DYN, "byNo",
-					"SELECT id FROM ${table} WHERE order_no LIKE #{kw} ORDER BY id");
-			assertThat(client.selectList(DYN, "byNo", params("kw", "SO-%"))).hasSize(3);
-		}
-		finally {
-			client.unregisterStatement(DYN, "highValue");
-			client.unregisterStatement(DYN, "byNo");
-		}
+		Path dynFile = statementFile(DYN);
+		assertThat(dynFile).isNotNull();
+		Files.writeString(dynFile, read(dynFile).replace("</mapper>", """
+				    <select id="highValue">
+				        SELECT order_no FROM ${table} WHERE amount &gt;= #{min} ORDER BY amount DESC
+				    </select>
+				    <select id="byNo">
+				        SELECT id FROM ${table} WHERE order_no LIKE #{kw} ORDER BY id
+				    </select>
+				</mapper>"""));
+		client.clearStatementCache(DYN);
+		assertThat(client.selectList(DYN, "highValue", params("min", new BigDecimal("50"))))
+				.extracting(row -> row.getString("order_no")).containsExactly("SO-3");
+		assertThat(client.selectList(DYN, "byNo", params("kw", "SO-%"))).hasSize(3);
+		assertThat(client.statementIds(DYN)).contains("highValue", "byNo");
 
 		// 文件按 {语句根}/{数据源}/{命名空间}/{表名}.xml 生成，自动生成区里就是那七条语句
 		Path file = statementFile(DYN);
@@ -195,20 +196,23 @@ class MetaMapperXmlUsingTest {
 	}
 
 	/**
-	 * ② 手写文件（无 GENERATED 标记）是使用方资产：框架一个字都不改写，只在内存补齐七条默认语句。
+	 * ② 手写文件（无 GENERATED 标记）首次访问时被插入默认语句生成块：
+	 * findOne 之类的 SQL 在 XML 里可见、可改，自定义语句原样保留。
 	 */
 	@Test
-	void handWrittenStatementFileIsNeverRewritten() throws Exception {
+	void handWrittenFileGetsGeneratedBlockInjected() throws Exception {
 		Files.createDirectories(statementDirectory());
 		Path target = statementDirectory().resolve(DYN + ".xml");
 		Files.writeString(target, HAND_WRITTEN);
-		MetaMapper.clearStatementCache(DYN);
+		MetaMapper.defaultClient().clearStatementCache(DYN);
 
 		MetaMapperClient client = MetaMapper.defaultClient();
 		assertThat(client.statementIds(DYN))
 				.contains("selectList", "selectCount", "insert", "updateByKey")
 				.containsAll(MetaMapper.DEFAULT_STATEMENT_IDS);
-		assertThat(Files.readString(target)).isEqualTo(HAND_WRITTEN);
+		String injected = Files.readString(target);
+		assertThat(injected).contains("AUTUMN-DATA GENERATED START", "id=\"findOne\"", "id=\"__autumn_where\"");
+		assertThat(injected).contains("id=\"selectList\"", "id=\"updateByKey\"");
 
 		MetaClass order = MetaMapper.save(form(DYN, "order_no", "SO-1", "amount", "12.50", "status", 1));
 		assertThat(client.selectCount(DYN, "selectCount", params())).isEqualTo(1);
@@ -218,13 +222,15 @@ class MetaMapperXmlUsingTest {
 				params("id", order.get("id"), "remark", "手写语句改的"))).isEqualTo(1);
 		assertThat(MetaMapper.findById(DYN, order.get("id")).orElseThrow().getString("remark"))
 				.isEqualTo("手写语句改的");
-		assertThat(Files.readString(target)).isEqualTo(HAND_WRITTEN);
 
-		// 表结构变化只刷新缓存，手写文件依然一个字不动
+		// 表结构变化只刷新生成块，手写区仍逐字保留
 		this.jdbcOperations.execute("ALTER TABLE " + DYN + " ADD COLUMN courier VARCHAR(32)");
 		MetaMapper.refresh(DYN);
-		assertThat(Files.readString(target)).isEqualTo(HAND_WRITTEN);
-		assertThat(client.statementIds(DYN)).contains("selectList", "findList");
+		assertThat(client.statementIds(DYN)).contains("selectList", "findList"); // 触发重建并落盘
+		String after = Files.readString(target);
+		assertThat(after).containsIgnoringCase("courier").contains("id=\"selectList\"", "id=\"updateByKey\"");
+		assertThat(after.indexOf("AUTUMN-DATA GENERATED START"))
+				.isEqualTo(after.lastIndexOf("AUTUMN-DATA GENERATED START"));
 	}
 
 	/**
@@ -239,7 +245,7 @@ class MetaMapperXmlUsingTest {
 
 		String custom = "    <select id=\"myCustom\">SELECT COUNT(*) FROM ${table}</select>\n";
 		Files.writeString(file, generated.replace("</mapper>", custom + "</mapper>"));
-		MetaMapper.clearStatementCache(DYN);
+		MetaMapper.defaultClient().clearStatementCache(DYN);
 
 		MetaMapperClient client = MetaMapper.defaultClient();
 		assertThat(client.statementIds(DYN)).contains("myCustom", "findList", "delete");

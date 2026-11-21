@@ -31,7 +31,7 @@
 | `mybatis-per-call` | 每次 `openSession` + `getMapper`，等价 Spring 里 `SqlSessionTemplate` 的用法 |
 | `mybatis-shared` | 长会话 + 复用 mapper，MyBatis 的最佳情形（本次对照以它为准，避免把会话开销算成框架开销） |
 | `meta-code` | meta CODE 档，`findById` / `findList` / `save`，实体由注解处理器生成的类承担 |
-| `meta-code-statement` | meta CODE 档 + `registerStatement` 预置命名语句，走 `selectOne`（只在单行点查组有） |
+| `meta-code-statement` | meta CODE 档 + `selectOne` 走命名语句入口（默认生成的 `findById` 语句），对比专用方法路径 |
 | `meta-generic` | meta GENERIC 档，逐行按元数据反射式取值，Native Image 下的兜底路径 |
 | `pojo-setters` | 纯映射组专用：手写 POJO setter 按列序号赋值，性能地板 |
 | `meta-column-index` | 纯映射组专用：只跑 `MetaEntityColumns.index(rs)`，把"逐行建列索引"这一项单独量出来 |
@@ -83,7 +83,7 @@ SELECT id, user_id, order_no, amount, status, create_time FROM bench_order WHERE
 2. MyBatis 侧关闭二级缓存（`cacheEnabled=false`）、局部缓存设为 `STATEMENT`，避免"缓存命中"把框架开销测成 0。
 3. 纯映射组让两边跑**同一个已物化的可滚动 `ResultSet` 实例**（`TYPE_SCROLL_INSENSITIVE`，100 行全部在客户端），每次调用 `beforeFirst()` 复位。这样测到的只有逐行映射，不含 SQL 执行与连接池借还。
 4. `mybatis-handler` 用 `handleRowValues` 而不是 `handleResultSets`，因为后者的 `finally` 会把结果集关掉；`handleRowValues` 是公开方法，走的正是生产路径里的逐行分支。
-5. 运行时 classpath **必须**由各模块 `target/classes` 拼出来（`run-benchmark.ps1` 已处理），不能用 `~/.m2` 里的 snapshot jar——否则跑的是上一次 `install` 的旧代码。这一条是踩过坑的：第一次运行就因为旧 jar 里缺 `registerStatement` 的四参重载，`meta-code-statement` 组直接以 `NoSuchMethodError` 静默失败，JMH 把失败项从结果表里剔除，表面上看只像"少了一组"。
+5. 运行时 classpath **必须**由各模块 `target/classes` 拼出来（`run-benchmark.ps1` 已处理），不能用 `~/.m2` 里的 snapshot jar——否则跑的是上一次 `install` 的旧代码，容易出现 `NoSuchMethodError` 导致整组基准被 JMH 静默剔除。
 
 ### 正确性验证
 

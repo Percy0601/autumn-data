@@ -14,6 +14,10 @@ import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTable;
  * {@code findById} / {@code save} / {@code update} / {@code delete}。语法就是
  * {@code autumn-data-common} 那套 MyBatis 风格 XML，不另起炉灶。</p>
  *
+ * <p>七条语句都会<b>写进那份 XML</p>，{@code findOne} 之类的 SQL 在文件里看得见、也改得动。
+ * 三条 select 只差执行方式，条件抽成 {@code <sql id="__autumn_where">} 片段共用，
+ * 列清单抽成 {@code <sql id="__autumn_columns">}，手改这两处即可，不必在三条语句里各改一遍。</p>
+ *
  * <p>文件里用两行注释标记把这一块圈起来：</p>
  * <pre>{@code
  * <!-- ===== AUTUMN-DATA GENERATED START fingerprint=1-xxxx ===== -->
@@ -25,8 +29,9 @@ import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTable;
  *
  * <p>标记头里带结构指纹（{@link MetaTable#fingerprint()} + 生成器版本）。表结构变化时框架
  * <b>只替换标记之间的内容</b>，标记之前的注释、标记之后的自定义语句、缩进与空行全部逐字保留
- * —— 见 {@link #merge(String, MetaTable)}。没有标记的文件视为使用方手写资产，框架不改写，
- * 只由 {@link MetaSqlFileStore} 在内存里补上缺失的默认语句兜底。</p>
+ * —— 见 {@link #merge(String, MetaTable)}。没有标记的文件第一次被访问时由 {@link #inject} 插入
+ * 生成块：默认语句因此也出现在文件里，使用方能看到、也能改；想长期改成自己的版本，就把同名语句
+ * 写进标记之后的自定义区，后出现者优先。</p>
  *
  * <p>写哪几列由实体的变更集决定：{@code save} / {@code update} 用 {@code changed('col')}
  * 这个框架内置谓词（见 {@link SqlTemplate}），因此「显式置 NULL」和「这一列没动」是两件事，
@@ -49,8 +54,11 @@ public final class MetaSqlGenerator {
 	/** 列清单片段 id，默认语句与自定义语句都能 {@code <include>} 复用。 */
 	static final String COLUMNS_FRAGMENT = "__autumn_columns";
 
+	/** 查询条件片段 id：findList / findPage / findOne 共用，改条件只改一处。 */
+	static final String WHERE_FRAGMENT = "__autumn_where";
+
 	/** 生成器版本：改了生成逻辑就 +1，让所有表在下次访问时刷新自动区。 */
-	private static final String VERSION = "1";
+	private static final String VERSION = "3";
 
 	private static final String START_PREFIX = "<!-- ===== AUTUMN-DATA GENERATED START";
 	private static final String END_MARKER = "<!-- ===== AUTUMN-DATA GENERATED END ===== -->";
@@ -74,6 +82,7 @@ public final class MetaSqlGenerator {
 		StringBuilder out = new StringBuilder(4096);
 		out.append(START_PREFIX).append(" fingerprint=").append(fingerprint(table)).append(" ===== -->\n");
 		out.append("<!-- 本块由框架按表结构生成，表结构变化时只重写本块；手工改动会被覆盖。 -->\n");
+		out.append("<!-- 想改查询条件只改 __autumn_where，想改列清单只改 __autumn_columns；整条语句不合适就复制到下方自定义区改。 -->\n");
 		out.append(blockBody(table));
 		out.append(END_MARKER).append('\n');
 		return out.toString();
@@ -123,6 +132,36 @@ public final class MetaSqlGenerator {
 		return text.contains(START_PREFIX) && text.contains(END_MARKER);
 	}
 
+	/**
+	 * 把自动生成块插进一份<b>还没有标记</b>的现有文件。
+	 *
+	 * <p>这是本版相对上一版的关键变化：手写文件不再只由内存补默认语句，而是把默认语句
+	 * <b>落进文件</b>——{@code findOne/findById/findList/findPage/save/update/delete} 都能在
+	 * XML 里看到、也能被使用方直接改成自己要的样子。插入点在 {@code <mapper ...>} 开标签之后，
+	 * 因此文件后半段的自定义语句仍在生成块之后：同名 id 以自定义语句为准（后出现者覆盖）。</p>
+	 *
+	 * @param namespace 文件没有 {@code <mapper>} 壳、需要补壳时写进 {@code namespace}
+	 * @return 改写后的全文；{@code null} 表示无需改动（已有生成块，交给 {@link #merge}）
+	 */
+	public String inject(String existing, MetaTable table, String namespace) {
+		if (existing == null || existing.isBlank() || hasGeneratedBlock(existing)) {
+			return null;
+		}
+		int mapperAt = existing.indexOf("<mapper");
+		if (mapperAt < 0) {
+			// 没有 <mapper> 壳：补一个壳，并把原内容整体放在生成块之后（自定义语句仍优先）
+			return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<mapper namespace=\"" + escape(namespace)
+					+ "\">\n\n" + generatedBlock(table) + "\n" + stripDeclaration(existing).trim() + "\n</mapper>\n";
+		}
+		int openTagEnd = existing.indexOf('>', mapperAt);
+		if (openTagEnd < 0) {
+			return null;
+		}
+		String head = existing.substring(0, openTagEnd + 1);
+		String tail = existing.substring(openTagEnd + 1);
+		return head + "\n\n" + generatedBlock(table) + tail;
+	}
+
 	// ------------------------------------------------------------------
 	// 七条默认语句
 	// ------------------------------------------------------------------
@@ -131,6 +170,7 @@ public final class MetaSqlGenerator {
 		StringBuilder out = new StringBuilder(4096);
 		out.append("    <sql id=\"").append(COLUMNS_FRAGMENT).append("\">")
 				.append(quotedNames(table.columns())).append("</sql>\n\n");
+		appendWhereFragment(out, table);
 		appendSelect(out, table, FIND_LIST, true);
 		appendSelect(out, table, FIND_PAGE, true);
 		appendSelect(out, table, FIND_ONE, true);
@@ -145,15 +185,19 @@ public final class MetaSqlGenerator {
 		out.append("    <select id=\"").append(id).append("\">\n");
 		out.append("        SELECT <include refid=\"").append(COLUMNS_FRAGMENT).append("\"/> FROM ")
 				.append(quote(table.name())).append('\n');
-		appendWhere(out, table);
+		out.append("        <include refid=\"").append(WHERE_FRAGMENT).append("\"/>\n");
 		if (orderByKey && !table.primaryKeys().isEmpty()) {
 			out.append("        ORDER BY ").append(quotedNames(table.primaryKeys())).append('\n');
 		}
 		out.append("    </select>\n\n");
 	}
 
-	/** 逐列等值条件 + 固定的逻辑删除过滤；不展开的条件整段不产生绑定槽。 */
-	private void appendWhere(StringBuilder out, MetaTable table) {
+	/**
+	 * 三条 select 共用的查询条件：逐列等值条件 + 固定的逻辑删除过滤；没展开的条件不产生绑定槽。
+	 * 单独抽成片段，手改条件只动这一处，findList / findPage / findOne 跟着变。
+	 */
+	private void appendWhereFragment(StringBuilder out, MetaTable table) {
+		out.append("    <sql id=\"").append(WHERE_FRAGMENT).append("\">\n");
 		out.append("        <where>\n");
 		MetaProperty logic = logicColumn(table);
 		if (logic != null) {
@@ -167,6 +211,7 @@ public final class MetaSqlGenerator {
 					.append(quote(column.getName())).append(" = #{").append(column.getName()).append("}</if>\n");
 		}
 		out.append("        </where>\n");
+		out.append("    </sql>\n\n");
 	}
 
 	private void appendFindById(StringBuilder out, MetaTable table) {
@@ -288,7 +333,7 @@ public final class MetaSqlGenerator {
 		return this.dialect.quoteIdentifier(identifier);
 	}
 
-	/** 方言引号：手写 SQL / 代码注册语句里的 {@code ${table}} 由客户端填这个值。 */
+	/** 方言引号：手写 SQL 里的 {@code ${table}} 由客户端填这个值。 */
 	public String quoteIdentifier(String identifier) {
 		return this.dialect.quoteIdentifier(identifier);
 	}
@@ -301,5 +346,15 @@ public final class MetaSqlGenerator {
 	private static int lineEnd(String text, int from) {
 		int at = text.indexOf('\n', from);
 		return at < 0 ? text.length() : at;
+	}
+
+	/** 去掉 {@code <?xml ...?>} 声明：补壳时由生成器自己写一份。 */
+	private static String stripDeclaration(String content) {
+		int at = content.indexOf("<?xml");
+		if (at < 0) {
+			return content;
+		}
+		int end = content.indexOf("?>", at);
+		return end < 0 ? content : content.substring(0, at) + content.substring(end + 2);
 	}
 }

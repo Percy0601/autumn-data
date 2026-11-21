@@ -94,7 +94,7 @@ class MetaMapperDialectTest {
 		assertThat(page.content()).hasSize(1);
 
 		// 默认语句按表结构生成，SQL 用当前方言的标识符引号；分页与命名语句走同一套 XML。
-		assertThat(client.count("dialect_order", params())).isEqualTo(2);
+		assertThat(page.total()).isEqualTo(2);
 		assertThat(client.sqlFor("dialect_order", "findList", params("status", 1)).sql())
 				.contains(dialect.quoteIdentifier("order_no"))
 				.contains("FROM " + dialect.quoteIdentifier("dialect_order"));

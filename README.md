@@ -41,7 +41,7 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 - [x] compiler：解析不了的接口方法（未知属性/关键词、参数或返回类型不符、`Distinct`/`First`/`deleteBy`/两层以上关联）在**方法声明处**报错，不再静默跳过后由 javac 报「实现类未覆盖…」
 - [x] 一次性取数上下文（`AutumnDataContextHolder`，按线程保存 + `wrap` 线程池透传）：分页关联加载三态（`DEFAULT` 阈值级联 / `CASCADE` 强制级联 / `DISABLED` 强制关闭）与**字段投影**（`selectFields` / `excludeFields` 运行期真裁剪 `SELECT` 列清单，主键与多对一外键编译期判定为不可省略，级联不被裁剪打断）；被最近一次取实体行的查询消费后自动清除，无需手动 `clear`
 - [x] starter 多数据源接管（`autumn.data.meta.enabled=true`，默认关闭）：`SpringMetaDataSource` 继承 Spring 的 `AbstractDataSource` 成为应用唯一的 `DataSource`（配置排在 `DataSourceAutoConfiguration` 之前，Boot 建池自动退让），底层就是 `MetaDataSource` 注册表；默认池参数仍来自 `spring.datasource.*`（含 `spring.datasource.hikari.*` 调优项），额外池 `autumn.data.meta.pools.<名称>.*` 懒建 + 空闲回收，运行期 `register(name, supplier)` 可继续追加；Spring 事务只绑默认池，`@Transactional` 提交/回滚实测不变（using 模块有示例与集成测试）
-- [x] `autumn-data-meta-jdbc` 动态表 CRUD：`MetaMapper` 静态门面 + `of(池, 命名空间)` 绑定客户端 + `DatabaseMetaData` 元数据快照 + `refresh` 热更新；查询条件 = 参数实体 + XML `<if>`，写入范围 = 实体变更集（`changed('col')`），删除语义由 XML 的 `delete` 语句决定（有逻辑删除列默认逻辑删除、否则物理删除）；47 个 H2 用例 + using 模块 6 个上层用法示例覆盖「建表 → 不重启读写 → 加列 refresh → 复合主键 → 默认语句自动生成块/手写文件不改写/自定义语句保留 → 名字忽略大小写/注入拒绝 → 手写 SQL → 代码注册语句 → 缓存分级清理与 reload」
+- [x] `autumn-data-meta-jdbc` 动态表 CRUD：`MetaMapper` 静态门面 + `of(池, 命名空间)` 绑定客户端 + `DatabaseMetaData` 元数据快照 + `refresh` 热更新；查询条件 = 参数实体 + XML `<if>`，写入范围 = 实体变更集（`changed('col')`），删除语义由 XML 的 `delete` 语句决定（有逻辑删除列默认逻辑删除、否则物理删除）；47 个 H2 用例 + using 模块 6 个上层用法示例覆盖「建表 → 不重启读写 → 加列 refresh → 复合主键 → 默认语句落 XML（七条生成块，手写文件首次访问自动插入）→ 自定义语句保留/覆盖 → 名字忽略大小写/注入拒绝 → 缓存分级清理与 reload」
 - [ ] 动态表 CRUD 接入 Spring 事务（当前单方法内自提交，跨方法 `@Transactional` 暂不生效）
 - [ ] `OrderBy` 之外的排序入参（`findAllBy(Sort)`）与 `Pageable` 排序
 - [ ] `autumn-data-meta-jdbc` 同步去 Spring 依赖（同样挪到各自 starter）
@@ -116,11 +116,12 @@ MetaMapper.of("tenant-a", "erp").findList("form_order", query);   // 绑定数�
 - 结构指纹参与包名：加列/改类型后 `MetaMapper.refresh("form_order")` 会生成新类，已取到的旧实例仍可用，不会同名重定义；
 - `autumn.data.meta.mapper.meta-directory=autumn-meta` 是唯一的落盘开关：三类产物分别落在它的 `meta-class/`（元类定义 JSON）、`entity/`（生成的实体 `.java`，可查看也可固化）、`sql/`（语句 XML，其下再按 `数据源/命名空间/表名.xml` 分层）三个固定子目录里。空串表示纯内存模式；**实体默认全程内存编译**，不建临时目录、不落 `.class`；运行期需要完整 JDK（`javax.tools`），JRE 上会明确报错；
 - 元数据从 `DatabaseMetaData` 读取，直接填入 `MetaClass` / `MetaProperty`（表名 = `MetaClass.name`、schema = `namespace`、列 = properties）；建表/加列**提交后**调 `MetaMapper.refresh("form_order")` 换快照，不重启；
-- **SQL 只有一个来源：XML 语句文件**：七条默认语句（`findList/findPage/findOne/findById/save/update/delete`）由框架按表结构生成在 `GENERATED START/END` 之间，标记之外的自定义语句归使用方所有。核心 CRUD 一律读文件里同 id 的语句；手写 SQL（下一条）与代码注册语句是同一套语法的临时用法，**不构成第二套语句库**。详见下一节；
+- **SQL 只有一个来源：XML 语句文件**：七条默认语句（`findList/findPage/findOne/findById/save/update/delete`）由框架按表结构生成在 `GENERATED START/END` 之间，**并写进 XML**——手写文件第一次被访问时，框架会把生成块插到 `<mapper>` 开头，`findOne` 之类的 SQL 在文件里看得见、也改得动。标记之外的自定义语句归使用方所有；
 - **查询条件 = 参数实体 + XML `<if>`**：传 `MetaClass`，赋了值的列才进 WHERE；比较、模糊、`IN`、排序等复杂条件写在 XML 自定义语句里，不在 Java 侧现拼 SQL。**写哪几列 = 实体变更集**：默认 `save`/`update` 用内置谓词 `changed('col')`，「显式置 NULL」与「这一列没动」是两件事；
-- **所有缓存都有界且弹性**：表结构快照、手工登记覆盖、动态实体类、语句 AST、代码注册语句、SQL 执行计划、池 → client 七处各有独立上限（默认 10_000），触顶按 LRU 淘汰最久未访问的冷条目，下次访问自动懒加载重建——包括手工 `register` 的覆盖（淘汰后回源到 `DatabaseMetaData`）和按池名的 client。实现是 JDK 自带的 `LinkedHashMap(accessOrder)` + 锁（`BoundedCache` 接口刻意对齐 Caffeine `Cache` 的方法名与语义，将来换实现只改 `BoundedCaches` 工厂），**不引入任何缓存库、不引入 Spring**；
-- **缓存可以按层清、也可以立即重建**：`clearTableCache(table)` 只丢 `MetaTable` 快照（下次回源 `DatabaseMetaData`，不动实体类）、`clearEntityCache(table)` 只丢编译出来的 `MetaClass` 子类、`clearStatementCache(table)` 只丢语句 AST 与执行计划、`clearCache(table)` 三样一起（`refresh` 是它的别名）、`reload(table)` 则是「清完立刻回读 + 重新编译」，表被删或编译失败当场抛错而不是等下一次查询；`cacheStats()` 给出各级条目数与上限。代码里 `registerStatement` 注册的语句由代码持有，任何清理都不会撤销；
-- **手写 SQL 不用建文件**：`findListBySql / findOneBySql / findPageBySql / countBySql / executeBySql / sqlForText` 直接吃一段 SQL，`#{name}` 走 JDBC 绑定、`${name}` 只放标识符、`${table}` 由方言填表名；裸 `?` 在解析期就被拒绝（无名槽判不了列类型、进不了计划缓存）。同一段 SQL 还可以 `registerStatement(table, id, sql)` 注册成命名语句，之后 `selectList/selectOne/sqlFor` 按 id 复用（同 id 覆盖，`refresh` 不撤销）；解析、绑定、类型收口、计划缓存与 XML 里的 `<select>` 完全同一条路径；
+- **API 只留常用路径**：读是 `findById/findOne/findList/findPage` 四条，总数就是 `findPage(...).total()`、存在性就是 `findOne(...).isPresent()`；`findByKey/count/exists/findList(limit)` 这些同义写法不再出现在静态门面上，需要限行或特殊计数时走命名语句（`selectPage(...).total()` / `selectCount`）或 `defaultClient()`；
+- **所有缓存都有界且弹性**：表结构快照、动态实体类、语句 AST、SQL 执行计划、池 → client 五处各有独立上限（默认 10_000），触顶按 LRU 淘汰最久未访问的冷条目，下次访问自动懒加载重建。实现是 JDK 自带的 `LinkedHashMap(accessOrder)` + 锁（`BoundedCache` 接口刻意对齐 Caffeine `Cache` 的方法名与语义，将来换实现只改 `BoundedCaches` 工厂），**不引入任何缓存库、不引入 Spring**；
+- **缓存可以按层清、也可以立即重建**：静态门面只有 `refresh(table)`（三样一起清）和 `cacheStats()`；`defaultClient()` 上还有 `clearTableCache` / `clearEntityCache` / `clearStatementCache` 的分级清理，以及 `reload(table)`（清完立刻回读 + 重新编译，表被删或编译失败当场抛错）。语句只有 XML 一个来源，清理只丢解析结果与执行计划，磁盘文件不动；
+- **手改 SQL 就在 XML 里改**：三条 select 共用 `__autumn_where` 条件片段、共用 `__autumn_columns` 列清单，改条件/列只动这两处；某条语句要完全换写法，就把它复制到标记之后的自定义区（同名 id 后出现者优先）。Java 侧不再接受直接传一段 SQL；
 - 文件名与列名按**忽略大小写**对齐：H2/Oracle 元数据给的是大写名，手写文件多按 MySQL 习惯写小写，`demo_order.xml` 配 `DEMO_ORDER` 这张表、`#{order_no}` 配 `ORDER_NO` 这一列都能对上；
 - **删除看 XML 里的 `delete` 语句**：有逻辑删除列时默认生成 `UPDATE ... SET deleted_flag = 1`，没有时生成物理 `DELETE`；使用方可在自定义区覆盖 `delete`。`deleted_flag` / `del_flag` / `is_deleted` 命中后查询自动追加 `= 0`；
 - `findList` 默认最多 1000 行，多数据源与业务划分按 `of(池, 命名空间)` 绑定句柄而不是 ThreadLocal；
@@ -148,7 +149,7 @@ List<MetaClass> rows = client.findList("form_order", params);   // 执行文件�
 client.selectList("form_order", "findByNo", params);           // 执行自定义区里的语句
 client.selectCount("form_order", "countDraft", params);
 client.execute("form_order", "voidByNo", params);
-client.statementIds("form_order");                             // 七条默认 + 自定义 + 代码注册
+client.statementIds("form_order");                             // 七条默认 + 自定义语句
 client.ensureStatementFile("form_order");                      // 显式生成 / 更新文件并返回位置
 ```
 
@@ -157,13 +158,22 @@ client.ensureStatementFile("form_order");                      // 显式生成 /
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <mapper namespace="tenant-a/erp/form_order">
-  <!-- ===== AUTUMN-DATA GENERATED START fingerprint=1-xxxx ===== -->
+  <!-- ===== AUTUMN-DATA GENERATED START fingerprint=3-xxxx ===== -->
   <!-- 本块由框架按表结构生成，表结构变化时只重写本块；手工改动会被覆盖。 -->
     <sql id="__autumn_columns">"id", "order_no", "amount", "status"</sql>
-    <select id="findList"> ... </select>
-    <select id="findPage"> ... </select>
-    <select id="findOne"> ... </select>
-    <select id="findById"> ... </select>
+    <sql id="__autumn_where">
+        <where>
+            AND deleted_flag = 0
+            <if test="order_no != null">AND order_no = #{order_no}</if>
+            <if test="status != null">AND status = #{status}</if>
+        </where>
+    </sql>
+    <select id="findList">SELECT <include refid="__autumn_columns"/> FROM ${table}
+        <include refid="__autumn_where"/> ORDER BY id</select>
+    <select id="findPage"> ... 同上 ... </select>
+    <select id="findOne"> ... 同上 ... </select>
+    <select id="findById">SELECT <include refid="__autumn_columns"/> FROM ${table}
+        WHERE id = #{id} AND deleted_flag = 0</select>
     <insert id="save"> ... changed('order_no') ... </insert>
     <update id="update"> ... changed('status') ... </update>
     <update id="delete"> ... </update>
@@ -176,11 +186,11 @@ client.ensureStatementFile("form_order");                      // 显式生成 /
 </mapper>
 ```
 
-- **七条默认语句一定可用**：文件不存在时框架生成完整文档；只读 classpath / 纯内存模式不落盘，解析出的默认语句在内存补齐；没有生成块的手写文件也是内存补齐，且文件一个字不改写。
-- **表结构变化只重写生成块**：标记头带结构指纹（生成器版本 + 表结构），指纹变了只替换 START/END 之间那一段；标记之前的注释、标记之后的自定义语句、缩进与空行逐字保留。想让框架维护默认语句就保留这对标记，纯手写资产就不要写它们。
-- **自定义语句按 id 调用**：`sqlFor`（只抽取不执行）、`selectList` / `selectOne` / `selectCount` / `execute`；`<select>` 走查询，`<insert>/<update>/<delete>` 走写。自定义区可以覆盖同名默认 id（文件里已有的同名语句优先）。
+- **生成语句落进 XML**：文件不存在时框架生成完整文档；手写文件没有生成块时，第一次访问会把七条默认语句插到 `<mapper>` 开头，`findOne/findList` 等 SQL 在文件里可见、可改；只读 classpath / 纯内存模式（`generate-files=false`）不落盘，改写结果只在内存生效。
+- **表结构变化只重写生成块**：标记头带结构指纹（生成器版本 + 表结构），指纹变了只替换 START/END 之间那一段；标记之前的注释、标记之后的自定义语句、缩进与空行逐字保留。
+- **自定义语句按 id 调用**：`sqlFor`（只抽取不执行）、`selectList` / `selectOne` / `selectCount` / `selectPage` / `execute`；`<select>` 走查询，`<insert>/<update>/<delete>` 走写。自定义区可以覆盖同名默认 id（文件里后出现的同名语句优先）。
 - **删除由 `delete` 语句决定**：有逻辑删除列时默认生成逻辑删除 `UPDATE`，没有时生成物理 `DELETE`；在自定义区覆盖 `delete` 即可换语义。
-- **代码注册是同一套语法的内存覆盖层**：`registerStatement(table, id, sql)` 优先级高于文件，`refresh` 不撤销，只有 `unregisterStatement` 才移除。
+- **改默认 SQL 的姿势**：条件只改 `__autumn_where`、列清单只改 `__autumn_columns`，三条 select 跟着变；整条语句不满意就复制到标记之后重写同 id，框架下次刷生成块也不会动它。
 - **懒加载 + 有界缓存**：构造引擎时不扫目录、不读任何文件；某个 (数据源, 命名空间, 表) 第一次访问才解析。磁盘文件按「修改时间 + 长度」自动重读，classpath / jar 内资源读一次固定；结构指纹也参与判活，表结构一变就重新生成并重新解析，不需要显式 `refresh`。系统属性 `-Dautumn.data.meta.sql.root=/path/to/sql` 可把语句根指到磁盘上（开发期改完即时生效）。
 - 文件名与列名按忽略大小写对齐；`<mapper>` 壳与 `namespace` 可以省略，解析前会补齐。语法就是静态实体那套 XML 方言（`#{}/${}/<if>/<choose>/<foreach>/<where>/<trim>/<sql>/<include>/<resultMap>`），另加框架内置谓词 `changed('col')`（读实体变更集，区分「这一列没动」与「显式置 NULL」）。
 

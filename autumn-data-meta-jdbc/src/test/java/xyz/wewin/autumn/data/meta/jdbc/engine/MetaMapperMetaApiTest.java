@@ -5,6 +5,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -103,11 +104,12 @@ class MetaMapperMetaApiTest {
 		this.client.save(row("D001", "1.00", 1));
 		this.client.save(row("D002", "2.00", 1));
 
-		assertThat(this.client.statementIds("form_order")).contains("findByNo", "findList", "delete");
+		assertThat(this.client.statementIds("form_order")).contains("findByNo", "findList", "delete", "findOne");
 		assertThat(this.client.selectList("form_order", "findByNo", params("order_no", "D002")))
 				.extracting(row -> row.getString("order_no")).containsExactly("D002");
-		// 手写文件没有 GENERATED 标记：框架一个字都不动，默认语句只在内存里补齐。
+		// 这份客户端是只读模式（generateFiles=false）：默认语句只在内存补齐，磁盘文件保持原样。
 		assertThat(Files.readString(file)).isEqualTo(handwritten);
+		assertThat(this.client.statementIds("form_order")).contains("findOne", "findList", "findByNo");
 	}
 
 	@Test
@@ -126,27 +128,27 @@ class MetaMapperMetaApiTest {
 	}
 
 	@Test
-	void deleteUsesLogicDeleteWhenTheTableHasALogicDeleteColumn() {
+	void deleteUsesLogicDeleteWhenTheTableHasALogicDeleteColumn() throws Exception {
 		MetaClass saved = this.client.save(row("F001", "1.00", 1));
 
 		assertThat(this.client.delete(saved)).isEqualTo(1);
 		assertThat(this.client.findById("form_order", saved.get("id"))).isEmpty();
 		// 逻辑删除只是把标记列置 1，行还在
-		assertThat(this.client.countBySql("form_order", "SELECT COUNT(*) FROM form_order", null)).isEqualTo(1);
+		assertThat(physicalRows()).isEqualTo(1);
 	}
 
 	@Test
-	void deleteUsesPhysicalDeleteWithoutALogicDeleteColumn() {
+	void deleteUsesPhysicalDeleteWithoutALogicDeleteColumn() throws Exception {
 		MetaTableRegistry plain = new MetaTableRegistry(this.dataSource, new H2Dialect(), Set.of());
 		MetaMapperClient noLogicDelete = client("test", plain);
 		MetaClass saved = noLogicDelete.save(row("G001", "1.00", 1));
 
 		assertThat(noLogicDelete.delete(saved)).isEqualTo(1);
-		assertThat(noLogicDelete.countBySql("form_order", "SELECT COUNT(*) FROM form_order", null)).isZero();
+		assertThat(physicalRows()).isZero();
 	}
 
 	@Test
-	void customDeleteStatementOverridesTheGeneratedDefault() throws IOException {
+	void customDeleteStatementOverridesTheGeneratedDefault() throws Exception {
 		write("test", DEFAULT_NAMESPACE, """
 				<mapper namespace="test/default/form_order">
 				    <delete id="delete">DELETE FROM form_order WHERE id = #{id}</delete>
@@ -156,7 +158,7 @@ class MetaMapperMetaApiTest {
 
 		// 即使表配了逻辑删除列，文件里显式写 <delete> 就按物理删除执行。
 		assertThat(this.client.delete(saved)).isEqualTo(1);
-		assertThat(this.client.countBySql("form_order", "SELECT COUNT(*) FROM form_order", null)).isZero();
+		assertThat(physicalRows()).isZero();
 	}
 
 	@Test
@@ -214,6 +216,16 @@ class MetaMapperMetaApiTest {
 		Files.createDirectories(file.getParent());
 		Files.writeString(file, content, StandardCharsets.UTF_8);
 		return file;
+	}
+
+	/** 绕过语句库直接数物理行数：验证逻辑删除 / 物理删除的落库效果。 */
+	private long physicalRows() throws Exception {
+		try (Connection connection = this.dataSource.getConnection();
+				Statement statement = connection.createStatement();
+				ResultSet rs = statement.executeQuery("SELECT COUNT(*) FROM form_order")) {
+			rs.next();
+			return rs.getLong(1);
+		}
 	}
 
 	/** 待写入的实体：用 newEntity 拿到带表名的实例。 */

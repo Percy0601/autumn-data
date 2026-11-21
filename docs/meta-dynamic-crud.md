@@ -184,13 +184,15 @@ MetaClass query = new MetaClass();
 query.set("status", 1);
 MetaMapper.findOne("form_order", query);
 MetaMapper.findList("form_order", query);
-MetaMapper.findPage("form_order", query, Pageable.of(0, 20));
-MetaMapper.count("form_order", query); MetaMapper.exists("form_order", query);
+Page<MetaClass> page = MetaMapper.findPage("form_order", query, Pageable.of(0, 20));
+long total = page.total();                                               // 总数 = 分页的 total
+boolean present = MetaMapper.findOne("form_order", query).isPresent();   // 存在性 = findOne
 
 // 复杂条件（比较 / 模糊 / IN / 排序）写在 XML 自定义语句里，按 id 调用
 MetaClass range = new MetaClass();
 range.set("minAmount", new BigDecimal("50"));
 MetaMapper.defaultClient().selectList("form_order", "highValue", range);
+MetaMapper.defaultClient().selectPage("form_order", "highValue", range, Pageable.of(0, 20));
 
 // 新增：实体上赋过值的列才进 INSERT，自增主键回填到同一个实体上
 MetaClass order = MetaMapper.newEntity("form_order");
@@ -202,10 +204,12 @@ MetaMapper.saveAll(List.of(order, MetaMapper.newEntity("form_order")));   // 列
 // 部分更新：改过的列才进 SET，赋 null 就是真的写 NULL
 order.set("status", 2);
 MetaMapper.update(order);
-MetaClass byKey = MetaMapper.newEntity("form_order");                     // 复合主键按主键读写
+
+// 复合主键：把每个主键列都填进参数实体，走 findOne（不再有 findByKey）
+MetaClass byKey = MetaMapper.newEntity("form_order");
 byKey.set("tenant", "T1");
 byKey.set("order_no", "A001");
-MetaMapper.findByKey(byKey);
+MetaMapper.findOne("form_order", byKey);
 
 // 删除：执行 XML 里的 delete 语句
 MetaMapper.delete(order);
@@ -220,38 +224,28 @@ client.selectOne("form_order", "byOrderNo", query);
 client.selectCount("form_order", "countDraft", query);
 client.execute("form_order", "voidByNo", query);
 MarkedSql sql = client.sqlFor("form_order", "findByNo", query);          // 只看文本与绑定值，不执行
-client.statementIds("form_order");                                       // 七条默认 + 自定义 + 代码注册
+client.statementIds("form_order");                                       // 七条默认 + 自定义
 client.ensureStatementFile("form_order");                                // 显式生成 / 更新文件
 
-// 手写 SQL：不落文件、不注册，即查即写（#{...} 绑定、${table} 由方言填表名）
-MetaClass q = new MetaClass();
-q.set("status", 1);
-q.set("minAmount", new BigDecimal("50"));
-List<MetaClass> rows = MetaMapper.findListBySql("form_order",
-        "SELECT id, order_no, amount FROM ${table} "
-        + "WHERE status = #{status} AND amount >= #{minAmount} ORDER BY amount DESC", q);
-Page<MetaClass> page = MetaMapper.findPageBySql("form_order",
-        "SELECT id, order_no, amount FROM ${table} WHERE status = #{status}", null, q, Pageable.of(0, 20));
-long total = MetaMapper.countBySql("form_order",
-        "SELECT COUNT(*) FROM ${table} WHERE status = #{status}", q);
-int updated = MetaMapper.executeBySql("form_order",
-        "UPDATE ${table} SET remark = #{remark} WHERE id = #{id}", q);
-MarkedSql preview = MetaMapper.sqlForText("form_order", "SELECT * FROM ${table} WHERE id = #{id}", q);
+// 改 SQL：直接在语句 XML 里改；条件片段与列清单是共用入口
+//   __autumn_where    三条 select 共用的 WHERE
+//   __autumn_columns  列清单
+// 整条语句不想要默认写法，就在 GENERATED END 之后写同 id 覆盖。
 
-// 也可以把手写 SQL 注册成命名语句，之后按 id 复用（同 id 覆盖，refresh 不撤销）
-client.registerStatement("form_order", "hotOrders",
-        "SELECT id, order_no, amount FROM ${table} WHERE status = #{status} ORDER BY amount DESC");
-client.selectList("form_order", "hotOrders", query);
-client.unregisterStatement("form_order", "hotOrders");
-
-// 缓存分级清理与重新加载
-MetaMapper.clearTableCache("form_order");       // 只丢 MetaTable 快照，下次访问回源 DatabaseMetaData
-MetaMapper.clearEntityCache("form_order");      // 只丢编译出来的 MetaClass 子类，下次重新生成 + 编译
-MetaMapper.clearStatementCache("form_order");   // 只丢语句 AST 与执行计划
-MetaMapper.clearCache("form_order");            // 三样一起清（refresh 是它的别名）
-MetaClass rebuilt = MetaMapper.reload("form_order");  // 清缓存 + 立即回读 + 立即重编（失败当场暴露）
-MetaMapper.cacheStats();                        // 各级条目数与上限，运维巡检用
+// 缓存：日常 refresh；分级清理 / 立即重建在 client 上
+MetaMapper.refresh("form_order");                       // 元数据 + 实体类 + 语句 + 计划，一起清
+MetaMapper.cacheStats();                                // 各级条目数与上限，运维巡检用
+MetaMapper.defaultClient().clearTableCache("form_order");      // 只丢 MetaTable 快照
+MetaMapper.defaultClient().clearEntityCache("form_order");     // 只丢编译出来的 MetaClass 子类
+MetaMapper.defaultClient().clearStatementCache("form_order");  // 只丢语句 AST 与执行计划
+MetaClass rebuilt = MetaMapper.defaultClient().reload("form_order");  // 清缓存 + 立即回读 + 立即重编
 ```
+
+静态门面只保留常用路径：`findById/findOne/findList/findPage` 四条读，`save/saveAll/update/delete`
+四条写，`selectList/selectOne/selectCount/selectPage/execute/sqlFor` 六个命名语句入口，加上
+`install/of/engine/newEntity/entityType/statementIds/ensureStatementFile/refresh/cacheStats`。
+`findByKey`、`count`、`exists`、`findBySql` 系列已删除——都能由上面几条一行替代；
+限行查询 `findList(table, params, limit)` 只在 `MetaMapperClient` 上保留（压测/批量拉取用）。
 
 列以外的东西（`<if test>` 的开关、`<foreach>` 的集合、`${orderBy}` 的排序字段）照样写在同一个参数实体上：
 它们不是列，就落在实体的动态属性里，`getProperties()` 会一并摊出来。表名也读自实体，所以
@@ -271,16 +265,17 @@ MetaMapper.cacheStats();                        // 各级条目数与上限，�
 
 | 入口 | 清掉什么 | 何时用 |
 | --- | --- | --- |
+| `refresh(table)` | 元数据 + 实体类 + 语句 + 计划，一起清 | 建表 / 加列 / 删列提交之后的标准动作（静态门面唯一入口） |
 | `clearTableCache(table)` | 只清 `MetaTable` 快照（含手工覆盖），下次访问回源 `DatabaseMetaData` | 怀疑结构读错了 / 表刚被重建，但不想让所有行换 Class |
 | `clearEntityCache(table)` | 只清该表编译出的 `MetaClass` 子类，下次访问重新生成 + 编译 | 换了代码生成器 / 想强制重编一次 |
 | `clearStatementCache(table)` | 只清语句 AST 与执行计划 | 改了语句 XML、想丢掉旧 AST；不动结构与实体类 |
-| `clearCache(table)` | 以上三样一起清（`refresh(table)` 是它的别名） | 建表 / 加列 / 删列提交之后的标准动作 |
 | `reload(table)` | 先清三样，再**立即**回读元数据并重编实体类 | 需要“现在就成功”：表被删、元数据读失败、javac 编译失败会当场抛出，而不是等下一次查询 |
 | `reloadAll()` | 当前池里已有快照的表逐张 `reload` | 批量改表之后的一次性重建 |
 | `cacheStats()` | —（只读诊断） | 打印各级条目数与上限 |
 
-`MetaMapper` 静态门面提供同名方法（默认池）；`MetaMapper.clearAllCaches()` 走引擎、清掉所有已实例化池的缓存。
-代码里 `registerStatement` 注册的语句由代码持有，以上任何清理（包括 `refresh`）都不会撤销它们。
+静态门面只留 `refresh(table)` / `refreshAll()` / `cacheStats()`；分级清理与 `reload` 在
+`MetaMapper.defaultClient()` 上，第一次用的是默认池。所有清理都只动内存里的派生数据，
+语句 XML 文件不会被删、也不会被重写（只有结构指纹变化时才重写 GENERATED 块）。
 
 - 旧快照与旧生成类上正在执行的语句不受刷新影响，刷新只影响下一次解析。
 
@@ -295,7 +290,6 @@ MetaMapper.cacheStats();                        // 各级条目数与上限，�
 | `MetaEntityRegistry` | 表名 + 结构指纹 | 一个编译出的 `Class` + 内存 ClassLoader | 重新生成/编译一份同类名的类（新 ClassLoader） |
 | `MetaSqlFileStore.files` | 数据源/命名空间/表 | 一份 XML 解析出的语句 AST | 重读已有的 XML 文件（结构指纹变了会重新生成 GENERATED 块） |
 | `MetaSqlFileStore.defaults` | 结构指纹 | 七条默认语句 AST（避免重复解析生成模板） | 按表结构重新解析一份生成模板 |
-| `MetaSqlFileStore.declared` | 数据源/命名空间/表 → 语句 id | 一条代码注册的语句 AST | 丢失后需代码重新 `registerStatement`（不落盘、无文件可回源） |
 | `MetaMapperEngine.clients` | 池名 | 一套 Registry + 连接源 | 按需重建 client（旧 client 上执行中的操作持有引用，不受影响） |
 
 其中实体类缓存最重，只堵表结构快照没有意义。以上统一走 `BoundedCache`，默认上限
@@ -381,56 +375,26 @@ autumn.data.meta.mapper.table-cache-size=10000
 - **表结构变化只重写生成块**：标记头里的结构指纹 = 生成器版本 + `MetaTable#fingerprint()`。
   指纹变了，`MetaSqlGenerator.merge` 只替换 START/END 之间那一段；标记之前的注释、
   标记之后的自定义语句、缩进与空行逐字保留。
-- **七条默认语句一定可用**：文件不存在且磁盘可写时生成完整文档；只读 classpath / 纯内存模式
-  （`generate-files=false`）不落盘，默认语句在内存补齐；没有生成块的手写文件也是内存补齐，
-  且文件一个字不改写——它被视为使用方资产。想让框架维护默认语句，就保留这对标记。
+- **七条默认语句落到 XML**：文件不存在且磁盘可写时生成完整文档；**没有生成块的手写文件，
+  第一次访问会被插入默认语句生成块**，`findOne/findList` 等 SQL 在文件里可见、可改。
+  只读 classpath / 纯内存模式（`generate-files=false`）不落盘，改写结果只在内存生效。
 - **自定义语句按 id 调用**：`sqlFor`（只抽取不执行）、`selectList` / `selectOne` / `selectCount` /
-  `execute`；`<select>` 走查询，`<insert>/<update>/<delete>` 走写。自定义区可以覆盖同名默认 id
-  （文件里已有的同名语句优先）。`delete` 语句决定删除语义：有逻辑删除列时默认生成逻辑删除
-  `UPDATE`，没有时生成物理 `DELETE`，覆盖它即可换语义。
-- **代码注册是同一套语法的内存覆盖层**：`registerStatement` 优先级高于文件，`refresh` 不撤销。
-
-### 手写 SQL（不落文件）
-
-低代码平台里很多查询是一次性的（设计器里临时拼条件、报表按客户要求改一版），为它们各建一个
-XML 文件并不划算。`MetaMapper` 因此补了一条「直接给一段 SQL」的入口：**解析、绑定、类型收口、
-计划缓存与文件里的 `<select>` 完全共用一套**，只是没有 XML 标签。
-
-```java
-// 一次性：不建文件、不注册
-MetaMapper.findListBySql("form_order",
-        "SELECT id, order_no, amount FROM ${table} WHERE status = #{status}", params);
-MetaMapper.findPageBySql("form_order",
-        "SELECT id, order_no, amount FROM ${table} WHERE status = #{status}", null, params, Pageable.of(0, 20));
-MetaMapper.countBySql("form_order", "SELECT COUNT(*) FROM ${table} WHERE status = #{status}", params);
-MetaMapper.executeBySql("form_order", "UPDATE ${table} SET status = #{status} WHERE id = #{id}", params);
-
-// 命名：注册后可以按 id 复用，也可以被 selectList/selectOne/sqlFor 看到
-client.registerStatement("form_order", "hotOrders",
-        "SELECT id, order_no, amount FROM ${table} WHERE status = #{status} ORDER BY amount DESC");
-```
-
-语义与坑位：
-
-- `#{name}` → JDBC `?`（值永不进 SQL 文本）；`${name}` → 标识符片段，展开结果仍过白名单，
-  `${table}` 由客户端按方言填成 `"form_order"`；
-- **不接受裸 `?`**：没有名字的槽判不了列类型、进不了计划缓存，解析阶段就直接报错并提示改
-  `#{name}`（而不是等驱动报「占位符个数对不上」）；
-- 注释（`--` / `/* */`）与单引号字面量里的 `#{...}` 不当占位符；
-- 开头关键字决定入口：查询入口只收 `SELECT` / `WITH`，写入口收 `INSERT` / `UPDATE` / `DELETE`；
-  手写 `DELETE` 与 XML 自定义区的 `<delete>` 一样允许执行，删除语义由语句决定；
-- 分页时 `countSql` 留空会自动包成 `SELECT COUNT(*) FROM (原查询) autumn_page_count`；
-  内容与计数各自按自己的占位符顺序绑定，所以 `countSql` 不必与内容查询参数顺序一致；
-- 注册语句由代码持有，`refresh` / `clearCache` 不会撤销；同 id 重复注册即覆盖；
-  注册本身不要求表已存在（表可能是稍后才被设计出来的）。
+  `selectPage` / `execute`；`<select>` 走查询，`<insert>/<update>/<delete>` 走写。自定义区可以覆盖
+  同名默认 id（文件里后出现的同名语句优先）。`delete` 语句决定删除语义：有逻辑删除列时默认生成
+  逻辑删除 `UPDATE`，没有时生成物理 `DELETE`，覆盖它即可换语义。
+- **改默认 SQL 只动两处**：`__autumn_where` 是 findList/findPage/findOne 共用的 WHERE 片段，
+  `__autumn_columns` 是列清单；整条语句要换写法就复制到标记之后重写同 id。
 
 ### 谁读文件、谁不读
 
 | 入口 | SQL 来源 | 说明 |
 | --- | --- | --- |
-| `findById` / `findByKey` / `findOne` / `findList` / `findPage` / `count` / `exists` / `save` / `saveAll` / `update` / `delete` | 同一份 XML 里对应 id 的默认语句 | 七条默认语句一定可用（GENERATED 块或内存补齐），**核心 CRUD 也读文件** |
-| `sqlFor` / `selectList` / `selectOne` / `selectCount` / `execute` | 代码注册语句优先，其次文件里的自定义语句，其次默认语句 | 语句 id 就是注册时的 id / XML 里的 `id`；`<select>` 走查询，`<insert>/<update>/<delete>` 走写 |
-| `findListBySql` / `findOneBySql` / `findPageBySql` / `countBySql` / `executeBySql` / `sqlForText` | 调用方当场给的文本 | 一次性模板，不落文件、不进语句库；`#{...}` / `${...}` 语义与文件一致 |
+| `findById` / `findOne` / `findList` / `findPage` / `save` / `saveAll` / `update` / `delete` | 同一份 XML 里对应 id 的默认语句 | 七条默认语句写在 GENERATED 块里，**核心 CRUD 也读文件** |
+| `sqlFor` / `selectList` / `selectOne` / `selectCount` / `selectPage` / `execute` | 文件里的自定义语句，其次默认语句（同 id 覆盖） | 语句 id 就是 XML 里的 `id`；`<select>` 走查询，`<insert>/<update>/<delete>` 走写 |
+
+所有 SQL 都来自语句文件：Java 侧不再接受直接传一段 SQL（`findListBySql` / `registerStatement`
+这一层已删除）。一次性查询请写进 XML 的自定义区——语句文件随时可改、可 diff、可回滚，
+比藏在代码里的字符串更符合「唯一语句库」。
 
 默认语句本身就是一份可跑的样例：`<sql id="__autumn_columns">` 抽列清单、`<include>` 复用，
 `<where>` 里逐列 `<if test="col != null">` 拼等值条件并固定追加逻辑删除过滤，
@@ -464,7 +428,7 @@ params.set("status", 1);
 
 client.findList("form_order", params);                 // 该命名空间文件里的 findList
 client.selectList("form_order", "findByNo", params);  // 该命名空间文件里的自定义语句
-client.statementIds("form_order");                    // 七条默认 + 自定义 + 代码注册
+client.statementIds("form_order");                    // 七条默认 + 自定义语句
 client.ensureStatementFile("form_order");             // 显式生成 / 更新文件并返回位置
 ```
 
@@ -582,7 +546,7 @@ autumn.data.meta.mapper.logic-delete-columns=deleted_flag,del_flag,is_deleted
 | `update` | 部分更新：只 SET 改过的列，未改列保持原值，赋 `null` 就是真的写 NULL；WHERE 用实体上的主键；影响 0 行时不清变更集 |
 
 主键列不允许出现在 UPDATE 的 SET 里：脏主键直接抛错。取行的方式是 `findById`（单主键值）或
-`findByKey`（实体上的主键列，复合主键用这个），改完再 `update`。想绕过「先读后改」就写一条
+`findOne`（把主键列填进实体，复合主键用这个），改完再 `update`。想绕过「先读后改」就写一条
 按主键更新的命名语句（生成文件里的 `updateByKey` 就是这一条）。
 
 ## 安全边界
@@ -662,7 +626,7 @@ ThreadLocal 最多作为“请求级默认池”的便利糖，不能作为唯�
   覆盖运行期建表 → 不重启 CRUD → 加列 `refresh` → 逻辑/物理删除由语句决定 → 复合主键 →
   七条默认语句自动生成块 / 手写文件不改写 / 自定义语句保留 / 按数据源与命名空间分层 →
   名字忽略大小写对齐 → `#{}` 绑定与注入拒绝 → `${}` 白名单 → `<foreach>` / `<trim>` / `<choose>` /
-  `<resultMap>` → `changed('col')` 变更集 → 手写 SQL 与代码注册语句 → 表 / 实体 / 语句三级缓存分开清理与
+  `<resultMap>` → `changed('col')` 变更集 → 默认语句生成块落 XML 与手改入口 → 表 / 实体 / 语句三级缓存分开清理与
   `reload` → 生成类的真实字段类型 / 零反射源码 / 加列生成新类 / 源码落盘 / 投影缺列 /
   各缓存淘汰后可重建 / 并发单飞 / 连续改表。
   starter 装配与事务 40 个；using 模块 67 个（含 `MetaMapperXmlUsingTest` 6 个上层用法示例与

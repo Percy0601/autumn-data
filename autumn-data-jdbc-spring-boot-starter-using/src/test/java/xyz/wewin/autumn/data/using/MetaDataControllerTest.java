@@ -7,6 +7,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpRequest.BodyPublishers;
 import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 
@@ -19,6 +21,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.core.env.Environment;
 
 import xyz.wewin.autumn.data.common.meta.MetaClass;
+import xyz.wewin.autumn.data.meta.jdbc.MetaMapper;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
 import xyz.wewin.autumn.data.using.demo.controller.MetaDataController;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -48,7 +52,7 @@ class MetaDataControllerTest {
 
 	@Test
 	@Order(1)
-	void dynamicTableEndToEnd() {
+	void dynamicTableEndToEnd() throws Exception {
 		// ① 运行期建表：不重启服务，表结构与强类型实体类都在这一次调用里现生成
 		Map<String, Object> init = this.controller.init();
 		assertThat(init).containsEntry("seedRows", 3);
@@ -56,6 +60,20 @@ class MetaDataControllerTest {
 		assertThat(init.get("generatedEntity")).isEqualTo(Boolean.TRUE);
 		assertThat((String) init.get("entityClass")).isNotEqualTo(MetaClass.class.getName());
 		assertThat(init.get("columns").toString()).containsIgnoringCase("deleted_flag");
+
+		// ①-b 生成 SQL 落 XML：meta_demo_form.xml 里能直接看到 findOne / findList 等默认语句，
+		// 想改语义就改文件里的 SQL，不用回到 Java。
+		Path statementXml = MetaDirectories.of(
+				this.environment.getProperty("autumn.data.meta.mapper.meta-directory")).sqlDirectory()
+				.resolve(MetaMapper.engine().defaultPoolName()).resolve(MetaMapper.DEFAULT_NAMESPACE)
+				.resolve("meta_demo_form.xml");
+		assertThat(statementXml).isRegularFile();
+		String statementSql = Files.readString(statementXml);
+		assertThat(statementSql).contains("AUTUMN-DATA GENERATED START", "id=\"selectList\"");
+		for (String id : MetaMapper.DEFAULT_STATEMENT_IDS) {
+			assertThat(statementSql).contains("id=\"" + id + "\"");
+		}
+		assertThat(statementSql).contains("id=\"countVoided\""); // 手写自定义语句与默认语句共存
 
 		// ② 元数据：DECIMAL 列被识别成 BigDecimal，自增主键被标记
 		Map<String, Object> schema = this.controller.schema();
@@ -139,7 +157,7 @@ class MetaDataControllerTest {
 		// ⑫ 逻辑删除：查询自动过滤，显式按标志查行还在；删除语义由 XML 的 delete 语句决定
 		Map<String, Object> voided = this.controller.voidRow(1L);
 		assertThat(voided.get("visibleAfterVoid")).isEqualTo(Boolean.FALSE);
-		assertThat(voided).containsEntry("voidedRowsFoundByFlag", 1);
+		assertThat(voided).containsEntry("voidedRowsFoundByFlag", 1L);
 
 		Map<String, Object> summary = this.controller.summary();
 		assertThat(summary.get("initialized")).isEqualTo(Boolean.TRUE);

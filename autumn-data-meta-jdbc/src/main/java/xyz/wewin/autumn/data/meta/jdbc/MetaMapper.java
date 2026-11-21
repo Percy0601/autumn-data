@@ -5,7 +5,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
-import xyz.wewin.autumn.data.common.mapper.MapperDefinition;
 import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.jdbc.page.Page;
 import xyz.wewin.autumn.data.jdbc.page.Pageable;
@@ -28,11 +27,19 @@ import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
  * </pre>
  *
  * <p>标记之外的自定义语句归使用方所有：表结构变化时框架<b>只重写生成块</b>，其余内容逐字保留。
+ * 手写文件第一次被访问时框架会把生成块<b>插进文件</b>——{@code findOne} 之类的默认语句因此在 XML 里
+ * 看得见、也改得动；想换语义就在生成块之后写一条同 id 的自定义语句（后出现者优先）。
  * 文件读过后进有界缓存，磁盘文件按「修改时间 + 长度」自动重读，classpath 内资源只读一次。</p>
  *
  * <p><b>查询条件 = 参数实体 + {@code <if>}</b>：传一个 {@link MetaClass}，赋了值的列才进 WHERE；
  * 比较、模糊、IN、排序等复杂条件写在 XML 里（自定义语句用 {@code selectList/selectOne/selectCount/
- * execute} 按 id 调用），不在 Java 侧现拼 SQL。</p>
+ * selectPage/execute} 按 id 调用），不在 Java 侧现拼 SQL。</p>
+ *
+ * <p><b>门面只留常用路径</b>：读只有 {@code findById/findOne/findList/findPage} 四条，
+ * 总数就是 {@code findPage(...).total()}、存在性就是 {@code findOne(...).isPresent()}，
+ * 不再提供 {@code count/exists/findByKey} 这类换个写法的同义方法；限行/计数走分页或命名语句。
+ * 分级清缓存、重载、实体类诊断这些运维入口收敛到 {@link #defaultClient()}，静态门面只留
+ * {@link #refresh(String)} 与 {@link #cacheStats()}。</p>
  *
  * <p><b>写哪几列 = 实体的变更集</b>：默认 {@code save}/{@code update} 用框架内置谓词
  * {@code changed('col')}（{@link MetaClass#isChanged(String)}），因此「显式置 NULL」和
@@ -124,11 +131,6 @@ public final class MetaMapper {
 		return defaultClient().findById(tableName, id);
 	}
 
-	/** 按主键取一行，主键值读自实体（表名也读自实体）。 */
-	public static Optional<MetaClass> findByKey(MetaClass key) {
-		return defaultClient().findByKey(key);
-	}
-
 	/** 条件来自参数实体：赋了值的列按 XML 里的 {@code <if>} 进 WHERE，传 {@code null} 表示无条件。 */
 	public static Optional<MetaClass> findOne(String tableName, MetaClass params) {
 		return defaultClient().findOne(tableName, params);
@@ -138,20 +140,9 @@ public final class MetaMapper {
 		return defaultClient().findList(tableName, params);
 	}
 
-	public static List<MetaClass> findList(String tableName, MetaClass params, long limit) {
-		return defaultClient().findList(tableName, params, limit);
-	}
-
+	/** 分页：{@code page.total()} 就是满足条件的总行数，也是取总数的唯一入口。 */
 	public static Page<MetaClass> findPage(String tableName, MetaClass params, Pageable pageable) {
 		return defaultClient().findPage(tableName, params, pageable);
-	}
-
-	public static long count(String tableName, MetaClass params) {
-		return defaultClient().count(tableName, params);
-	}
-
-	public static boolean exists(String tableName, MetaClass params) {
-		return defaultClient().exists(tableName, params);
 	}
 
 	// ------------------------------------------------------------------
@@ -178,66 +169,40 @@ public final class MetaMapper {
 		return defaultClient().delete(entity);
 	}
 
-	/** 表结构变化后刷新默认池的元数据快照、动态实体类与语句缓存。 */
-	public static void refresh(String tableName) {
-		defaultClient().refresh(tableName);
-	}
-
 	// ------------------------------------------------------------------
-	// 手写 SQL / 自定义语句（默认池）
+	// 自定义语句：同一份 XML 里按 id 调用（默认池）
 	// ------------------------------------------------------------------
 
-	/**
-	 * 直接执行一段手写 SQL（{@code #{}} 绑定、{@code ${}} 标识符），不落语句文件。
-	 * 与命名语句共用一条执行路径：绑定、类型收口、计划缓存都一样。
-	 */
-	public static List<MetaClass> findListBySql(String tableName, String sql, MetaClass params) {
-		return defaultClient().findListBySql(tableName, sql, params);
+	/** 只抽取不执行：看看这条命名语句拼成了什么、绑了哪几个值。 */
+	public static MarkedSql sqlFor(String tableName, String statementId, MetaClass params) {
+		return defaultClient().sqlFor(tableName, statementId, params);
 	}
 
-	public static List<MetaClass> findListBySql(String tableName, String sql, MetaClass params, long limit) {
-		return defaultClient().findListBySql(tableName, sql, params, limit);
+	public static List<MetaClass> selectList(String tableName, String statementId, MetaClass params) {
+		return defaultClient().selectList(tableName, statementId, params);
 	}
 
-	public static Optional<MetaClass> findOneBySql(String tableName, String sql, MetaClass params) {
-		return defaultClient().findOneBySql(tableName, sql, params);
+	public static Optional<MetaClass> selectOne(String tableName, String statementId, MetaClass params) {
+		return defaultClient().selectOne(tableName, statementId, params);
 	}
 
-	public static long countBySql(String tableName, String sql, MetaClass params) {
-		return defaultClient().countBySql(tableName, sql, params);
+	/** 执行返回单个数字的 {@code <select>}（{@code COUNT(*)} 之类）。 */
+	public static long selectCount(String tableName, String statementId, MetaClass params) {
+		return defaultClient().selectCount(tableName, statementId, params);
 	}
 
-	/** 手写 SQL 分页；{@code countSql} 为空时自动包一层子查询计数。 */
-	public static Page<MetaClass> findPageBySql(String tableName, String sql, String countSql, MetaClass params,
+	/** 按命名语句分页：内容用语句本身，计数自动包一层子查询。 */
+	public static Page<MetaClass> selectPage(String tableName, String statementId, MetaClass params,
 			Pageable pageable) {
-		return defaultClient().findPageBySql(tableName, sql, countSql, params, pageable);
+		return defaultClient().selectPage(tableName, statementId, params, pageable);
 	}
 
-	/** 手写 INSERT / UPDATE / DELETE，返回影响行数。 */
-	public static int executeBySql(String tableName, String sql, MetaClass params) {
-		return defaultClient().executeBySql(tableName, sql, params);
+	/** 执行 {@code <insert>}/{@code <update>}/{@code <delete>} 语句，返回影响行数。 */
+	public static int execute(String tableName, String statementId, MetaClass params) {
+		return defaultClient().execute(tableName, statementId, params);
 	}
 
-	/** 只抽取不执行：查看手写 SQL 最终拼成的文本与绑定的实参。 */
-	public static MarkedSql sqlForText(String tableName, String sql, MetaClass params) {
-		return defaultClient().sqlForText(tableName, sql, params);
-	}
-
-	/** 把一段手写 SQL 注册成默认池的命名语句（同 id 覆盖，{@code refresh} 不会撤销）。 */
-	public static MetaMapperClient registerStatement(String tableName, String statementId,
-			MapperDefinition.StatementType type, String sql) {
-		return defaultClient().registerStatement(tableName, statementId, type, sql);
-	}
-
-	public static MetaMapperClient registerStatement(String tableName, String statementId, String sql) {
-		return defaultClient().registerStatement(tableName, statementId, sql);
-	}
-
-	public static boolean unregisterStatement(String tableName, String statementId) {
-		return defaultClient().unregisterStatement(tableName, statementId);
-	}
-
-	/** 该表全部可见的语句 id：七条默认 + 文件里的自定义 + 代码注册的。 */
+	/** 该表全部可见的语句 id：七条默认 + 文件里的自定义。 */
 	public static List<String> statementIds(String tableName) {
 		return defaultClient().statementIds(tableName);
 	}
@@ -248,54 +213,17 @@ public final class MetaMapper {
 	}
 
 	// ------------------------------------------------------------------
-	// 缓存：分级清理 / 重新加载 / 诊断（默认池）
+	// 缓存：日常刷新 / 诊断（默认池）；分级清理与重载走 defaultClient()
 	// ------------------------------------------------------------------
 
-	/** 只清该表的表结构快照（{@code MetaTable}），实体类与语句不动。 */
-	public static void clearTableCache(String tableName) {
-		defaultClient().clearTableCache(tableName);
-	}
-
-	public static void clearTableCache() {
-		defaultClient().clearTableCache();
-	}
-
-	/** 只清该表运行期编译的实体类（{@code MetaClass} 子类），表结构快照不动。 */
-	public static void clearEntityCache(String tableName) {
-		defaultClient().clearEntityCache(tableName);
-	}
-
-	public static void clearEntityCache() {
-		defaultClient().clearEntityCache();
-	}
-
-	/** 只清语句 AST 与执行计划缓存（代码注册的语句保留）。 */
-	public static void clearStatementCache(String tableName) {
-		defaultClient().clearStatementCache(tableName);
-	}
-
-	public static void clearStatementCache() {
-		defaultClient().clearStatementCache();
-	}
-
-	/** 清掉该表的全部派生缓存（元数据 + 实体类 + 语句 + 计划）。 */
-	public static void clearCache(String tableName) {
-		defaultClient().clearCache(tableName);
-	}
-
-	/** 清掉所有已创建池的派生缓存；代码注册的语句保留。 */
-	public static void clearAllCaches() {
-		engine().clearCaches();
-	}
-
-	/** 清缓存并立即重建（元数据当场回读、实体类当场编译），失败就在这一行暴露。 */
-	public static MetaClass reload(String tableName) {
-		return defaultClient().reload(tableName);
+	/** 表结构变化后的标准入口：清默认池的元数据快照、实体类、语句与计划缓存，下次访问自动重建。 */
+	public static void refresh(String tableName) {
+		defaultClient().refresh(tableName);
 	}
 
 	/** 默认池里已有快照的表全部重读一遍。 */
-	public static void reloadAll() {
-		defaultClient().reloadAll();
+	public static void refreshAll() {
+		defaultClient().refreshAll();
 	}
 
 	/** 默认池各级缓存的条目数与上限。 */
