@@ -53,8 +53,9 @@ import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
  *
  * <p>覆盖的能力：运行期建表不重启即 CRUD、按表结构运行期生成强类型实体（entityClass）、
  * 加列后 refresh 换实体类、参数实体 + XML 语句与分页、语句 XML 自动生成块与自定义语句、
- * 自定义语句的分页 / 写 / 按条件取一行、<b>跨表 JOIN 的自定义结果形状</b>（{@code resultType="map"} +
- * {@code selectMaps/selectMap/selectPageMaps}）、表结构 / 实体类 / 语句三级缓存的分开清理与重载、
+ * 自定义语句的分页 / 写 / 按条件取一行、<b>跨表 JOIN 的自定义结果形状</b>（{@code resultType="map"} /
+ * {@code "metaclass"} + {@code selectShape/selectShapeOne/selectShapePage}，每行是 {@link MetaClass}）、
+ * 表结构 / 实体类 / 语句三级缓存的分开清理与重载、
  * 逻辑删除自动过滤、列名与标识符白名单（防注入）、按池绑定的客户端与缓存诊断。</p>
  *
  * <p>启动：{@code mvn spring-boot:run -Dspring-boot.run.profiles=demo}（连本地 H2）。
@@ -184,29 +185,35 @@ public class MetaDataController {
 			    <select id="byFormNo">
 			        SELECT id, form_no, remark FROM ${table} WHERE form_no = #{formNo}
 			    </select>
-
-			    <!-- 跨表自定义形状：SQL 写在锚定表 meta_demo_form 的文件里，JOIN 另一张表 meta_demo_customer。
-			         resultType="map" 表示这一行按「结果集列标签 → 值」收口，不再硬套锚定表的生成实体；
-			         列由 SELECT 决定，客户名 / 区域这些锚定表没有的列也能带出来。 -->
-			    <select id="formWithCustomer" resultType="map">
-			        SELECT f.id, f.form_no, f.title, f.amount, f.status,
-			               c.customer_no, c.customer_name, c.region
-			        FROM ${table} f
-			        LEFT JOIN meta_demo_customer c ON c.customer_no = f.customer_no
-			        WHERE f.deleted_flag = 0
-			        <if test="status != null">AND f.status = #{status}</if>
-			        ORDER BY f.id
-			    </select>
-			    <select id="amountByCustomer" resultType="map">
-			        SELECT c.customer_no, c.customer_name,
-			               COUNT(*) AS order_count, SUM(f.amount) AS total_amount
-			        FROM ${table} f
-			        JOIN meta_demo_customer c ON c.customer_no = f.customer_no
-			        WHERE f.deleted_flag = 0
-			        GROUP BY c.customer_no, c.customer_name
-			        ORDER BY c.customer_no
-			    </select>
 			</mapper>
+			""";
+
+	/**
+	 * 跨表结果形状语句：单独写到 {@code meta_demo_form.vo.xml}，不再和实体 CRUD 混在同一份 XML。
+	 * 第一次 init 时落盘；之后这份文件归使用方，框架不再生成 / 覆盖，改 SQL 直接编辑文件即可。
+	 */
+	private static final String SHAPE_FORM_WITH_CUSTOMER = """
+			<select id="formWithCustomer" resultType="metaclass">
+			    SELECT f.id, f.form_no, f.title, f.amount, f.status,
+			           c.customer_no, c.customer_name, c.region
+			    FROM ${table} f
+			    LEFT JOIN meta_demo_customer c ON c.customer_no = f.customer_no
+			    WHERE f.deleted_flag = 0
+			    <if test="status != null">AND f.status = #{status}</if>
+			    ORDER BY f.id
+			</select>
+			""";
+
+	private static final String SHAPE_AMOUNT_BY_CUSTOMER = """
+			<select id="amountByCustomer" resultType="map">
+			    SELECT c.customer_no, c.customer_name,
+			           COUNT(*) AS order_count, SUM(f.amount) AS total_amount
+			    FROM ${table} f
+			    JOIN meta_demo_customer c ON c.customer_no = f.customer_no
+			    WHERE f.deleted_flag = 0
+			    GROUP BY c.customer_no, c.customer_name
+			    ORDER BY c.customer_no
+			</select>
 			""";
 
 	// ==================================================================
@@ -234,12 +241,16 @@ public class MetaDataController {
 				+ " deleted_flag INT DEFAULT 0)");
 		seedCustomers();
 		MetaMapper.refresh(TABLE); // 丢掉旧表结构快照 / 旧实体类 / 语句与计划缓存
-		writePresetStatementFile(); // 写一份手写语句区；首次访问时框架会把默认语句生成块插进去
+		writePresetStatementFile(); // 实体 CRUD 语句：一份使用方手写文件；首次访问时框架插入默认语句生成块
+		writePresetShapeStatements(); // VO 语句单独落 meta_demo_form.vo.xml；已有文件绝不覆盖
 		List<MetaClass> saved = MetaMapper.saveAll(seedRows());
 		this.log.info("runtime table {} created, {} rows seeded, entity={}; join table {} ready", TABLE, saved.size(),
 				MetaMapper.entityType(TABLE).getName(), CUSTOMER);
 		Map<String, Object> result = schema();
 		result.put("seedRows", saved.size());
+		result.put("statementFile", existingStatementFile() == null ? null : existingStatementFile().toString());
+		result.put("shapeStatementFile",
+				existingShapeStatementFile() == null ? null : existingShapeStatementFile().toString());
 		return result;
 	}
 
@@ -271,7 +282,6 @@ public class MetaDataController {
 		return linked("dropped", TABLE, "joinTableDropped", CUSTOMER,
 				"hint", "POST /metadata/init to rebuild it at runtime");
 	}
-
 	/**
 	 * 表结构快照：列名、Java 类型、JDBC 类型、主键/自增/可空全来自 DatabaseMetaData，
 	 * entityClass 是按这版结构在运行期编译出来的 MetaClass 子类（GENERIC 模式恒为 MetaClass）。
@@ -501,7 +511,9 @@ public class MetaDataController {
 				"listedRows", maps(listed), "selectCount", count,
 				"insertSql", insertSql.sql(), "insertValues", insertSql.values(),
 				"insertedRows", inserted, "updatedRows", updated,
-				"afterUpdateRemark", after.getString("remark"));
+				"afterUpdateRemark", after.getString("remark"),
+				"shapeStatementFile", existingShapeStatementFile() == null ? null
+						: existingShapeStatementFile().toString());
 	}
 
 	/**
@@ -578,11 +590,13 @@ public class MetaDataController {
 
 	/**
 	 * 跨表自定义查询：语句写在锚定表 {@code meta_demo_form.xml} 的自定义区，SQL 里 JOIN 第二张表
-	 * {@code meta_demo_customer}，XML 上声明 {@code resultType="map"}。
+	 * {@code meta_demo_customer}。两条语句故意用两种写法演示同一件事：
+	 * {@code formWithCustomer} 声明 {@code resultType="map"}（历史名字），
+	 * {@code amountByCustomer} 声明 {@code resultType="metaclass"}（显式名字）。
 	 *
-	 * <p>结果不再套锚定表的生成实体，而是「结果集列标签（小写）→ 值」，所以客户名、区域这些
-	 * 锚定表没有的列能原样带出来；分页仍由 {@code selectPageMaps} 自动包子查询计数，JOIN 也不会把总数算错。
-	 * 同一份语句配两个 id：{@code formWithCustomer} 明细、{@code amountByCustomer} 分组聚合。</p>
+	 * <p>结果不再套锚定表的生成实体，而是每行一个 {@link MetaClass}：列名 = 属性名、列类型 = 属性类型，
+	 * 客户名、区域、聚合出来的 {@code total_amount} 这些锚定表没有的列都能带出来。分页仍由
+	 * {@code selectShapePage} 自动包子查询计数，JOIN 也不会把总数算错。</p>
 	 */
 	@GetMapping("/query/join")
 	public Map<String, Object> joinQuery(@RequestParam(required = false) Integer status,
@@ -598,15 +612,33 @@ public class MetaDataController {
 			query.set("status", status);
 		}
 		MarkedSql preview = client.sqlFor(TABLE, "formWithCustomer", query);
-		Page<Map<String, Object>> joined = client.selectPageMaps(TABLE, "formWithCustomer", query,
-				Pageable.of(page, size));
-		List<Map<String, Object>> byCustomer = client.selectMaps(TABLE, "amountByCustomer", params());
-		return linked("shape", "resultType=\"map\"：列由 SELECT 决定，" + TABLE + " JOIN " + CUSTOMER,
+		Page<MetaClass> joined = client.selectShapePage(TABLE, "formWithCustomer", query, Pageable.of(page, size));
+		List<MetaClass> byCustomer = client.selectShape(TABLE, "amountByCustomer", params());
+		MetaClass firstRow = joined.content().isEmpty() ? null : joined.content().get(0);
+		MetaClass example = byCustomer.isEmpty() ? null : byCustomer.get(0);
+		return linked("shape", "resultType=\"map\"/\"metaclass\"：每行是 MetaClass，列由 SELECT 决定，"
+						+ TABLE + " JOIN " + CUSTOMER,
+				"statementFile", existingStatementFile() == null ? null : existingStatementFile().toString(),
+				"shapeStatementFile", existingShapeStatementFile() == null ? null
+						: existingShapeStatementFile().toString(),
 				"sql", preview.sql(), "boundValues", preview.values(),
 				"page", joined.page(), "size", joined.size(), "total", joined.total(),
-				"totalPages", joined.totalPages(), "content", joined.content(),
-				"aggregation", byCustomer,
-				"hint", "两个语句都在 " + TABLE + ".xml 里；普通实体入口读它们会被明确拒绝，请用 selectMaps/selectPageMaps");
+				"totalPages", joined.totalPages(), "content", maps(joined.content()),
+				"shapeColumns", shapeColumns(firstRow),
+				"rowType", firstRow == null ? null : firstRow.getClass().getName(),
+				"rowPackage", firstRow == null ? null : firstRow.getClass().getPackageName(),
+				"rowClass", firstRow == null ? null : firstRow.getClass().getSimpleName(),
+				"aggregation", maps(byCustomer),
+				"metaClass", example == null ? null : linked(
+						"customerName", example.getString("customer_name"),
+						"orderCount", example.getLong("order_count"),
+						"totalAmount", example.getBigDecimal("total_amount"),
+						"rowType", example.getClass().getName(),
+						"rowClass", example.getClass().getSimpleName(),
+						"columns", shapeColumns(example),
+						"hasChanges", example.hasChanges()),
+				"hint", "两条语句都在 " + TABLE + ".xml 里；用 selectShape/selectShapeOne/selectShapePage 读，"
+						+ "需要 Map 时对每行调 toMap()");
 	}
 
 	/** 各级缓存条目与上限：表结构、实体类、语句、执行计划分别有界。 */
@@ -742,7 +774,11 @@ public class MetaDataController {
 
 	/** 只清本表演示文件：让每次 init 都按当前表结构重新预置一次（生产代码不要这么做）。 */
 	private void dropStatementFile() {
-		Path file = statementFile();
+		deleteIfExists(statementFile());
+		deleteIfExists(shapeStatementFile());
+	}
+
+	private static void deleteIfExists(Path file) {
 		if (file == null) {
 			return;
 		}
@@ -760,6 +796,11 @@ public class MetaDataController {
 		return file != null && Files.isRegularFile(file) ? file : null;
 	}
 
+	private Path existingShapeStatementFile() {
+		Path file = shapeStatementFile();
+		return file != null && Files.isRegularFile(file) ? file : null;
+	}
+
 	/** 路径 = {语句根}/{数据源}/{命名空间}/{表名}.xml，与引擎里的唯一语句库保持一致。 */
 	private Path statementFile() {
 		if (this.sqlDirectory == null) {
@@ -767,6 +808,15 @@ public class MetaDataController {
 		}
 		return this.sqlDirectory.resolve(MetaMapper.engine().defaultPoolName())
 				.resolve(MetaMapper.DEFAULT_NAMESPACE).resolve(TABLE + ".xml");
+	}
+
+	/** VO 语句文件路径：{@code meta_demo_form.vo.xml}，跟实体语句文件分开。 */
+	private Path shapeStatementFile() {
+		if (this.sqlDirectory == null) {
+			return null;
+		}
+		return this.sqlDirectory.resolve(MetaMapper.engine().defaultPoolName())
+				.resolve(MetaMapper.DEFAULT_NAMESPACE).resolve(TABLE + ".vo.xml");
 	}
 
 	/** init 时写一份手写语句区：没有 GENERATED 标记，首次访问时框架插入默认语句生成块。 */
@@ -784,8 +834,39 @@ public class MetaDataController {
 		}
 	}
 
+	/**
+	 * VO 语句首次落盘：文件不存在才写，之后归使用方。演示里两条一次写入，
+	 * 避免第二条看到文件已存在而跳过。
+	 */
+	private void writePresetShapeStatements() {
+		if (shapeStatementFile() == null) {
+			return;
+		}
+		Map<String, String> snippets = new LinkedHashMap<>();
+		snippets.put("formWithCustomer", SHAPE_FORM_WITH_CUSTOMER);
+		snippets.put("amountByCustomer", SHAPE_AMOUNT_BY_CUSTOMER);
+		MetaMapper.registerShapeStatements(TABLE, snippets);
+	}
+
 	private static List<Map<String, Object>> maps(List<MetaClass> rows) {
 		return rows.stream().map(MetaDataController::rowMap).toList();
+	}
+
+	/**
+	 * 自定义形状的列描述：完全来自那一行 {@link MetaClass} 的 {@link MetaProperty}，
+	 * 不是另抄一份元数据。前端 / 报表拿这份就能知道每个列叫什么、是什么 Java 类型。
+	 */
+	private static List<Map<String, Object>> shapeColumns(MetaClass row) {
+		if (row == null) {
+			return List.of();
+		}
+		List<Map<String, Object>> columns = new ArrayList<>(row.getProperties().size());
+		for (MetaProperty column : row.getProperties()) {
+			columns.add(linked("name", column.getName(), "javaType", column.getType(),
+					"jdbcType", column.getJdbcType(), "sqlType", column.getSqlTypeName(),
+					"nullable", column.isNullable()));
+		}
+		return columns;
 	}
 
 	/** 列名统一转小写：H2 元数据是大写、MySQL 习惯小写，HTTP 输出对齐一种形状。 */

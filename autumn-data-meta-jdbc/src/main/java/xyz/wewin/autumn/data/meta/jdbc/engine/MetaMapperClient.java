@@ -357,57 +357,59 @@ public final class MetaMapperClient {
 	}
 
 	// ------------------------------------------------------------------
-	// 跨表 / 自定义形状：resultType="map" 的命名语句
+	// 跨表 / 自定义形状：resultType="map" / "metaclass" 的命名语句
 	// ------------------------------------------------------------------
 
 	/**
-	 * 自定义结果形状的列表：语句必须在 XML 里声明 {@code resultType="map"}，返回的每一行是
-	 * 「结果集列标签（小写）→ 值」，列由 SELECT 决定，不受锚定表结构的限制。
+	 * 自定义结果形状的列表：语句必须在 XML 里声明 {@code resultType="map"} 或 {@code "metaclass"}，
+	 * 返回的每一行是一个 {@link MetaClass}——列名即属性名，列类型记在 {@link MetaProperty} 上，
+	 * 所以客户名、区域、聚合出来的 {@code total_amount} 这些锚定表没有的列都能原样带出来。
 	 *
 	 * <p>这条路径是给<b>跨表 JOIN、聚合、报表</b>这类查询用的：SQL 仍写在锚定表的语句文件里
 	 * （{@code ${table}} 只展开锚定表，其它表名照常写在 SQL 里），参数实体与 {@code <if>/<foreach>}
-	 * 完全复用同一条渲染 / 编译 / 执行链路，只是结果集不再往生成实体上套。</p>
+	 * 完全复用同一条渲染 / 编译 / 执行链路，只是结果集不再往生成实体上套。要纯 {@code Map} 时
+	 * 调 {@link MetaClass#toMap()}，不再单独提供 Map 返回类型。</p>
 	 */
-	public List<Map<String, Object>> selectMaps(String tableName, String statementId, MetaClass params) {
-		return selectMaps(tableName, statementId, params, this.defaultListLimit);
+	public List<MetaClass> selectShape(String tableName, String statementId, MetaClass params) {
+		return selectShape(tableName, statementId, params, this.defaultListLimit);
 	}
 
-	/** 限行的 map 查询：只跑一条 SELECT，limit 是行数上限。 */
-	public List<Map<String, Object>> selectMaps(String tableName, String statementId, MetaClass params, long limit) {
+	/** 限行的自定义形状查询：只跑一条 SELECT，limit 是行数上限。 */
+	public List<MetaClass> selectShape(String tableName, String statementId, MetaClass params, long limit) {
 		if (limit <= 0) {
 			throw new IllegalArgumentException("limit must be > 0");
 		}
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
-			SqlTemplate statement = mapStatement(table, statementId);
+			SqlTemplate statement = shapeStatement(table, statementId);
 			Bound sql = bind(table, tidy(render(table, statement, params)));
-			return this.jdbc.query(sql.plan(), sql.args(), MetaMapRowMapper.INSTANCE, limit);
+			return this.jdbc.query(sql.plan(), sql.args(), shapeMapper(table, statement), limit);
 		});
 	}
 
-	/** 取一行 map 结果（最多一行）；没有行时返回 {@link Optional#empty()}。 */
-	public Optional<Map<String, Object>> selectMap(String tableName, String statementId, MetaClass params) {
-		List<Map<String, Object>> rows = selectMaps(tableName, statementId, params, 1);
+	/** 取一行自定义形状结果（最多一行）；没有行时返回 {@link Optional#empty()}。 */
+	public Optional<MetaClass> selectShapeOne(String tableName, String statementId, MetaClass params) {
+		List<MetaClass> rows = selectShape(tableName, statementId, params, 1);
 		return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
 	}
 
 	/**
-	 * map 结果分页：内容用语句本身，count 仍是对整条 SELECT 包子查询，
+	 * 自定义形状分页：内容用语句本身，count 仍是对整条 SELECT 包子查询，
 	 * 所以跨表 JOIN 的查询也能直接翻页（不需要另写 count 语句，也不受 JOIN 行数放大的影响）。
 	 */
-	public Page<Map<String, Object>> selectPageMaps(String tableName, String statementId, MetaClass params,
+	public Page<MetaClass> selectShapePage(String tableName, String statementId, MetaClass params,
 			Pageable pageable) {
 		if (pageable == null) {
 			throw new IllegalArgumentException("pageable must not be null");
 		}
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
-			SqlTemplate statement = mapStatement(table, statementId);
+			SqlTemplate statement = shapeStatement(table, statementId);
 			MarkedSql select = tidy(render(table, statement, params));
 			MetaSqlPlan selectPlan = this.plans.plan(table, select);
 			MetaSqlPlan countPlan = this.plans.plan(table, derivedCount(select));
-			List<Map<String, Object>> content = this.jdbc.query(selectPlan, select.values().toArray(),
-					MetaMapRowMapper.INSTANCE, pageable.limit(), pageable.offset());
+			List<MetaClass> content = this.jdbc.query(selectPlan, select.values().toArray(),
+					shapeMapper(table, statement), pageable.limit(), pageable.offset());
 			long total = this.jdbc.count(countPlan, select.values().toArray());
 			return Page.of(content, pageable, total);
 		});
@@ -421,6 +423,36 @@ public final class MetaMapperClient {
 	/** 显式生成 / 更新该表的 XML 文件并返回其位置（表结构变化后想立刻看到文件时用）。 */
 	public String ensureStatementFile(String tableName) {
 		return this.statements.ensure(this.poolName, this.namespace, this.registry.require(tableName));
+	}
+
+	/**
+	 * 动态注册一条 VO 语句：写到 {@code {表名}.vo.xml}，与实体语句文件分开。
+	 * 同 id 已存在时保留原文件（返回路径），想调整 SQL 直接编辑那个 XML。
+	 *
+	 * @param xml 单条 {@code <select resultType="map|metaclass">...</select>} 片段
+	 * @return VO 语句文件路径
+	 */
+	public String registerShapeStatement(String tableName, String statementId, String xml) {
+		MetaTable table = this.registry.require(tableName);
+		String path = this.statements.appendShapeStatement(this.poolName, this.namespace, table, statementId, xml);
+		clearStatementCache(tableName);
+		return path;
+	}
+
+	/** 首次批量创建 VO 语句文件；文件已存在时保持原样（人类可继续修改）。 */
+	public String registerShapeStatements(String tableName, Map<String, String> xmlByStatementId) {
+		MetaTable table = this.registry.require(tableName);
+		String path = this.statements.appendShapeStatements(this.poolName, this.namespace, table,
+				xmlByStatementId);
+		clearStatementCache(tableName);
+		return path;
+	}
+
+	/** VO 语句文件路径（诊断 / 让使用方直接打开编辑）。 */
+	public String shapeStatementFile(String tableName) {
+		MetaTable table = this.registry.require(tableName);
+		String path = this.statements.shapeFile(this.poolName, this.namespace, table.name());
+		return path == null ? this.statements.shapeLocation(this.poolName, this.namespace, table.name()) : path;
 	}
 
 	// ------------------------------------------------------------------
@@ -456,11 +488,13 @@ public final class MetaMapperClient {
 	public void clearStatementCache(String tableName) {
 		this.statements.refresh(this.poolName, this.namespace, tableName);
 		this.plans.invalidate(tableName);
+		this.entityRegistry.refreshShapes(tableName);
 	}
 
 	public void clearStatementCache() {
 		this.statements.refreshAll();
 		this.plans.invalidateAll();
+		this.entityRegistry.refreshAllShapes();
 	}
 
 	/** 表结构变化后的标准入口：清元数据、实体类、语句与计划缓存。 */
@@ -500,7 +534,10 @@ public final class MetaMapperClient {
 		stats.put("tableLimit", this.registry.maximumSize());
 		stats.put("entityModels", this.entityRegistry.size());
 		stats.put("entityLimit", this.entityRegistry.maximumSize());
+		stats.put("resultShapes", this.entityRegistry.shapeSize());
+		stats.put("resultShapeLimit", this.entityRegistry.shapeMaximumSize());
 		stats.put("statementTables", this.statements.size());
+		stats.put("voStatementTables", this.statements.voSize());
 		stats.put("statementLimit", this.statements.maximumSize());
 		stats.put("compiledShapes", this.plans.size());
 		stats.put("planLimit", this.plans.maximumSize());
@@ -557,26 +594,26 @@ public final class MetaMapperClient {
 	}
 
 	/**
-	 * 走「生成实体」收口的语句：声明了 {@code resultType="map"} 的语句在这里挡回去，
+	 * 走「生成实体」收口的语句：声明了自定义结果形状（{@code resultType="map"/"metaclass"}）的语句在这里挡回去，
 	 * 否则 JOIN 出来的额外列会被固定列 READER 静默跳过，看起来查到了、其实少了字段。
 	 */
 	private SqlTemplate entityStatement(MetaTable table, String statementId) {
 		SqlTemplate s = selectStatement(table, statementId);
-		if (s.returnsMap()) {
+		if (s.returnsCustomShape()) {
 			throw new MetaSqlException("statement '" + statementId + "' of table '" + table.name()
 					+ "' declares resultType=\"" + s.resultType()
-					+ "\"; read it with selectMaps/selectMap/selectPageMaps(...) instead");
+					+ "\"; read it with selectShape/selectShapeOne/selectShapePage(...) instead");
 		}
 		return s;
 	}
 
-	/** 走 {@code Map} 收口的语句：必须是 SELECT，且显式声明 {@code resultType="map"}，不做隐式猜测。 */
-	private SqlTemplate mapStatement(MetaTable table, String statementId) {
+	/** 走 {@code MetaClass} 形状收口的语句：必须是 SELECT，且显式声明自定义 resultType，不做隐式猜测。 */
+	private SqlTemplate shapeStatement(MetaTable table, String statementId) {
 		SqlTemplate s = selectStatement(table, statementId);
-		if (!s.returnsMap()) {
+		if (!s.returnsCustomShape()) {
 			throw new MetaSqlException("statement '" + statementId + "' of table '" + table.name()
-					+ "' does not declare resultType=\"map\"; add it to the <select> to read a cross-table "
-					+ "or custom result shape — otherwise use selectList/selectOne(...)");
+					+ "' does not declare resultType=\"map\" or \"metaclass\"; add it to the <select> to read a "
+					+ "cross-table or custom result shape — otherwise use selectList/selectOne(...)");
 		}
 		return s;
 	}
@@ -715,6 +752,11 @@ public final class MetaMapperClient {
 
 	private RowMapper<MetaClass> mapper(MetaTable table) {
 		return this.entityRegistry.model(table).mapper();
+	}
+
+	/** 自定义形状：首行按结果集列生成/取到具体形状类，后续行直接走生成类的静态 read。 */
+	private RowMapper<MetaClass> shapeMapper(MetaTable table, SqlTemplate statement) {
+		return new MetaShapeRowMapper(this.entityRegistry, table, statement.id());
 	}
 
 	/** 语句带 {@code <resultMap>} 时按映射逐列取值，否则用生成实体的固定列 READER。 */

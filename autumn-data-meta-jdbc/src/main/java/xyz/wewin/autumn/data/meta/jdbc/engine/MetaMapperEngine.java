@@ -155,7 +155,7 @@ public final class MetaMapperEngine {
 		// 唯一的语句库：一张表一个 XML，按 数据源/命名空间/表名 寻址；方言决定生成语句里的标识符引号。
 		MetaSqlGenerator generator = new MetaSqlGenerator(dialect);
 		MetaSqlFileStore statements = new MetaSqlFileStore(directories.sqlDirectory(),
-				MetaMapperEngine.class.getClassLoader(), options.tableCacheSize(), generator,
+				MetaMapperEngine.class.getClassLoader(), options.statementCacheSize(), generator,
 				options.generateFiles());
 		return new MetaMapperClient(poolName, jdbc, connectionSource, registry, entities,
 				new MetaPlanCache(options.tableCacheSize()), options.defaultListLimit(), statements);

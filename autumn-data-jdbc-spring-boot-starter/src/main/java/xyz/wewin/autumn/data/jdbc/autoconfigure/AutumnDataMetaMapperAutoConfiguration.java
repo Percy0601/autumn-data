@@ -55,7 +55,7 @@ public class AutumnDataMetaMapperAutoConfiguration {
 			AutumnDataMetaMapperProperties properties) {
 		MetaMapperOptions options = new MetaMapperOptions(properties.getDefaultListLimit(), fetchPolicy,
 				properties.getLogicDeleteColumns(), properties.getMetaDirectory(), properties.isGenerateFiles(),
-				properties.getTableCacheSize(),
+				properties.getTableCacheSize(), properties.getStatementCacheSize(),
 				MetaEntityStrategy.resolve(properties.getEntityCodegen()));
 		MetaMapperEngine engine = MetaMapperEngine.forDataSource(properties.getDefaultPoolName(), dataSource, options,
 				SpringConnectionSource::new);

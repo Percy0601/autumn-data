@@ -50,11 +50,15 @@ import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
  * {@code GENERIC} 档写通用 {@link MetaClass}（Native Image 用）。两档都通过
  * {@code getProperties()} 保留列类型描述。</p>
  *
- * <p><b>唯一的 Map 入口是显式声明的跨表查询</b>：语句写 {@code resultType="map"} 时，
- * {@code selectMaps/selectMap/selectPageMaps} 返回「结果集列标签（小写）→ 值」的 {@link Map}，
- * 用来承载 JOIN、聚合这类<b>结果形状不由单表结构决定</b>的查询；这类语句不能用
- * {@code selectList/selectOne/selectPage} 读（会被固定列 READER 丢掉额外列），反过来
- * 普通实体语句也不能用 map 入口读，两条路径互相挡回去而不是静默降级。</p>
+ * <p><b>自定义结果是按语句生成的具体 MetaClass 子类，不是裸 Map，也不是通用 MetaClass</b>：语句写
+ * {@code resultType="map"}（或显式的 {@code resultType="metaclass"}）时，
+ * {@code selectShape/selectShapeOne/selectShapePage} 返回的每一行是运行期按结果列生成、javac 编译、
+ * 内存加载的 {@link MetaClass} 子类——类名由语句 id 派生（{@code formWithCustomer → FormWithCustomer}），
+ * 包名是 {@code ...shape.generated.<schema>.<table>.v<列形状指纹>}，字段与 typed getter 真实声明，
+ * 逐行走生成类的静态读取。列名是属性名，列类型是 {@link xyz.wewin.autumn.data.common.meta.MetaProperty}
+ * 上的类型描述；{@code row.getClass().getName()/getPackageName()/getSimpleName()} 直接给出具体类型，
+ * 需要 Map 时再 {@code toMap()}。这类语句不能用 {@code selectList/selectOne/selectPage} 读
+ * （会被固定列 READER 丢掉额外列），反过来普通实体语句也不能用形状入口读，两条路径互相挡回去而不是静默降级。</p>
  *
  * <pre>{@code
  * MetaMapper.install(MetaMapperEngine.forDataSource("primary", dataSource));
@@ -204,28 +208,54 @@ public final class MetaMapper {
 	}
 
 	/**
-	 * 跨表 / 自定义形状查询：语句必须在 XML 里声明 {@code resultType="map"}，
-	 * 返回「列标签（小写）→ 值」。列由 SELECT 决定，不受锚定表结构限制。
+	 * 跨表 / 自定义形状查询：语句必须在 XML 里声明 {@code resultType="map"} 或 {@code "metaclass"}，
+	 * 返回的行是 {@link MetaClass}——列名即属性名、列类型即属性类型；列由 SELECT 决定，不受锚定表结构限制。
+	 *
+	 * <pre>{@code
+	 * List<MetaClass> joined = MetaMapper.selectShape("form_order", "formWithCustomer", query);
+	 * for (MetaClass row : joined) {
+	 *     String customerName = row.getString("customer_name");   // JOIN 出来的额外列
+	 *     BigDecimal amount = row.getBigDecimal("amount");       // 锚定表原有的列
+	 *     Map<String, Object> map = row.toMap();                  // 需要 Map 时再转
+	 * }
+	 * }</pre>
 	 */
-	public static List<Map<String, Object>> selectMaps(String tableName, String statementId, MetaClass params) {
-		return defaultClient().selectMaps(tableName, statementId, params);
+	public static List<MetaClass> selectShape(String tableName, String statementId, MetaClass params) {
+		return defaultClient().selectShape(tableName, statementId, params);
 	}
 
 	/** 跨表 / 自定义形状查询的限行版本。 */
-	public static List<Map<String, Object>> selectMaps(String tableName, String statementId, MetaClass params,
-			long limit) {
-		return defaultClient().selectMaps(tableName, statementId, params, limit);
+	public static List<MetaClass> selectShape(String tableName, String statementId, MetaClass params, long limit) {
+		return defaultClient().selectShape(tableName, statementId, params, limit);
 	}
 
-	/** 跨表 / 自定义形状查询取一行：{@code resultType="map"} 的语句最多返回一行。 */
-	public static Optional<Map<String, Object>> selectMap(String tableName, String statementId, MetaClass params) {
-		return defaultClient().selectMap(tableName, statementId, params);
+	/** 跨表 / 自定义形状查询取一行：{@code resultType="map"/"metaclass"} 的语句最多返回一行。 */
+	public static Optional<MetaClass> selectShapeOne(String tableName, String statementId, MetaClass params) {
+		return defaultClient().selectShapeOne(tableName, statementId, params);
 	}
 
 	/** 跨表 / 自定义形状查询分页：count 仍是对整条 SELECT 包子查询，JOIN 查询也能直接翻页。 */
-	public static Page<Map<String, Object>> selectPageMaps(String tableName, String statementId, MetaClass params,
+	public static Page<MetaClass> selectShapePage(String tableName, String statementId, MetaClass params,
 			Pageable pageable) {
-		return defaultClient().selectPageMaps(tableName, statementId, params, pageable);
+		return defaultClient().selectShapePage(tableName, statementId, params, pageable);
+	}
+
+	/**
+	 * 动态注册 VO 语句到独立的 {@code {表名}.vo.xml}，返回文件路径。
+	 * 低代码平台第一次生成 SQL 时调用；后续调 SQL 直接编辑那个文件，重新查询即按修改时间自动重读。
+	 */
+	public static String registerShapeStatement(String tableName, String statementId, String xml) {
+		return defaultClient().registerShapeStatement(tableName, statementId, xml);
+	}
+
+	/** 首次批量创建 VO 语句文件；文件已存在时保持原样，方便人工继续调 SQL。 */
+	public static String registerShapeStatements(String tableName, java.util.Map<String, String> xmlByStatementId) {
+		return defaultClient().registerShapeStatements(tableName, xmlByStatementId);
+	}
+
+	/** VO 语句文件路径（给前端 / 运维直接打开编辑）。 */
+	public static String shapeStatementFile(String tableName) {
+		return defaultClient().shapeStatementFile(tableName);
 	}
 
 	/** 执行 {@code <insert>}/{@code <update>}/{@code <delete>} 语句，返回影响行数。 */

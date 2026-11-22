@@ -20,12 +20,15 @@ import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
  * @param generateFiles      语句 XML 缺失时是否生成、表结构变化时是否把生成块写回磁盘。
  *                           生成块带结构指纹，只重写 {@code GENERATED START/END} 之间的内容，
  *                           标记之外的自定义语句逐字保留；关掉它只影响「落盘」，默认语句仍会在内存补齐
- * @param tableCacheSize     按表缓存（表结构 / 动态实体 / Mapper AST / 执行计划）各自的条目上限
+ * @param tableCacheSize     按表缓存（表结构 / 动态实体 / 执行计划）各自的条目上限
+ * @param statementCacheSize 语句 XML 解析结果（实体文件 + VO 文件）各自的条目上限；默认 1000，
+ *                           淘汰后下次访问重新从磁盘读取
  * @param entityStrategy     实体形态：{@code CODE} 生成强类型子类，{@code GENERIC} 通用 MetaClass；
  *                           {@code auto} 在 Native Image 里自动选 {@code GENERIC}
  */
 public record MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,
-		String metaDirectory, boolean generateFiles, int tableCacheSize, MetaEntityStrategy entityStrategy) {
+		String metaDirectory, boolean generateFiles, int tableCacheSize, int statementCacheSize,
+		MetaEntityStrategy entityStrategy) {
 
 	public MetaMapperOptions {
 		if (defaultListLimit <= 0) {
@@ -33,6 +36,9 @@ public record MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, S
 		}
 		if (tableCacheSize <= 0) {
 			throw new IllegalArgumentException("tableCacheSize must be > 0 but was " + tableCacheSize);
+		}
+		if (statementCacheSize <= 0) {
+			throw new IllegalArgumentException("statementCacheSize must be > 0 but was " + statementCacheSize);
 		}
 		fetchPolicy = fetchPolicy == null ? FetchPolicy.defaults() : fetchPolicy;
 		Set<String> normalized = new LinkedHashSet<>();
@@ -49,15 +55,21 @@ public record MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, S
 	}
 
 	public MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,
+			String metaDirectory, boolean generateFiles, int tableCacheSize, MetaEntityStrategy entityStrategy) {
+		this(defaultListLimit, fetchPolicy, logicDeleteColumns, metaDirectory, generateFiles, tableCacheSize,
+				1000, entityStrategy);
+	}
+
+	public MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,
 			String metaDirectory, boolean generateFiles, int tableCacheSize) {
 		this(defaultListLimit, fetchPolicy, logicDeleteColumns, metaDirectory, generateFiles, tableCacheSize,
-				MetaEntityStrategy.auto());
+				1000, MetaEntityStrategy.auto());
 	}
 
 	public MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,
 			String metaDirectory, boolean generateFiles) {
 		this(defaultListLimit, fetchPolicy, logicDeleteColumns, metaDirectory, generateFiles,
-				BoundedCache.DEFAULT_MAXIMUM_SIZE, MetaEntityStrategy.auto());
+				BoundedCache.DEFAULT_MAXIMUM_SIZE, 1000, MetaEntityStrategy.auto());
 	}
 
 	/** 工作目录（根 + 三个子目录）。 */

@@ -64,9 +64,19 @@ public final class MetaEntityCompiler {
 
 	/** 编译并加载生成类；失败时异常里带完整源码与 javac 诊断。 */
 	public static Class<? extends MetaClass> compile(MetaEntitySource.Source source, Path sourceDirectory) {
+		return compile(source, sourceDirectory, "entity");
+	}
+
+	/** 编译一条语句的结果形状类；与实体类共用内存编译 / 加载，只是诊断文案不同。 */
+	public static Class<? extends MetaClass> compileShape(MetaEntitySource.Source source, Path sourceDirectory) {
+		return compile(source, sourceDirectory, "result shape");
+	}
+
+	private static Class<? extends MetaClass> compile(MetaEntitySource.Source source, Path sourceDirectory,
+			String kind) {
 		JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
 		if (compiler == null) {
-			throw new MetaSqlException("cannot generate entity class '" + source.qualifiedName()
+			throw new MetaSqlException("cannot generate " + kind + " class '" + source.qualifiedName()
 					+ "': no system Java compiler. autumn-data-meta-jdbc needs a full JDK (not a JRE) at runtime");
 		}
 		writeSourceForHumans(source, sourceDirectory);
@@ -85,17 +95,17 @@ public final class MetaEntityCompiler {
 				boolean success = Boolean.TRUE.equals(
 						compiler.getTask(null, fileManager, diagnostics, options, null, units).call());
 				if (!success) {
-					throw new MetaSqlException("failed to compile generated entity '" + source.qualifiedName()
+					throw new MetaSqlException("failed to compile generated " + kind + " '" + source.qualifiedName()
 							+ "':\n" + format(diagnostics) + "\n--- generated source ---\n" + source.java());
 				}
 			}
 		}
 		catch (IOException ex) {
-			throw new MetaSqlException("failed to compile generated entity '" + source.qualifiedName()
+			throw new MetaSqlException("failed to compile generated " + kind + " '" + source.qualifiedName()
 					+ "'", ex);
 		}
 		if (generated.isEmpty()) {
-			throw new MetaSqlException("generated entity '" + source.qualifiedName()
+			throw new MetaSqlException("generated " + kind + " '" + source.qualifiedName()
 					+ "' produced no bytecode");
 		}
 
@@ -107,7 +117,7 @@ public final class MetaEntityCompiler {
 			loaded = Class.forName(source.qualifiedName(), true, loader);
 		}
 		catch (ClassNotFoundException ex) {
-			throw new MetaSqlException("generated entity '" + source.qualifiedName()
+			throw new MetaSqlException("generated " + kind + " '" + source.qualifiedName()
 					+ "' was compiled but could not be loaded", ex);
 		}
 		if (!MetaClass.class.isAssignableFrom(loaded)) {
@@ -198,7 +208,12 @@ public final class MetaEntityCompiler {
 		}
 	}
 
-	/** 把生成源码额外落一份到使用方指定目录，方便查看/固化；失败不影响内存编译。 */
+	/**
+	 * 把生成源码额外落一份到使用方指定目录，方便查看/固化；失败不影响内存编译。
+	 *
+	 * <p>只在文件不存在时写：生成类源码是使用方资产，人工改过的版本不能被下一次编译覆盖。
+	 * 结构 / 形状变了会落到新的指纹包下，自然是一份新文件；同名文件保持原样。</p>
+	 */
 	private static void writeSourceForHumans(MetaEntitySource.Source source, Path directory) {
 		if (directory == null) {
 			return;
@@ -206,6 +221,9 @@ public final class MetaEntityCompiler {
 		try {
 			Path target = directory.resolve(source.packageName().replace('.', '/'))
 					.resolve(source.className() + ".java");
+			if (Files.exists(target)) {
+				return;
+			}
 			Files.createDirectories(target.getParent());
 			Files.writeString(target, source.java(), StandardCharsets.UTF_8);
 		}

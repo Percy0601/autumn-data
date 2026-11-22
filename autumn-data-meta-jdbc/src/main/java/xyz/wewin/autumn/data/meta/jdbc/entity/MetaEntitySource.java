@@ -24,7 +24,7 @@ public final class MetaEntitySource {
 
 	private static final String GENERATED_PACKAGE = "xyz.wewin.autumn.data.meta.jdbc.entity.generated";
 
-	private static final Set<String> JAVA_KEYWORDS = Set.of(
+	static final Set<String> JAVA_KEYWORDS = Set.of(
 			"abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class", "const",
 			"continue", "default", "do", "double", "else", "enum", "extends", "final", "finally", "float",
 			"for", "goto", "if", "implements", "import", "instanceof", "int", "interface", "long", "native",
@@ -236,7 +236,7 @@ public final class MetaEntitySource {
 	}
 
 	/** 字段类型 → 读方向转换方法；未知类型不做强转，字段声明成 Object。 */
-	private static String readerOf(String javaType) {
+	static String readerOf(String javaType) {
 		if (javaType == null) {
 			return "asObject";
 		}
@@ -258,7 +258,7 @@ public final class MetaEntitySource {
 	// 标识符与字面量
 	// ------------------------------------------------------------------
 
-	private static String className(String tableName) {
+	static String className(String tableName) {
 		StringBuilder name = new StringBuilder();
 		boolean upperNext = true;
 		for (int i = 0; i < tableName.length(); i++) {
@@ -282,7 +282,7 @@ public final class MetaEntitySource {
 		return JAVA_KEYWORDS.contains(candidate) ? candidate + "Entity" : candidate;
 	}
 
-	private static String uniqueField(String column, Set<String> used) {
+	static String uniqueField(String column, Set<String> used) {
 		StringBuilder name = new StringBuilder();
 		boolean upperNext = false;
 		for (int i = 0; i < column.length(); i++) {
@@ -331,7 +331,7 @@ public final class MetaEntitySource {
 	}
 
 	/** Java 字符串字面量（含引号），转义反斜杠、引号、换行与控制字符。 */
-	private static String literal(String value) {
+	static String literal(String value) {
 		StringBuilder out = new StringBuilder(value.length() + 2).append('"');
 		for (int i = 0; i < value.length(); i++) {
 			char c = value.charAt(i);

@@ -44,10 +44,16 @@ public class AutumnDataMetaMapperProperties {
 	private boolean generateFiles = true;
 
 	/**
-	 * 按表缓存（表结构快照 / 动态实体 / 语句 AST / 执行计划）各自的条目上限，默认一万张表。
+	 * 按表缓存（表结构快照 / 动态实体 / 执行计划）各自的条目上限，默认一万张表。
 	 * 触顶按 LRU 淘汰冷表，下次访问自动重建，内存不随表数量无限增长。
 	 */
 	private int tableCacheSize = BoundedCache.DEFAULT_MAXIMUM_SIZE;
+
+	/**
+	 * 语句 XML 解析结果的缓存上限，默认 1000 张表；实体文件与 VO 文件分开计数。
+	 * 淘汰后下次访问重新从磁盘读取，磁盘文件是唯一真源，便于人工调整 SQL。
+	 */
+	private int statementCacheSize = 1000;
 
 	/**
 	 * 实体生成模式：{@code auto}（默认，Native Image 里自动退化到 generic）、
@@ -110,6 +116,14 @@ public class AutumnDataMetaMapperProperties {
 
 	public void setTableCacheSize(int tableCacheSize) {
 		this.tableCacheSize = tableCacheSize;
+	}
+
+	public int getStatementCacheSize() {
+		return this.statementCacheSize;
+	}
+
+	public void setStatementCacheSize(int statementCacheSize) {
+		this.statementCacheSize = statementCacheSize;
 	}
 
 	public String getEntityCodegen() {

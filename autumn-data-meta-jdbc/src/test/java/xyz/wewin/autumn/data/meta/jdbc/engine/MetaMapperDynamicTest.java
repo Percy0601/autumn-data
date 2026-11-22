@@ -42,6 +42,9 @@ import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityColumns;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityModel;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntitySource;
+import xyz.wewin.autumn.data.meta.jdbc.entity.MetaShapeColumn;
+import xyz.wewin.autumn.data.meta.jdbc.entity.MetaShapeModel;
+import xyz.wewin.autumn.data.meta.jdbc.entity.MetaShapeSource;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaModelStore;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTable;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
@@ -49,6 +52,7 @@ import xyz.wewin.autumn.data.meta.jdbc.sql.MarkedSql;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaPlanCache;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlFileStore;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -952,8 +956,17 @@ class MetaMapperDynamicTest {
 		assertThat(new MetaSqlFileStore(null).maximumSize()).isEqualTo(10_000);
 		assertThat(new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), "", true, 7)
 				.tableCacheSize()).isEqualTo(7);
+		assertThat(MetaMapperOptions.defaults().statementCacheSize()).isEqualTo(1000);
+		assertThat(new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), "", true, 7)
+				.statementCacheSize()).isEqualTo(1000);
+		assertThat(new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), "", true, 7, 5,
+				xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityStrategy.auto()).statementCacheSize())
+				.isEqualTo(5);
 		assertThatThrownBy(() -> new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), "", true, 0))
 				.isInstanceOf(IllegalArgumentException.class).hasMessageContaining("tableCacheSize");
+		assertThatThrownBy(() -> new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), "", true, 7, 0,
+				xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityStrategy.auto()))
+				.isInstanceOf(IllegalArgumentException.class).hasMessageContaining("statementCacheSize");
 	}
 
 	// ------------------------------------------------------------------
@@ -1171,55 +1184,163 @@ class MetaMapperDynamicTest {
 	}
 
 	@Test
-	void crossTableQueryReturnsCustomShapeThroughResultTypeMap() {
+	void shapeSourcesGoToVoDirectoryAndAreNeverOverwritten() throws Exception {
+		Path root = this.xmlDirectory.resolve("meta");
+		MetaDirectories directories = new MetaDirectories(root);
+		MetaEntityRegistry registry = new MetaEntityRegistry(directories, true, 4);
+		MetaTable table = this.registry.require("form_order");
+		List<MetaShapeColumn> columns = List.of(
+				new MetaShapeColumn(1, "order_no", Types.VARCHAR, "VARCHAR", true, String.class.getName()),
+				new MetaShapeColumn(2, "amount", Types.DECIMAL, "DECIMAL", true, BigDecimal.class.getName()));
+
+		MetaShapeModel model = registry.shapeModel(table, "voSaved", columns);
+		MetaEntitySource.Source rendered = MetaShapeSource.render(table, "voSaved", columns);
+		Path file = root.resolve("vo")
+				.resolve(rendered.packageName().replace('.', '/'))
+				.resolve(rendered.className() + ".java");
+		assertThat(file).isRegularFile();
+		assertThat(file.toString()).contains("vo");
+		assertThat(Files.readString(file)).contains("public final class VoSaved extends MetaClass");
+
+		// 模拟人工加注释：新注册表（新缓存，必然重新编译）仍读磁盘版本，且绝不覆盖
+		String original = Files.readString(file);
+		Files.writeString(file, original.replace("// generated-by:",
+				"// human-edited: keep my notes\n// generated-by:"));
+		MetaEntityRegistry fresh = new MetaEntityRegistry(directories, true, 4);
+		MetaShapeModel reloaded = fresh.shapeModel(table, "voSaved", columns);
+
+		assertThat(reloaded.type().getSimpleName()).isEqualTo("VoSaved");
+		assertThat(Files.readString(file)).isEqualTo(original.replace("// generated-by:",
+				"// human-edited: keep my notes\n// generated-by:"));
+	}
+
+	@Test
+	void voStatementsLiveInSeparateFileAndAreReadBackFromDisk() throws Exception {
+		Path voFile = this.xmlDirectory.resolve("test").resolve("default").resolve("form_order.vo.xml");
+		assertThat(voFile).doesNotExist();
+
+		// 首次注册：一次写多条到 .vo.xml；实体文件保持干净
+		this.client.registerShapeStatements("form_order", Map.of(
+				"voByStatus", """
+						<select id="voByStatus" resultType="metaclass">
+						    SELECT order_no, amount, status FROM ${table} WHERE deleted_flag = 0
+						</select>
+						""",
+				"voCount", """
+						<select id="voCount" resultType="map">
+						    SELECT COUNT(*) AS total FROM ${table} WHERE deleted_flag = 0
+						</select>
+						"""));
+		assertThat(voFile).isRegularFile();
+		assertThat(Files.readString(voFile)).contains("voByStatus", "voCount");
+		assertThat(Files.readString(statementFile())).doesNotContain("voByStatus");
+
+		this.client.save(row("form_order", "order_no", "V1", "customer_no", "C1", "amount", "10.00", "status", 1));
+		this.client.save(row("form_order", "order_no", "V2", "customer_no", "C2", "amount", "20.00", "status", 2));
+
+		List<MetaClass> rows = this.client.selectShape("form_order", "voByStatus", params());
+		assertThat(rows).hasSize(2);
+		assertThat(rows.get(0).getClass().getSimpleName()).isEqualTo("VoByStatus");
+
+		// 模拟人类调 SQL：直接改磁盘文件，长度变化后下次查询自动重读，属性 / 形状类跟着变
+		String edited = Files.readString(voFile).replace("SELECT order_no, amount, status",
+				"SELECT order_no, amount, status, customer_no");
+		Files.writeString(voFile, edited);
+
+		List<MetaClass> reloaded = this.client.selectShape("form_order", "voByStatus", params());
+		assertThat(reloaded).hasSize(2);
+		assertThat(reloaded.get(0).getProperties().stream().map(MetaProperty::getName))
+				.contains("customer_no");
+		assertThat(reloaded.get(0).getClass().getMethod("getCustomerNo").getReturnType()).isEqualTo(String.class);
+
+		// 文件已存在：再注册新 id 也不会追加/覆盖，人类资产保持不变
+		String before = Files.readString(voFile);
+		this.client.registerShapeStatement("form_order", "shouldNotAppend", """
+				<select id="shouldNotAppend" resultType="map">
+				    SELECT 1 AS one FROM ${table}
+				</select>
+				""");
+		assertThat(Files.readString(voFile)).isEqualTo(before);
+	}
+
+	@Test
+	void crossTableQueryReturnsCustomShapeAsMetaClass() throws Exception {
 		this.client.save(row("form_order", "order_no", "J1", "customer_no", "C1", "amount", "10.00", "status", 1,
 				"create_time", "2026-11-11 09:00:00"));
 		this.client.save(row("form_order", "order_no", "J2", "customer_no", "C2", "amount", "20.00", "status", 1));
 		this.client.save(row("form_order", "order_no", "J3", "customer_no", "C1", "amount", "30.00", "status", 2));
 
-		// 跨表 JOIN：列来自两张表，按 resultType="map" 收口，锚定表的生成实体拦不住这些额外列
-		List<Map<String, Object>> joined = this.client.selectMaps("form_order", "joinCustomer", params("status", 1));
+		// 跨表 JOIN：列来自两张表，按自定义形状收口，每行是一个 MetaClass（不是裸 Map）
+		List<MetaClass> joined = this.client.selectShape("form_order", "joinCustomer", params("status", 1));
 		assertThat(joined).hasSize(2);
-		Map<String, Object> first = joined.get(0);
-		assertThat(first).containsKeys("id", "order_no", "amount", "customer_no", "customer_name", "region");
-		assertThat(first.get("order_no")).isEqualTo("J1");
-		assertThat(first.get("customer_name")).isEqualTo("北京客户");
-		assertThat(first.get("amount")).isInstanceOf(java.math.BigDecimal.class);
-		// 时序列归一成 java.time，和生成实体读同一列的类型一致
+		MetaClass first = joined.get(0);
+		assertThat(first.getProperties().stream().map(MetaProperty::getName))
+				.containsExactly("id", "order_no", "amount", "status", "create_time", "customer_no", "customer_name",
+						"region");
+		assertThat(first.getString("order_no")).isEqualTo("J1");
+		assertThat(first.getString("customer_name")).isEqualTo("北京客户");
+		assertThat(first.getBigDecimal("amount")).isEqualByComparingTo("10.00");
+		// 属性上带列类型：amount 是 DECIMAL，create_time 是 TIMESTAMP（时序值归一成 java.time）
+		assertThat(first.property("amount").getType()).isEqualTo(BigDecimal.class.getName());
+		assertThat(first.property("create_time").getType()).isEqualTo(LocalDateTime.class.getName());
 		assertThat(first.get("create_time")).isInstanceOf(LocalDateTime.class);
+		// 读出来的形状行是干净的，需要 Map 时自己 toMap
+		assertThat(first.hasChanges()).isFalse();
+		assertThat(first.toMap()).containsEntry("customer_name", "北京客户");
+
+		// 具体类型：不是通用 MetaClass，而是按语句 id 生成并加载的类，包名带表名 + 形状指纹
+		assertThat(first.getClass()).isNotEqualTo(MetaClass.class);
+		assertThat(first.getClass().getSimpleName()).isEqualTo("JoinCustomer");
+		assertThat(first.getClass().getPackageName())
+				.startsWith("xyz.wewin.autumn.data.meta.jdbc.shape.generated.")
+				.contains(".form_order.v");
+		assertThat(first.getClass().getName())
+				.isEqualTo(first.getClass().getPackageName() + ".JoinCustomer");
+		// typed getter 是生成类里真实声明的方法，返回类型就是列类型
+		assertThat(first.getClass().getMethod("getCustomerName").getReturnType()).isEqualTo(String.class);
+		assertThat(first.getClass().getMethod("getAmount").getReturnType()).isEqualTo(BigDecimal.class);
+		assertThat(first.getClass().getMethod("getCreateTime").getReturnType()).isEqualTo(LocalDateTime.class);
 
 		// 取一行 / 限行 / 分页都走同一份语句，分页计数仍是对整条 SELECT 包子查询
-		assertThat(this.client.selectMap("form_order", "joinCustomer", params("status", 1)))
-				.hasValueSatisfying(row -> assertThat(row.get("region")).isEqualTo("north"));
-		assertThat(this.client.selectMaps("form_order", "joinCustomer", params(), 1)).hasSize(1);
-		Page<Map<String, Object>> page = this.client.selectPageMaps("form_order", "joinCustomer", params(),
+		assertThat(this.client.selectShapeOne("form_order", "joinCustomer", params("status", 1)).orElseThrow()
+				.getString("region")).isEqualTo("north");
+		assertThat(this.client.selectShape("form_order", "joinCustomer", params(), 1)).hasSize(1);
+		Page<MetaClass> page = this.client.selectShapePage("form_order", "joinCustomer", params(),
 				Pageable.of(0, 2));
 		assertThat(page.content()).hasSize(2);
 		assertThat(page.total()).isEqualTo(3);
 		assertThat(page.totalPages()).isEqualTo(2);
 
-		// 聚合 + 分组：列数是 SQL 决定的，没有实体可套
-		List<Map<String, Object>> stats = this.client.selectMaps("form_order", "amountByCustomer", params());
+		// 聚合 + 分组：列数是 SQL 决定的，MetaClass 的属性和类型仍然完整
+		List<MetaClass> stats = this.client.selectShape("form_order", "amountByCustomer", params());
 		assertThat(stats).hasSize(2);
-		assertThat(stats.get(0)).containsEntry("customer_no", "C1");
-		assertThat(((Number) stats.get(0).get("order_count")).intValue()).isEqualTo(2);
-		assertThat((java.math.BigDecimal) stats.get(0).get("total_amount")).isEqualByComparingTo("40.00");
+		MetaClass firstStat = stats.get(0);
+		assertThat(firstStat.getString("customer_no")).isEqualTo("C1");
+		assertThat(firstStat.getLong("order_count")).isEqualTo(2L);
+		assertThat(firstStat.getBigDecimal("total_amount")).isEqualByComparingTo("40.00");
+		assertThat(firstStat.property("total_amount").getType()).isEqualTo(BigDecimal.class.getName());
+		assertThat(firstStat.property("order_count").getType()).isEqualTo(Long.class.getName());
+		assertThat(firstStat.getClass().getSimpleName()).isEqualTo("AmountByCustomer");
+		assertThat(firstStat.getClass().getPackageName())
+				.startsWith("xyz.wewin.autumn.data.meta.jdbc.shape.generated.");
+		assertThat(firstStat.getClass().getMethod("getTotalAmount").getReturnType()).isEqualTo(BigDecimal.class);
+		assertThat(firstStat.getClass().getMethod("getOrderCount").getReturnType()).isEqualTo(Long.class);
 	}
 
 	@Test
-	void entityAndMapStatementPathsRejectEachOther() {
-		// 普通实体语句不能用 map 入口读：没有显式声明 resultType 就不猜结果形状
-		assertThatThrownBy(() -> this.client.selectMaps("form_order", "highValue", params("status", 1)))
+	void entityAndShapeStatementPathsRejectEachOther() {
+		// 普通实体语句不能用形状入口读：没有显式声明 resultType 就不猜结果形状
+		assertThatThrownBy(() -> this.client.selectShape("form_order", "highValue", params("status", 1)))
 				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("does not declare resultType=\"map\"");
+				.hasMessageContaining("does not declare resultType=\"map\" or \"metaclass\"");
 
-		// 反过来，map 语句不能用实体入口读：额外列会被固定列 READER 静默丢掉
+		// 反过来，形状语句不能用实体入口读：额外列会被固定列 READER 静默丢掉
 		assertThatThrownBy(() -> this.client.selectList("form_order", "joinCustomer", params()))
 				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("selectMaps");
+				.hasMessageContaining("selectShape");
 		assertThatThrownBy(() -> this.client.selectPage("form_order", "joinCustomer", params(), Pageable.of(0, 2)))
 				.isInstanceOf(MetaSqlException.class)
-				.hasMessageContaining("selectMaps");
+				.hasMessageContaining("selectShape");
 	}
 
 	@Test
@@ -1266,8 +1387,8 @@ class MetaMapperDynamicTest {
 		this.client.ensureStatementFile("form_order");
 		Map<String, Object> stats = this.client.cacheStats();
 		assertThat(stats).containsEntry("pool", "test")
-				.containsKeys("tables", "entityModels", "statementTables", "compiledShapes",
-						"tableLimit", "entityLimit", "statementLimit", "planLimit");
+				.containsKeys("tables", "entityModels", "resultShapes", "statementTables", "compiledShapes",
+						"tableLimit", "entityLimit", "resultShapeLimit", "statementLimit", "planLimit");
 		assertThat(((Number) stats.get("tables")).longValue()).isGreaterThanOrEqualTo(1);
 		assertThat(((Number) stats.get("entityModels")).longValue()).isGreaterThanOrEqualTo(1);
 		assertThat(((Number) stats.get("statementTables")).longValue()).isGreaterThanOrEqualTo(1);

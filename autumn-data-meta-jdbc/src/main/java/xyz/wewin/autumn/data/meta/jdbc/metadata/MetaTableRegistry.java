@@ -1,14 +1,9 @@
 package xyz.wewin.autumn.data.meta.jdbc.metadata;
 
-import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Types;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -220,7 +215,7 @@ public final class MetaTableRegistry {
 				column.setName(rs.getString("COLUMN_NAME"));
 				column.setJdbcType(jdbcType);
 				column.setSqlTypeName(typeName);
-				column.setType(javaTypeName(jdbcType));
+				column.setType(MetaJdbcTypes.javaTypeName(jdbcType));
 				column.setNullable(nullableCode != DatabaseMetaData.columnNoNulls);
 				column.setAutoIncrement("YES".equalsIgnoreCase(autoIncrement));
 				column.setDefaultValue(rs.getString("COLUMN_DEF"));
@@ -284,20 +279,6 @@ public final class MetaTableRegistry {
 		property.setAutoIncrement(source.isAutoIncrement());
 		property.setDefaultValue(source.getDefaultValue());
 		return property;
-	}
-
-	private static String javaTypeName(int jdbcType) {
-		return switch (jdbcType) {
-			case Types.BIGINT -> Long.class.getName();
-			case Types.TINYINT, Types.SMALLINT, Types.INTEGER -> Integer.class.getName();
-			case Types.NUMERIC, Types.DECIMAL -> BigDecimal.class.getName();
-			case Types.BOOLEAN, Types.BIT -> Boolean.class.getName();
-			case Types.REAL, Types.FLOAT, Types.DOUBLE -> Double.class.getName();
-			case Types.DATE -> LocalDate.class.getName();
-			case Types.TIME, Types.TIME_WITH_TIMEZONE -> LocalTime.class.getName();
-			case Types.TIMESTAMP, Types.TIMESTAMP_WITH_TIMEZONE -> LocalDateTime.class.getName();
-			default -> String.class.getName();
-		};
 	}
 
 	private static String safeCatalog(Connection connection) {

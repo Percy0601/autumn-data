@@ -1,7 +1,9 @@
 package xyz.wewin.autumn.data.meta.jdbc.entity;
 
+import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -14,7 +16,9 @@ import java.util.function.Supplier;
 
 import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.common.meta.MetaProperty;
+import xyz.wewin.autumn.data.common.meta.MetaType;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
+import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaJdbcTypes;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTable;
 import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCache;
 import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCaches;
@@ -53,11 +57,17 @@ public final class MetaEntityRegistry {
 
 	private final Path sourceDirectory;
 
+	/** 查询结果 VO 的源码目录；与表实体分开，低代码平台按目录管理大量 VO。 */
+	private final Path shapeSourceDirectory;
+
 	private final MetaEntitySource source;
 
 	private final MetaEntityStrategy strategy;
 
 	private final BoundedCache<String, MetaEntityModel> models;
+
+	/** 自定义结果形状模型：键 = 表名 + 语句 id + 列形状指纹。 */
+	private final BoundedCache<String, MetaShapeModel> shapes;
 
 	/** 普通 JVM 默认：代码生成。 */
 	public MetaEntityRegistry() {
@@ -79,15 +89,21 @@ public final class MetaEntityRegistry {
 
 	public MetaEntityRegistry(MetaDirectories directories, boolean generateFiles, int maximumSize,
 			MetaEntityStrategy strategy) {
-		this(new MetaEntitySource(), directories == null ? null : directories.entityDirectory(), maximumSize, strategy);
+		this(new MetaEntitySource(), directories == null ? null : directories.entityDirectory(),
+				directories == null ? null : directories.voDirectory(), maximumSize, strategy);
 	}
 
 	public MetaEntityRegistry(MetaEntitySource source, Path entityDirectory, int maximumSize) {
-		this(source, entityDirectory, maximumSize, MetaEntityStrategy.auto());
+		this(source, entityDirectory, entityDirectory, maximumSize, MetaEntityStrategy.auto());
 	}
 
 	public MetaEntityRegistry(MetaEntitySource source, Path entityDirectory, int maximumSize,
 			MetaEntityStrategy strategy) {
+		this(source, entityDirectory, entityDirectory, maximumSize, strategy);
+	}
+
+	public MetaEntityRegistry(MetaEntitySource source, Path entityDirectory, Path shapeSourceDirectory,
+			int maximumSize, MetaEntityStrategy strategy) {
 		if (strategy == null) {
 			strategy = MetaEntityStrategy.auto();
 		}
@@ -97,8 +113,10 @@ public final class MetaEntityRegistry {
 		}
 		this.source = source == null ? new MetaEntitySource() : source;
 		this.sourceDirectory = entityDirectory;
+		this.shapeSourceDirectory = shapeSourceDirectory;
 		this.strategy = strategy;
 		this.models = BoundedCaches.lru(maximumSize);
+		this.shapes = BoundedCaches.lru(maximumSize);
 	}
 
 	/** 当前表结构对应的实体模型；CODE 首次访问时生成源码 → javac 编译 → 加载，GENERIC 只建通用容器。 */
@@ -113,14 +131,44 @@ public final class MetaEntityRegistry {
 		return model(table).entityType();
 	}
 
-	/** 表结构变化后丢弃该表所有版本的模型；正在执行的旧查询不受影响。 */
+	/** 表结构变化后丢弃该表所有版本的实体模型；正在执行的旧查询不受影响。 */
 	public void refresh(String tableName) {
 		String prefix = normalize(tableName) + ":";
 		this.models.invalidateIf(key -> key.startsWith(prefix));
 	}
 
+	/** 语句文本变化后丢掉该表的形状模型（列结构可能一起变）。 */
+	public void refreshShapes(String tableName) {
+		String prefix = normalize(tableName) + ":";
+		this.shapes.invalidateIf(key -> key.startsWith(prefix));
+	}
+
 	public void refreshAll() {
 		this.models.invalidateAll();
+	}
+
+	public void refreshAllShapes() {
+		this.shapes.invalidateAll();
+	}
+
+	/**
+	 * 自定义结果形状对应的模型：CODE 模式为「语句 id 派生的具体类」编译加载，
+	 * GENERIC 模式回退到通用 {@link MetaClass}。同一语句的同一版列结构只构建一次。
+	 */
+	public MetaShapeModel shapeModel(MetaTable table, String statementId, java.util.List<MetaShapeColumn> columns) {
+		String fingerprint = MetaShapeSource.fingerprint(table, statementId, columns);
+		String key = normalize(table.name()) + ":" + normalize(statementId) + ":" + fingerprint;
+		return this.shapes.get(key, ignored -> buildShape(table, statementId, columns, fingerprint));
+	}
+
+	/** 已缓存的结果形状版本数（诊断用）。 */
+	public int shapeSize() {
+		return (int) this.shapes.estimatedSize();
+	}
+
+	/** 结果形状缓存上限（诊断用）。 */
+	public int shapeMaximumSize() {
+		return this.shapes.maximumSize();
 	}
 
 	/** 已缓存的结构版本数（诊断用）。 */
@@ -150,6 +198,52 @@ public final class MetaEntityRegistry {
 		return codegenModel(table, fingerprint);
 	}
 
+	/**
+	 * VO 源码落盘后归使用方所有：文件存在就按磁盘版本编译，不再用内存生成的新文本覆盖。
+	 * 这样人工调整 getter / 注释 / 读取逻辑能真正生效；结构变化会换指纹包，自然是一份新文件。
+	 */
+	private MetaEntitySource.Source persistedShapeSource(MetaEntitySource.Source rendered) {
+		if (this.shapeSourceDirectory == null) {
+			return rendered;
+		}
+		Path file = this.shapeSourceDirectory.resolve(rendered.packageName().replace('.', '/'))
+				.resolve(rendered.className() + ".java");
+		if (!Files.isRegularFile(file)) {
+			return rendered;
+		}
+		try {
+			return new MetaEntitySource.Source(rendered.packageName(), rendered.className(),
+					rendered.qualifiedName(), rendered.fingerprint(), Files.readString(file));
+		}
+		catch (IOException ex) {
+			throw new MetaSqlException("failed to read generated VO source '" + file + "'", ex);
+		}
+	}
+
+	private MetaShapeModel buildShape(MetaTable table, String statementId, List<MetaShapeColumn> columns,
+			String fingerprint) {
+		if (this.strategy == MetaEntityStrategy.GENERIC) {
+			return genericShapeModel(table, statementId, columns, fingerprint);
+		}
+		MetaEntitySource.Source rendered = MetaShapeSource.render(table, statementId, columns);
+		MetaEntitySource.Source source = persistedShapeSource(rendered);
+		Class<? extends MetaClass> type = compileSource(source, "compileShape", this.shapeSourceDirectory);
+		MetaEntityReader reader;
+		Supplier<MetaClass> factory;
+		try {
+			reader = (MetaEntityReader) type.getField("READER").get(null);
+			@SuppressWarnings("unchecked")
+			Supplier<MetaClass> newFactory = (Supplier<MetaClass>) type.getField("NEW").get(null);
+			factory = newFactory;
+		}
+		catch (ReflectiveOperationException ex) {
+			throw new MetaSqlException("generated result shape '" + source.qualifiedName()
+					+ "' has no public static MetaEntityReader READER / Supplier NEW", ex);
+		}
+		return new MetaShapeModel(type, reader, factory, source.packageName(), source.className(),
+				source.qualifiedName(), fingerprint, List.copyOf(columns));
+	}
+
 	// ------------------------------------------------------------------
 	// CODE：生成子类 + javac
 	// ------------------------------------------------------------------
@@ -172,21 +266,26 @@ public final class MetaEntityRegistry {
 		return new MetaEntityModel(type, reader, source.java(), fingerprint, source.qualifiedName(), factory);
 	}
 
+	private Class<? extends MetaClass> compileSource(MetaEntitySource.Source source) {
+		return compileSource(source, "compile", this.sourceDirectory);
+	}
+
 	/**
-	 * 按类名反射调用代码生成器。
+	 * 按类名反射调用代码生成器；方法名固定为 {@code compile}（实体）或 {@code compileShape}（结果形状）。
 	 *
 	 * <p>刻意不直接引用 {@link MetaEntityCompiler}：那会把 {@code javax.tools} 变成可达代码，
 	 * native-image 构建时就不得不处理一个不支持的 JDK 模块。native 下策略是 GENERIC，这段不会执行；
 	 * JVM 下按类名加载，行为不变。</p>
 	 */
-	private Class<? extends MetaClass> compileSource(MetaEntitySource.Source source) {
+	private Class<? extends MetaClass> compileSource(MetaEntitySource.Source source, String methodName,
+			Path sourceDirectory) {
 		String compilerClass = compilerClassName();
 		try {
 			Class<?> compiler = Class.forName(compilerClass, true, MetaEntityRegistry.class.getClassLoader());
-			Method compile = compiler.getMethod("compile", MetaEntitySource.Source.class, Path.class);
+			Method compile = compiler.getMethod(methodName, MetaEntitySource.Source.class, Path.class);
 			@SuppressWarnings("unchecked")
 			Class<? extends MetaClass> type = (Class<? extends MetaClass>) compile.invoke(null, source,
-					this.sourceDirectory);
+					sourceDirectory);
 			return type;
 		}
 		catch (ClassNotFoundException ex) {
@@ -271,6 +370,44 @@ public final class MetaEntityRegistry {
 		copy.setAutoIncrement(column.isAutoIncrement());
 		copy.setDefaultValue(column.getDefaultValue());
 		return copy;
+	}
+
+	/**
+	 * GENERIC 回退：不生成类，逐行按列序号写 {@link MetaProperty}。
+	 * 行类型就是 {@link MetaClass} 本身，但属性列表仍带列名/类型/JDBC 类型，语义与 CODE 一致。
+	 */
+	private MetaShapeModel genericShapeModel(MetaTable table, String statementId, List<MetaShapeColumn> columns,
+			String fingerprint) {
+		Supplier<MetaClass> factory = () -> {
+			MetaClass row = new MetaClass();
+			row.setName(table.name());
+			row.setNamespace(table.schema());
+			row.setMetaType(MetaType.META_TYPE_VO);
+			List<MetaProperty> properties = new ArrayList<>(columns.size());
+			for (MetaShapeColumn column : columns) {
+				MetaProperty property = new MetaProperty();
+				property.setName(column.name());
+				property.setType(column.javaType());
+				property.setTypeName(column.javaType());
+				property.setJdbcType(column.jdbcType());
+				property.setSqlTypeName(column.sqlTypeName());
+				property.setNullable(column.nullable());
+				properties.add(property);
+			}
+			row.setProperties(properties);
+			return row;
+		};
+		MetaEntityReader reader = rs -> {
+			MetaClass row = factory.get();
+			List<MetaProperty> properties = row.getProperties();
+			for (int i = 0; i < columns.size(); i++) {
+				properties.get(i).setValue(MetaJdbcTypes.value(rs.getObject(columns.get(i).index())));
+			}
+			row.clearChanged();
+			return row;
+		};
+		return new MetaShapeModel(MetaClass.class, reader, factory, MetaClass.class.getPackageName(),
+				MetaClass.class.getSimpleName(), MetaClass.class.getName(), fingerprint, List.copyOf(columns));
 	}
 
 	private static String normalize(String name) {

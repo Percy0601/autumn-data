@@ -60,6 +60,7 @@ class MetaDataControllerTest {
 		assertThat(init.get("generatedEntity")).isEqualTo(Boolean.TRUE);
 		assertThat((String) init.get("entityClass")).isNotEqualTo(MetaClass.class.getName());
 		assertThat(init.get("columns").toString()).containsIgnoringCase("deleted_flag");
+		assertThat((String) init.get("shapeStatementFile")).endsWith("meta_demo_form.vo.xml");
 
 		// ①-b 生成 SQL 落 XML：meta_demo_form.xml 里能直接看到 findOne / findList 等默认语句，
 		// 想改语义就改文件里的 SQL，不用回到 Java。
@@ -74,6 +75,14 @@ class MetaDataControllerTest {
 			assertThat(statementSql).contains("id=\"" + id + "\"");
 		}
 		assertThat(statementSql).contains("id=\"countVoided\""); // 手写自定义语句与默认语句共存
+		// VO 语句已经拆到独立文件，实体文件里不再混入 JOIN / 聚合 SQL
+		assertThat(statementSql).doesNotContain("formWithCustomer", "amountByCustomer");
+
+		Path shapeXml = statementXml.resolveSibling("meta_demo_form.vo.xml");
+		assertThat(shapeXml).isRegularFile();
+		String shapeSql = Files.readString(shapeXml);
+		assertThat(shapeSql).contains("id=\"formWithCustomer\"", "resultType=\"metaclass\"",
+				"id=\"amountByCustomer\"", "resultType=\"map\"");
 
 		// ② 元数据：DECIMAL 列被识别成 BigDecimal，自增主键被标记
 		Map<String, Object> schema = this.controller.schema();
@@ -152,6 +161,37 @@ class MetaDataControllerTest {
 		assertThat(seedJoin.get("region")).isEqualTo("south");
 		// 未挂客户的单据也能查出来（LEFT JOIN），客户列就是 null
 		assertThat((List<?>) join.get("aggregation")).isNotEmpty();
+
+		// 自定义形状的列描述来自 MetaClass 的属性，不是另抄一份元数据
+		List<?> shapeColumns = (List<?>) join.get("shapeColumns");
+		assertThat(shapeColumns).isNotEmpty();
+		assertThat(((Map<?, ?>) shapeColumns.get(0)).get("name")).isEqualTo("id");
+
+		// 具体类型：由语句 id 派生，包名带表名和形状指纹；不是通用 MetaClass
+		assertThat(join.get("rowClass")).isEqualTo("FormWithCustomer");
+		assertThat((String) join.get("rowPackage"))
+				.startsWith("xyz.wewin.autumn.data.meta.jdbc.shape.generated.")
+				.contains(".meta_demo_form.v");
+		assertThat((String) join.get("rowType"))
+				.isEqualTo(join.get("rowPackage") + ".FormWithCustomer");
+		assertThat((String) join.get("shapeStatementFile")).endsWith("meta_demo_form.vo.xml");
+
+		// VO 源码按目录落盘：meta/vo/... 下面有具体类，能直接打开看字段 / getter / read 方法
+		Path voSource = MetaDirectories.of(
+				this.environment.getProperty("autumn.data.meta.mapper.meta-directory")).voDirectory()
+				.resolve(((String) join.get("rowPackage")).replace('.', '/'))
+				.resolve("FormWithCustomer.java");
+		assertThat(voSource).isRegularFile();
+		assertThat(Files.readString(voSource)).contains("public final class FormWithCustomer extends MetaClass",
+				"getCustomerName()");
+
+		// MetaClass 示例：按列名取值 + 类型化读取（聚合列 total_amount 是 BigDecimal）
+		Map<?, ?> metaExample = (Map<?, ?>) join.get("metaClass");
+		assertThat(metaExample.get("customerName")).isEqualTo("北辰贸易");
+		assertThat(((Number) metaExample.get("orderCount")).intValue()).isGreaterThanOrEqualTo(1);
+		assertThat(metaExample.get("totalAmount")).isInstanceOf(BigDecimal.class);
+		assertThat(metaExample.get("rowClass")).isEqualTo("AmountByCustomer");
+		assertThat(metaExample.get("hasChanges")).isEqualTo(Boolean.FALSE);
 
 		// ⑩ 防注入：值不进 SQL 文本，非法列名/排序标识符都被元数据挡住
 		Map<String, Object> safety = this.controller.safety();

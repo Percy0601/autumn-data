@@ -11,7 +11,7 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 | `autumn-data-jdbc-spring-boot-starter` | Spring Boot 集成层（唯一使用方入口） | 约定大于配置：只引这一个依赖 + `spring.datasource.*` 即可用。仿 MyBatis 分层（引擎零 Spring / 集成层依赖 Boot），自动配置 `Dialect` Bean，支持 `autumn.data.jdbc.dialect` 显式指定或按 `DataSource` 元数据自动识别。多库场景可用 `autumn.data.meta.enabled=true` 让 `SpringMetaDataSource`（继承 Spring `AbstractDataSource`）接管数据源，底层交给 `MetaDataSource`。 |
 | `autumn-data-jdbc-compiler` | JSR-269 注解处理器 | 编译期为 `@AutumnRepository` 接口生成 `<名称>Impl`；仅 `annotationProcessorPaths` 使用，**运行时不依赖**。已实现：实体元数据提取（`@Entity`/`@Table`/`@Id`/`@Column`/`@GeneratedValue`/`@OneToMany`）、CRUD + 分页 + 一对多 + 方法名派生查询 SQL **编译期内联为生成类常量**、`RowMapper` 与批量读写/装配代码生成。解析不了的方法在**接口方法声明处**报错，不静默生成半成品。 |
 | `autumn-data-jdbc-spring-boot-starter-using` | 使用方示例（不发布） | **使用驱动开发的主战场**：只引 starter + 挂 compiler 处理器，在这里写后续所有用法（单表、一对多、多对一、派生查询），以用法倒逼核心实现。 |
-| `autumn-data-meta-jdbc` | **完全动态**的轻量基座（低代码平台：表单 / 基础资料的表都是运行期设计出来的） | 与 `autumn-data-jdbc` 的「编译期完全静态」职责分明：本模块**不做编译期 Mapper 注册、不预加载、不用反射代理**，元数据 / SQL / 实体类全部按表名懒加载，缓存一律有界 LRU 弹性伸缩。对标 **MyBatis** 但更轻量，支持**运行时动态加载**：XML 方言与静态实体的编译期 Mapper **同一套**（`#{}` 绑定、`${}` 标识符、`<if>/<choose>/<foreach>/<where>/<trim>`、`<sql>/<include>` 片段、`<resultMap>/<result>` 字段映射），动态 SQL 运行期解释执行。数据源连接池同样使用 **HikariCP**；方言与解析器复用 `autumn-data-common`。另含 `dynamic` 包：运行期建表后无需重启即可按表名/列名查询、保存、更新（`MetaMapper`，见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)）；**`MetaMapper` 返回 `MetaClass`，其实例是按表结构生成 Java 源码、`javax.tools` 编译加载的实体子类**——有真实类型化字段与 getter，逐行映射零反射；一张表一个语句 XML（`{根}/{数据源}/{命名空间}/{表名}.xml`），七条默认语句在 GENERATED 块里按表结构生成并随结构变化刷新，标记外的自定义语句逐字保留。 |
+| `autumn-data-meta-jdbc` | **完全动态**的轻量基座（低代码平台：表单 / 基础资料的表都是运行期设计出来的） | 与 `autumn-data-jdbc` 的「编译期完全静态」职责分明：本模块**不做编译期 Mapper 注册、不预加载、不用反射代理**，元数据 / SQL / 实体类全部按表名懒加载，缓存一律有界 LRU 弹性伸缩。对标 **MyBatis** 但更轻量，支持**运行时动态加载**：XML 方言与静态实体的编译期 Mapper **同一套**（`#{}` 绑定、`${}` 标识符、`<if>/<choose>/<foreach>/<where>/<trim>`、`<sql>/<include>` 片段、`<resultMap>/<result>` 字段映射），动态 SQL 运行期解释执行。数据源连接池同样使用 **HikariCP**；方言与解析器复用 `autumn-data-common`。另含 `dynamic` 包：运行期建表后无需重启即可按表名/列名查询、保存、更新（`MetaMapper`，见 [docs/meta-dynamic-crud.md](docs/meta-dynamic-crud.md)）；**`MetaMapper` 返回 `MetaClass`，其实例是按表结构生成 Java 源码、`javax.tools` 编译加载的实体子类**——有真实类型化字段与 getter，逐行映射零反射；一张表一个实体语句 XML（`{根}/{数据源}/{命名空间}/{表名}.xml`），另配一份 VO 语句 XML（同目录 `{表名}.vo.xml`，只放 `resultType="map"/"metaclass"` 的跨表/聚合 SQL，首次生成后归使用方），七条默认语句在 GENERATED 块里按表结构生成并随结构变化刷新，标记外的自定义语句逐字保留。 |
 
 各数据访问模块共享 `autumn-data-common` 的多数据库方言（`Dialect`）抽象，至少支持 **MySQL** 与 **PostgreSQL**，并可通过 `DialectResolver` 根据 `DataSource` 的元数据自动识别。
 
@@ -42,12 +42,12 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 - [x] compiler：解析不了的接口方法（未知属性/关键词、参数或返回类型不符、`Distinct`/`First`/`deleteBy`/两层以上关联）在**方法声明处**报错，不再静默跳过后由 javac 报「实现类未覆盖…」
 - [x] 一次性取数上下文（`AutumnDataContextHolder`，按线程保存 + `wrap` 线程池透传）：分页关联加载三态（`DEFAULT` 阈值级联 / `CASCADE` 强制级联 / `DISABLED` 强制关闭）与**字段投影**（`selectFields` / `excludeFields` 运行期真裁剪 `SELECT` 列清单，主键与多对一外键编译期判定为不可省略，级联不被裁剪打断）；被最近一次取实体行的查询消费后自动清除，无需手动 `clear`
 - [x] starter 多数据源接管（`autumn.data.meta.enabled=true`，默认关闭）：`SpringMetaDataSource` 继承 Spring 的 `AbstractDataSource` 成为应用唯一的 `DataSource`（配置排在 `DataSourceAutoConfiguration` 之前，Boot 建池自动退让），底层就是 `MetaDataSource` 注册表；默认池参数仍来自 `spring.datasource.*`（含 `spring.datasource.hikari.*` 调优项），额外池 `autumn.data.meta.pools.<名称>.*` 懒建 + 空闲回收，运行期 `register(name, supplier)` 可继续追加；Spring 事务只绑默认池，`@Transactional` 提交/回滚实测不变（using 模块有示例与集成测试）
-- [x] `autumn-data-meta-jdbc` 动态表 CRUD：`MetaMapper` 静态门面 + `of(池, 命名空间)` 绑定客户端 + `DatabaseMetaData` 元数据快照 + `refresh` 热更新；查询条件 = 参数实体 + XML `<if>`，写入范围 = 实体变更集（`changed('col')`），删除语义由 XML 的 `delete` 语句决定（有逻辑删除列默认逻辑删除、否则物理删除）；94 个 H2 用例 + using 模块 6 个上层用法示例覆盖「建表 → 不重启读写 → 加列 refresh → 复合主键 → 默认语句落 XML（七条生成块，手写文件首次访问自动插入）→ 自定义语句保留/覆盖 → 名字忽略大小写/注入拒绝 → 缓存分级清理与 reload」
+- [x] `autumn-data-meta-jdbc` 动态表 CRUD：`MetaMapper` 静态门面 + `of(池, 命名空间)` 绑定客户端 + `DatabaseMetaData` 元数据快照 + `refresh` 热更新；查询条件 = 参数实体 + XML `<if>`，写入范围 = 实体变更集（`changed('col')`），删除语义由 XML 的 `delete` 语句决定（有逻辑删除列默认逻辑删除、否则物理删除）；96 个 H2 用例 + using 模块 6 个上层用法示例覆盖「建表 → 不重启读写 → 加列 refresh → 复合主键 → 默认语句落 XML（七条生成块，手写文件首次访问自动插入）→ 自定义语句保留/覆盖 → VO 语句独立 `.vo.xml` 且只创建一次 → 磁盘改 SQL 自动重读 → 缓存分级清理与 reload」
 - [ ] 动态表 CRUD 接入 Spring 事务（当前单方法内自提交，跨方法 `@Transactional` 暂不生效）
 - [ ] `OrderBy` 之外的排序入参（`findAllBy(Sort)`）与 `Pageable` 排序
 - [ ] `autumn-data-meta-jdbc` 同步去 Spring 依赖（同样挪到各自 starter）
-- [x] `autumn-data-meta-jdbc` 跨表 / 自定义结果形状查询：语句在 XML 上声明 `resultType="map"`，`selectMaps/selectMap/selectPageMaps` 返回「结果集列标签（小写）→ 值」，用于 JOIN 其它表、分组聚合这类结果形状不由单表结构决定的查询；SQL 仍写在锚定表的语句文件里，参数实体 / `<if>/<foreach>` / `${}` 白名单 / 绑定槽编译 / 分页包子查询计数全部复用同一条链路；map 语句与实体入口互相显式拒绝（不静默丢列），时序值归一成 `java.time`。示例：`MetaDataController#joinQuery`（`meta_demo_form` LEFT JOIN `meta_demo_customer` + 按客户聚合）
-- [x] `autumn-data-meta-jdbc`：**唯一语句库** `MetaSqlFileStore`——一张表一个 XML（`{根}/{数据源}/{命名空间}/{表名}.xml`），首次访问生成七条默认语句（`findList/findPage/findOne/findById/save/update/delete`）的 `GENERATED START/END` 块；表结构变化只重写该块，标记之外的自定义语句逐字保留；无标记的手写文件一个字不改写、只在内存补齐默认语句；`SqlTemplate` 解释执行 common 的同一套 MyBatis XML 语法（另有内置谓词 `changed('col')`），`#{}` 解析期摘成 JDBC 绑定、`${}` 只放标识符白名单；命名语句走 `sqlFor/selectList/selectOne/selectCount/execute`，参数一律是 `MetaClass`
+- [x] `autumn-data-meta-jdbc` 跨表 / 自定义结果形状查询：语句在 XML 上声明 `resultType="map"`（历史名字）或 `resultType="metaclass"`（显式名字），`selectShape/selectShapeOne/selectShapePage` 返回 `List<MetaClass>` / `Optional<MetaClass>` / `Page<MetaClass>`；**每条语句按结果列生成一个具体的 `MetaClass` 子类**（类名由语句 id 派生，包名带 schema/表名/列形状指纹，字段与 typed getter 真实声明，静态 `READER` 按列序号零反射读取），行上可直接读 `getClass().getName()/getPackageName()/getSimpleName()`，需要 `Map` 时 `row.toMap()`；用于 JOIN 其它表、分组聚合这类结果形状不由单表结构决定的查询；SQL 写在锚定表的 VO 语句文件（`{表名}.vo.xml`）里，参数实体 / `<if>/<foreach>` / `${}` 白名单 / 绑定槽编译 / 分页包子查询计数全部复用同一条链路；形状语句与实体入口互相显式拒绝（不静默丢列），时序值归一成 `java.time`，native 模式回退通用 `MetaClass`。示例：`MetaDataController#joinQuery`（`meta_demo_form` LEFT JOIN `meta_demo_customer` + 按客户聚合，`map`/`metaclass` 两种写法各一条语句，返回具体类名/包名）
+- [x] `autumn-data-meta-jdbc`：**语句库** `MetaSqlFileStore`——实体语句 `{表名}.xml` + VO 语句 `{表名}.vo.xml`（`{根}/{数据源}/{命名空间}/` 下），首次访问生成七条默认语句（`findList/findPage/findOne/findById/save/update/delete`）的 `GENERATED START/END` 块；表结构变化只重写该块，标记之外的自定义语句逐字保留；VO 文件只在首次注册时写入，已存在则绝不覆盖；`SqlTemplate` 解释执行 common 的同一套 MyBatis XML 语法（另有内置谓词 `changed('col')`），`#{}` 解析期摘成 JDBC 绑定、`${}` 只放标识符白名单；命名语句走 `sqlFor/selectList/selectOne/selectCount/execute`，参数一律是 `MetaClass`
 - [x] `autumn-data-meta-jdbc` SQL 三段：抽取（`MarkedSql`：文本 + 每槽列引用 + 本次实参）→ 再转换（`MetaSqlPlan`：类型判断、列查找、setter 一次做完，按形状缓存）→ 执行（零槽走 `Statement`，有槽走 `PreparedStatement`），动态形状也能吃到游标/执行计划复用
 - [x] XML 方言下沉 `autumn-data-common`（`TemplateParser` / `TemplateNode` / `MapperXmlParser`），编译期生成器与动态运行期共用一棵 AST；**动态 SQL 只认 MyBatis 语法**（`<#if>` 这类模板引擎指令本来就不是合法 XML，`test` 表达式也只认 `a != null` / `a == 'x'` / `!a` / `a && b`，不再兼容 `name??` / `name?has_content`）
 - [x] `autumn-data-meta-jdbc` 运行期生成实体类：`MetaMapper` 门面统一返回 `MetaClass`，实例是按 `DatabaseMetaData` 用 `StringBuilder` 直接拼 Java 源码、`javax.tools.JavaCompiler` **内存编译**、内存 `ClassLoader` 加载的 `MetaClass` 子类（真实字段/getter/setter + 类型化 `getProperties()`，逐行映射零反射）；不建临时目录、不落 `.class`，类与 ClassLoader 可随缓存淘汰被 GC；结构指纹决定包名，加列 `refresh` 后生成新类、旧实例不受影响；源码可配置落盘以便固化成静态类（**已移除 FreeMarker 依赖与 `.ftl` 模板**）
@@ -93,7 +93,7 @@ Spring 事务只绑定默认池那一个实例，额外池不参与外层 `@Tran
 引入 starter 后自动安装 `MetaMapper` 静态门面；默认池直接用静态方法，多数据源 / 业务划分用 `of(池, 命名空间)` 把边界固定在客户端句柄上：
 
 ```java
-MetaClass order = MetaMapper.newEntity("form_order");   // 读写操作对象是实体；Map 只用于显式声明的跨表查询
+MetaClass order = MetaMapper.newEntity("form_order");   // 读写操作对象是实体；跨表查询只换结果形状，行仍是 MetaClass
 order.set("order_no", "A001");
 order.set("amount", "12.50");
 MetaMapper.save(order);                                 // 赋过值的列才进 INSERT，自增主键回填到 order
@@ -107,10 +107,16 @@ MetaClass query = new MetaClass();
 query.set("status", 1);
 Page<MetaClass> page = MetaMapper.findPage("form_order", query, Pageable.of(0, 20));
 
-// 跨表 / 自定义结果形状：XML 上声明 resultType="map"，行是「列标签（小写）→ 值」
-List<Map<String, Object>> joined = MetaMapper.selectMaps("form_order", "formWithCustomer", query);
-Page<Map<String, Object>> joinedPage = MetaMapper.selectPageMaps("form_order", "formWithCustomer", query,
+// 跨表 / 自定义结果形状：XML 上声明 resultType="map" 或 "metaclass"，每条语句生成一个具体 MetaClass 子类
+List<MetaClass> joined = MetaMapper.selectShape("form_order", "formWithCustomer", query);
+Page<MetaClass> joinedPage = MetaMapper.selectShapePage("form_order", "formWithCustomer", query,
         Pageable.of(0, 10));
+MetaClass shapeRow = joined.get(0);
+shapeRow.getClass().getName();                                    // ...shape.generated.<schema>.<table>.v<指纹>.FormWithCustomer
+shapeRow.getClass().getPackageName();                             // ...shape.generated.<schema>.<table>.v<指纹>
+shapeRow.getClass().getSimpleName();                              // FormWithCustomer
+String customerName = shapeRow.getString("customer_name");        // JOIN 出来的列
+Map<String, Object> map = shapeRow.toMap();                       // 需要 Map 时再转
 
 row.set("status", 2);                                   // 改过的列才进 SET，写 null 是显式置空
 MetaMapper.update(row);
@@ -119,32 +125,35 @@ MetaMapper.delete(row);                                 // 执行 XML 里的 del
 MetaMapper.of("tenant-a", "erp").findList("form_order", query);   // 绑定数据源 + 命名空间
 ```
 
-- **跨表查询走显式的 `resultType="map"`**：JOIN 其它表、聚合新列时结果形状由 SQL 决定，套锚定表实体只会丢掉额外列；这类语句在 XML 上写 `resultType="map"`，用 `selectMaps` / `selectMap` / `selectPageMaps` 读，列由 SELECT 决定，分页仍是对整条 SELECT 包子查询。两条路径互相拒绝（map 语句用实体入口、实体语句用 map 入口都会报错），不静默降级。示例：`MetaDataController` 的 `GET /metadata/query/join`（`meta_demo_form` LEFT JOIN `meta_demo_customer` + 按客户聚合）；
+- **跨表查询走显式的 `resultType="map"` / `"metaclass"`**：JOIN 其它表、聚合新列时结果形状由 SQL 决定，套锚定表实体只会丢掉额外列；这类语句**单独放在 `{表名}.vo.xml`**（不在实体 XML 里），用 `selectShape` / `selectShapeOne` / `selectShapePage` 读，**每条语句生成一个具体 `MetaClass` 子类**（类名 = 语句 id 派生，包名 = `...shape.generated.<schema>.<table>.v<列形状指纹>`，字段/typed getter 真实声明，零反射读取；纯 Map 需求用 `row.toMap()`），分页仍是对整条 SELECT 包子查询。两条路径互相拒绝（形状语句用实体入口、实体语句用形状入口都会报错），不静默降级。示例：`MetaDataController` 的 `GET /metadata/query/join`（`meta_demo_form` LEFT JOIN `meta_demo_customer` + 按客户聚合，返回 `rowType`/`rowPackage`/`rowClass`/`shapeStatementFile`）；
 
 - **返回的 `MetaClass` 是动态生成的实体实例**：首次访问按 `DatabaseMetaData` 的列结构用 `MetaEntitySource` 拼出 `MetaClass` 子类源码并编译加载，每列有 `Long` / `BigDecimal` / `LocalDateTime` 等真实字段和 getter，结果集映射是生成代码里的直接 setter 调用（逐行零反射）；`getProperties()` 同时保留 `type` / `jdbcType` / 主键 / 可空等描述。完全静态的实体类应付不了运行期建表，全 Map 又丢了类型，这一层就落在两者之间。`MetaMapper.entityType(table)` 可拿到生成出来的类；
 - 结构指纹参与包名：加列/改类型后 `MetaMapper.refresh("form_order")` 会生成新类，已取到的旧实例仍可用，不会同名重定义；
-- `autumn.data.meta.mapper.meta-directory=autumn-meta` 是唯一的落盘开关：三类产物分别落在它的 `meta-class/`（元类定义 JSON）、`entity/`（生成的实体 `.java`，可查看也可固化）、`sql/`（语句 XML，其下再按 `数据源/命名空间/表名.xml` 分层）三个固定子目录里。空串表示纯内存模式；**实体默认全程内存编译**，不建临时目录、不落 `.class`；运行期需要完整 JDK（`javax.tools`），JRE 上会明确报错；
+- `autumn.data.meta.mapper.meta-directory=autumn-meta` 是唯一的落盘开关：四类产物分别落在它的 `meta-class/`（元类定义 JSON）、`entity/`（表实体 `.java`）、`vo/`（查询结果 `MetaClass` 子类 `.java`）、`sql/`（语句 XML，其下再按 `数据源/命名空间/表名.xml` 与 `表名.vo.xml` 分层）四个固定子目录里。空串表示纯内存模式；运行期需要完整 JDK（`javax.tools`），JRE 上会明确报错；
+- **实体语句与 VO 语句分开落盘**：`form_order.xml` 放核心 CRUD + 锚定表自定义语句，`form_order.vo.xml` 只放 `resultType="map"` / `"metaclass"` 的跨表/聚合 SQL。VO 文件第一次由 `registerShapeStatements(...)` 生成，**文件存在后框架不再生成、不追加、不覆盖**；后续调 SQL 直接编辑 `.vo.xml`，引擎按修改时间重读。`registerShapeStatements` 批量传多条，避免“先写一条、第二条看到文件已存在而跳过”；
 - 元数据从 `DatabaseMetaData` 读取，直接填入 `MetaClass` / `MetaProperty`（表名 = `MetaClass.name`、schema = `namespace`、列 = properties）；建表/加列**提交后**调 `MetaMapper.refresh("form_order")` 换快照，不重启；
 - **SQL 只有一个来源：XML 语句文件**：七条默认语句（`findList/findPage/findOne/findById/save/update/delete`）由框架按表结构生成在 `GENERATED START/END` 之间，**并写进 XML**——手写文件第一次被访问时，框架会把生成块插到 `<mapper>` 开头，`findOne` 之类的 SQL 在文件里看得见、也改得动。标记之外的自定义语句归使用方所有；
 - **查询条件 = 参数实体 + XML `<if>`**：传 `MetaClass`，赋了值的列才进 WHERE；比较、模糊、`IN`、排序等复杂条件写在 XML 自定义语句里，不在 Java 侧现拼 SQL。**写哪几列 = 实体变更集**：默认 `save`/`update` 用内置谓词 `changed('col')`，「显式置 NULL」与「这一列没动」是两件事；
 - **API 只留常用路径**：读是 `findById/findOne/findList/findPage` 四条，总数就是 `findPage(...).total()`、存在性就是 `findOne(...).isPresent()`；`findByKey/count/exists/findList(limit)` 这些同义写法不再出现在静态门面上，需要限行或特殊计数时走命名语句（`selectPage(...).total()` / `selectCount`）或 `defaultClient()`；
-- **所有缓存都有界且弹性**：表结构快照、动态实体类、语句 AST、SQL 执行计划、池 → client 五处各有独立上限（默认 10_000），触顶按 LRU 淘汰最久未访问的冷条目，下次访问自动懒加载重建。实现是 JDK 自带的 `LinkedHashMap(accessOrder)` + 锁（`BoundedCache` 接口刻意对齐 Caffeine `Cache` 的方法名与语义，将来换实现只改 `BoundedCaches` 工厂），**不引入任何缓存库、不引入 Spring**；
-- **缓存可以按层清、也可以立即重建**：静态门面只有 `refresh(table)`（三样一起清）和 `cacheStats()`；`defaultClient()` 上还有 `clearTableCache` / `clearEntityCache` / `clearStatementCache` 的分级清理，以及 `reload(table)`（清完立刻回读 + 重新编译，表被删或编译失败当场抛错）。语句只有 XML 一个来源，清理只丢解析结果与执行计划，磁盘文件不动；
+- **所有缓存都有界且弹性**：表结构快照、动态实体类、SQL 执行计划各默认 10_000，**语句 XML 解析结果单独默认 1000（实体文件与 VO 文件分开计数）**；触顶按 LRU 淘汰最久未访问的冷条目，下次访问重新从磁盘读取。实现是 JDK 自带的 `LinkedHashMap(accessOrder)` + 锁（`BoundedCache` 接口刻意对齐 Caffeine `Cache` 的方法名与语义，将来换实现只改 `BoundedCaches` 工厂），**不引入任何缓存库、不引入 Spring**；
+- **缓存可以按层清、也可以立即重建**：静态门面只有 `refresh(table)`（几样一起清）和 `cacheStats()`；`defaultClient()` 上还有 `clearTableCache` / `clearEntityCache` / `clearStatementCache` 的分级清理，以及 `reload(table)`（清完立刻回读 + 重新编译，表被删或编译失败当场抛错）。语句只有 XML 一个来源，清理只丢解析结果与执行计划，磁盘文件不动；
 - **手改 SQL 就在 XML 里改**：三条 select 共用 `__autumn_where` 条件片段、共用 `__autumn_columns` 列清单，改条件/列只动这两处；某条语句要完全换写法，就把它复制到标记之后的自定义区（同名 id 后出现者优先）。Java 侧不再接受直接传一段 SQL；
 - 文件名与列名按**忽略大小写**对齐：H2/Oracle 元数据给的是大写名，手写文件多按 MySQL 习惯写小写，`demo_order.xml` 配 `DEMO_ORDER` 这张表、`#{order_no}` 配 `ORDER_NO` 这一列都能对上；
 - **删除看 XML 里的 `delete` 语句**：有逻辑删除列时默认生成 `UPDATE ... SET deleted_flag = 1`，没有时生成物理 `DELETE`；使用方可在自定义区覆盖 `delete`。`deleted_flag` / `del_flag` / `is_deleted` 命中后查询自动追加 `= 0`；
 - `findList` 默认最多 1000 行，多数据源与业务划分按 `of(池, 命名空间)` 绑定句柄而不是 ThreadLocal；
 - **连接池与事务沿用 Spring Boot**：starter 的自动配置把容器里的 `DataSource`（`spring.datasource.*` 建出来的 HikariCP 等）直接交给两条链路——编译期生成的静态仓储和动态层引擎，不自建连接池，连接的创建/回收/调优全归使用方那个池；连接源是 `PerThreadConnectionSource` 包一层 `SpringConnectionSource`（每线程一份，单例 `AutumnJdbc` 才不会串连接），所以语句自动加入 `@Transactional`——事务里调 `MetaMapper`、调 `JdbcTemplate`、调生成的仓储用的是同一条连接，回滚一起回滚。无 Spring 时（`MetaMapperEngine.standalone` / `Autumn.using`）仍是 JDBC 连接源自管、单方法自提交。
 
-### 唯一语句库：一张表一个 XML
+### 语句库：实体 XML + VO XML 两份文件
 
 所有 SQL（含核心 CRUD）只有这一个来源。路径把数据源与业务分组编进去：
 
 ```text
 {语句根}/{数据源}/{命名空间}/{表名}.xml
+{语句根}/{数据源}/{命名空间}/{表名}.vo.xml
   · 语句根 = <meta-directory>/sql（或系统属性 -Dautumn.data.meta.sql.root 指定的目录）
-  · 磁盘找不到时再看 classpath:meta/{数据源}/{命名空间}/{表名}.xml
+  · 磁盘找不到时再看 classpath:meta/{数据源}/{命名空间}/{表名}.xml（.vo.xml 同理）
   · 命名空间默认 "default"，可用于业务划分或包名称
+  · .xml 放锚定表实体语句；.vo.xml 只放 resultType="map"/"metaclass" 的 VO 语句
 ```
 
 `MetaMapper.of(池, 命名空间)` 把「哪个库、哪套语句」固定在客户端句柄上，不塞进 ThreadLocal：
@@ -159,10 +168,53 @@ client.selectList("form_order", "findByNo", params);           // 执行自定�
 client.selectCount("form_order", "countDraft", params);
 client.execute("form_order", "voidByNo", params);
 client.statementIds("form_order");                             // 七条默认 + 自定义语句
-client.ensureStatementFile("form_order");                      // 显式生成 / 更新文件并返回位置
+client.ensureStatementFile("form_order");                      // 显式生成 / 更新实体 XML 并返回位置
 ```
 
-#### 文件分两块
+VO 语句单独注册，第一次落盘后归使用方：
+
+```java
+// 用 LinkedHashMap 保证文件里的 SQL 顺序稳定；Map.of 的迭代顺序不保证
+Map<String, String> voStatements = new LinkedHashMap<>();
+voStatements.put("formWithCustomer", """
+                <select id="formWithCustomer" resultType="metaclass">
+                    SELECT f.id, f.order_no, c.customer_name
+                    FROM ${table} f
+                    LEFT JOIN customer c ON c.customer_no = f.customer_no
+                    WHERE f.deleted_flag = 0
+                </select>
+                """);
+voStatements.put("amountByCustomer", """
+                <select id="amountByCustomer" resultType="map">
+                    SELECT c.customer_name, SUM(f.amount) AS total_amount
+                    FROM ${table} f
+                    JOIN customer c ON c.customer_no = f.customer_no
+                    GROUP BY c.customer_name
+                </select>
+                """);
+
+// 低代码平台第一次生成 SQL 时调用；文件不存在才写，已存在绝不覆盖
+String voFile = MetaMapper.registerShapeStatements("form_order", voStatements);
+
+List<MetaClass> rows = MetaMapper.selectShape("form_order", "formWithCustomer", new MetaClass());
+String className = rows.get(0).getClass().getSimpleName(); // FormWithCustomer
+```
+
+生成后的目录/文件：
+
+```text
+autumn-meta/
+  entity/.../FormOrder.java
+  vo/.../FormWithCustomer.java          # 具体 MetaClass 子类源码；已存在就按磁盘版本编译
+  sql/default/default/form_order.xml
+  sql/default/default/form_order.vo.xml # 只放上面两条 VO SQL；人工调 SQL 就编辑它
+```
+
+`form_order.vo.xml` 已存在时，`registerShapeStatements` 只返回路径、不改一个字节；调完 SQL 不需要重启，下一次查询按文件修改时间/长度自动重读。超过 1000 张表的解析结果被 LRU 淘汰后，也是重新读这个磁盘文件，而不是再生成一份。
+
+#### 实体文件分两块
+
+下面这份是 `form_order.xml`（实体语句文件）；`resultType="map"/"metaclass"` 的跨表/聚合语句不放这里，放同目录的 `form_order.vo.xml`。
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -195,8 +247,9 @@ client.ensureStatementFile("form_order");                      // 显式生成 /
 </mapper>
 ```
 
-- **生成语句落进 XML**：文件不存在时框架生成完整文档；手写文件没有生成块时，第一次访问会把七条默认语句插到 `<mapper>` 开头，`findOne/findList` 等 SQL 在文件里可见、可改；只读 classpath / 纯内存模式（`generate-files=false`）不落盘，改写结果只在内存生效。
-- **表结构变化只重写生成块**：标记头带结构指纹（生成器版本 + 表结构），指纹变了只替换 START/END 之间那一段；标记之前的注释、标记之后的自定义语句、缩进与空行逐字保留。
+- **生成语句落进实体 XML**：文件不存在时框架生成完整文档；手写文件没有生成块时，第一次访问会把七条默认语句插到 `<mapper>` 开头，`findOne/findList` 等 SQL 在文件里可见、可改；只读 classpath / 纯内存模式（`generate-files=false`）不落盘，改写结果只在内存生效。
+- **VO 文件只写一次**：`registerShapeStatements` 在文件不存在时落盘，存在时原样返回；不在框架的 GENERATED 块里，也不是每次查询重生成。人类编辑后引擎按修改时间重读；超过语句缓存上限（默认 1000 张表）被淘汰后同样从磁盘回读。
+- **表结构变化只重写实体生成块**：标记头带结构指纹（生成器版本 + 表结构），指纹变了只替换 START/END 之间那一段；标记之前的注释、标记之后的自定义语句、缩进与空行逐字保留。
 - **自定义语句按 id 调用**：`sqlFor`（只抽取不执行）、`selectList` / `selectOne` / `selectCount` / `selectPage` / `execute`；`<select>` 走查询，`<insert>/<update>/<delete>` 走写。自定义区可以覆盖同名默认 id（文件里后出现的同名语句优先）。
 - **删除由 `delete` 语句决定**：有逻辑删除列时默认生成逻辑删除 `UPDATE`，没有时生成物理 `DELETE`；在自定义区覆盖 `delete` 即可换语义。
 - **改默认 SQL 的姿势**：条件只改 `__autumn_where`、列清单只改 `__autumn_columns`，三条 select 跟着变；整条语句不满意就复制到标记之后重写同 id，框架下次刷生成块也不会动它。
@@ -206,9 +259,10 @@ client.ensureStatementFile("form_order");                      // 显式生成 /
 语句文件相关配置：
 
 ```properties
-autumn.data.meta.mapper.meta-directory=autumn-meta      # 工作根目录；语句 XML 落在其 sql/ 子目录；空串 = 纯内存
+autumn.data.meta.mapper.meta-directory=autumn-meta      # 工作根目录；实体 XML 落 sql/，VO XML 落同目录 .vo.xml
 autumn.data.meta.mapper.generate-files=true             # 是否把生成/合并结果写回磁盘；false 时默认语句仍在内存补齐
-autumn.data.meta.mapper.table-cache-size=10000          # 各缓存容器的条目上限，默认 10000
+autumn.data.meta.mapper.table-cache-size=10000          # 表结构 / 实体类 / 执行计划缓存上限
+autumn.data.meta.mapper.statement-cache-size=1000        # XML 解析结果缓存上限（实体 + VO 各 1000 张表）
 autumn.data.meta.mapper.default-list-limit=1000         # findList 未显式限行时的上限
 autumn.data.meta.mapper.default-pool-name=default       # 静态门面走的那个池
 autumn.data.meta.mapper.logic-delete-columns=deleted_flag,del_flag,is_deleted

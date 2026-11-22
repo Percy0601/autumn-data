@@ -18,6 +18,7 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import xyz.wewin.autumn.data.common.dialect.DefaultDialect;
+import xyz.wewin.autumn.data.common.mapper.MapperDefinition;
 import xyz.wewin.autumn.data.common.mapper.MapperDefinition.StatementDefinition;
 import xyz.wewin.autumn.data.common.mapper.MapperXmlParser;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
@@ -27,7 +28,10 @@ import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCaches;
 import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
 
 /**
- * <b>唯一的语句库</b>：一张表一个 XML 文件，路径 {@code {根}/{数据源}/{命名空间}/{表名}.xml}。
+ * <b>唯一的语句库</b>：一张表一个实体语句文件 {@code {根}/{数据源}/{命名空间}/{表名}.xml}，
+ * 跨表 / 自定义结果形状（{@code resultType="map"}/{@code "metaclass"}）的 VO 语句另放
+ * {@code {根}/{数据源}/{命名空间}/{表名}.vo.xml}。两份文件都可以直接编辑，框架只维护实体文件里的
+ * {@code GENERATED START/END} 块；VO 文件是使用方资产，框架只在首次注册时追加，之后不会重写。
  *
  * <p>语法只有一套，就是 {@code autumn-data-common} 的 MyBatis 风格 XML：
  * {@code #{}} 绑定、{@code ${}} 标识符、{@code <if>/<where>/<trim>/<foreach>/<choose>}、
@@ -78,6 +82,9 @@ public final class MetaSqlFileStore {
 
 	private static final String XML_EXTENSION = ".xml";
 
+	/** 自定义结果形状语句的文件后缀：{@code meta_demo_form.vo.xml}。 */
+	public static final String VO_FILE_SUFFIX = ".vo";
+
 	/** 语句根目录；{@code null} 表示只读 classpath。 */
 	private final Path rootDirectory;
 
@@ -87,8 +94,11 @@ public final class MetaSqlFileStore {
 
 	private final boolean generateFiles;
 
-	/** 表级解析结果缓存。 */
+	/** 实体语句文件缓存（含七条默认语句）。 */
 	private final BoundedCache<String, SqlFile> files;
+
+	/** 结果形状 VO 语句文件缓存；与实体文件分开装载、分开失效。 */
+	private final BoundedCache<String, SqlFile> voFiles;
 
 	/** 结构指纹 → 七条默认语句（避免每次访问都重新解析同一份生成模板）。 */
 	private final BoundedCache<String, Map<String, SqlTemplate>> defaults;
@@ -124,6 +134,7 @@ public final class MetaSqlFileStore {
 		this.generator = generator;
 		this.generateFiles = generateFiles;
 		this.files = BoundedCaches.lru(maximumSize);
+		this.voFiles = BoundedCaches.lru(maximumSize);
 		this.defaults = BoundedCaches.lru(maximumSize);
 	}
 
@@ -189,6 +200,103 @@ public final class MetaSqlFileStore {
 		return cached == null ? describe(datasource, namespace, table.name()) : cached.location();
 	}
 
+	/**
+	 * 首次创建 VO 语句文件：写到 {@code {表名}.vo.xml}，与实体语句文件分开。
+	 *
+	 * <p><b>文件已存在时原样返回，不再生成、不追加、不覆盖</b>——首次落盘后 SQL 归使用方所有，
+	 * 想调整直接编辑 XML；下次访问按修改时间重新读盘。语句必须是
+	 * {@code <select resultType="map">} 或 {@code resultType="metaclass"}。</p>
+	 */
+	public String appendShapeStatement(String datasource, String namespace, MetaTable table, String statementId,
+			String xml) {
+		Map<String, String> snippets = new LinkedHashMap<>();
+		snippets.put(requireId(statementId), xml);
+		return appendShapeStatements(datasource, namespace, table, snippets);
+	}
+
+	/** 首次创建 VO 语句文件，一次写入多条；已有文件绝不改写。 */
+	public String appendShapeStatements(String datasource, String namespace, MetaTable table,
+			Map<String, String> snippets) {
+		if (snippets == null || snippets.isEmpty()) {
+			throw new MetaSqlException("at least one VO statement is required");
+		}
+		if (!this.generateFiles) {
+			throw new MetaSqlException("VO statement registration needs autumn.data.meta.mapper.generate-files=true");
+		}
+		Path target = shapeTarget(datasource, namespace, table);
+		if (target == null) {
+			throw new MetaSqlException("VO statement registration needs autumn.data.meta.mapper.meta-directory "
+					+ "(current mode is in-memory)");
+		}
+		// 关键的人类使用场景：文件已经存在就是使用方资产，框架绝不重新生成。
+		if (Files.isRegularFile(target)) {
+			return target.toString();
+		}
+
+		String content = shapeDocument(datasource, namespace, table);
+		for (Map.Entry<String, String> entry : snippets.entrySet()) {
+			String id = requireId(entry.getKey());
+			String snippet = entry.getValue() == null ? "" : stripDeclaration(entry.getValue()).trim();
+			if (snippet.isEmpty()) {
+				throw new MetaSqlException("VO statement '" + id + "' is empty");
+			}
+			if (snippet.contains("<mapper")) {
+				throw new MetaSqlException("pass only the <select> fragment for VO statement '" + id
+						+ "', not a whole <mapper> document");
+			}
+			content = insertBeforeMapperEnd(content, snippet);
+		}
+
+		Map<String, SqlTemplate> parsed = parse(content, target.toString());
+		for (String id : snippets.keySet()) {
+			SqlTemplate added = parsed.get(id);
+			if (added == null) {
+				throw new MetaSqlException("VO statement fragment does not declare <select id=\"" + id + "\">");
+			}
+			if (added.type() != MapperDefinition.StatementType.SELECT || !added.returnsCustomShape()) {
+				throw new MetaSqlException("VO statement '" + id + "' must be a <select resultType=\"map\"> or "
+						+ "<select resultType=\"metaclass\">");
+			}
+		}
+		if (!write(target, content)) {
+			throw new MetaSqlException("cannot write VO statement file '" + target + "'");
+		}
+		this.voFiles.invalidate(key(datasource, namespace, table.name()));
+		return target.toString();
+	}
+
+	private Path shapeTarget(String datasource, String namespace, MetaTable table) {
+		return table == null ? null : shapeTarget(datasource, namespace, table.name());
+	}
+
+	private Path shapeTarget(String datasource, String namespace, String table) {
+		if (this.rootDirectory == null) {
+			return null;
+		}
+		return this.rootDirectory.resolve(segment(datasource)).resolve(segment(namespace))
+				.resolve(fileNames(table, VO_FILE_SUFFIX).get(0));
+	}
+
+	private String shapeDocument(String datasource, String namespace, MetaTable table) {
+		String mapperNamespace = segment(datasource) + "/" + segment(namespace) + "/"
+				+ MetaDirectories.safeFileName(table.name()) + VO_FILE_SUFFIX;
+		return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+				+ "<!-- VO 语句文件：跟实体语句分开，SQL 归使用方所有；框架首次注册时写入，之后不覆盖。 -->\n"
+				+ "<mapper namespace=\"" + mapperNamespace + "\">\n</mapper>\n";
+	}
+
+	private static String insertBeforeMapperEnd(String content, String snippet) {
+		int end = content.lastIndexOf("</mapper>");
+		if (end < 0) {
+			throw new MetaSqlException("VO statement file has no </mapper> closing tag");
+		}
+		StringBuilder indented = new StringBuilder(snippet.length() + 8);
+		for (String line : snippet.split("\\R", -1)) {
+			indented.append("    ").append(line).append('\n');
+		}
+		return content.substring(0, end) + indented + content.substring(end);
+	}
+
 	// ------------------------------------------------------------------
 	// 纯文件视图：不带表结构，不生成、不补默认（诊断 / 兼容）
 	// ------------------------------------------------------------------
@@ -206,16 +314,36 @@ public final class MetaSqlFileStore {
 	}
 
 	private Map<String, SqlTemplate> statements(String datasource, String namespace, String table, MetaTable meta) {
-		String key = key(datasource, namespace, table);
 		String fingerprint = meta == null ? null : this.generator.fingerprint(meta);
-		SqlFile cached = this.files.getIfPresent(key);
+		SqlFile base = loadFile(datasource, namespace, table, meta, fingerprint, false);
+		SqlFile vo = loadFile(datasource, namespace, table, null, null, true);
+		if (vo.statements().isEmpty()) {
+			return base.statements();
+		}
+		// VO 文件优先：同 id 时 resultType 形状语句覆盖实体文件里的旧定义，便于平滑迁移。
+		Map<String, SqlTemplate> merged = new LinkedHashMap<>(base.statements());
+		merged.putAll(vo.statements());
+		return Collections.unmodifiableMap(merged);
+	}
+
+	/** 单份文件（实体 / VO）的 LRU 装载；两份文件各自按修改时间 + 长度判活。 */
+	private SqlFile loadFile(String datasource, String namespace, String table, MetaTable meta, String fingerprint,
+			boolean vo) {
+		String key = key(datasource, namespace, table);
+		BoundedCache<String, SqlFile> cache = vo ? this.voFiles : this.files;
+		SqlFile cached = cache.getIfPresent(key);
 		if (cached != null && !cached.stale() && sameFingerprint(cached.fingerprint(), fingerprint)) {
-			return cached.statements();
+			return cached;
 		}
 		// 过期 / 结构变化：先失效再走 get，让单飞语义管住并发重载
-		this.files.invalidate(key);
-		SqlFile loaded = this.files.get(key, ignored -> load(datasource, namespace, table, meta, fingerprint));
-		return loaded == null ? Map.of() : loaded.statements();
+		cache.invalidate(key);
+		SqlFile loaded = cache.get(key, ignored -> load(datasource, namespace, table, meta, fingerprint, vo));
+		return loaded == null ? emptyFile(datasource, namespace, table, vo) : loaded;
+	}
+
+	private static SqlFile emptyFile(String datasource, String namespace, String table, boolean vo) {
+		return new SqlFile(vo ? datasource + "/" + namespace + "/" + table + VO_FILE_SUFFIX + XML_EXTENSION
+				: datasource + "/" + namespace + "/" + table + XML_EXTENSION, Map.of(), null, -1L, null);
 	}
 
 	private static boolean sameFingerprint(String cached, String requested) {
@@ -232,18 +360,38 @@ public final class MetaSqlFileStore {
 		return cached == null ? describe(datasource, namespace, table) : cached.location();
 	}
 
+	/** VO 语句文件的实际路径（未加载时给出预期磁盘路径）。 */
+	public String shapeLocation(String datasource, String namespace, String table) {
+		SqlFile cached = this.voFiles.getIfPresent(key(datasource, namespace, table));
+		return cached == null ? describe(datasource, namespace, table, true) : cached.location();
+	}
+
+	/** VO 语句文件的落盘路径；纯内存 / 只读模式返回 {@code null}。 */
+	public String shapeFile(String datasource, String namespace, String table) {
+		Path target = shapeTarget(datasource, namespace, table);
+		return target == null ? null : target.toString();
+	}
+
 	/** 丢掉一张表的解析结果，下次访问重新读盘（想立刻生效时用；平时自动按修改时间 + 指纹重读）。 */
 	public void refresh(String datasource, String namespace, String table) {
-		this.files.invalidate(key(datasource, namespace, table));
+		String key = key(datasource, namespace, table);
+		this.files.invalidate(key);
+		this.voFiles.invalidate(key);
 	}
 
 	public void refreshAll() {
 		this.files.invalidateAll();
+		this.voFiles.invalidateAll();
 		this.defaults.invalidateAll();
 	}
 
 	public long size() {
 		return this.files.estimatedSize();
+	}
+
+	/** 已缓存的 VO 语句文件数（诊断用）。 */
+	public long voSize() {
+		return this.voFiles.estimatedSize();
 	}
 
 	public int maximumSize() {
@@ -254,14 +402,15 @@ public final class MetaSqlFileStore {
 	// 加载：磁盘 → classpath → 内存生成
 	// ------------------------------------------------------------------
 
-	private SqlFile load(String datasource, String namespace, String table, MetaTable meta, String fingerprint) {
-		Source source = readSource(datasource, namespace, table);
+	private SqlFile load(String datasource, String namespace, String table, MetaTable meta, String fingerprint,
+			boolean vo) {
+		Source source = readSource(datasource, namespace, table, vo);
 		String content = source.content();
 		String location = source.location();
 		Path stampPath = source.stampPath();
 		long stamp = source.stamp();
 
-		if (meta != null) {
+		if (meta != null && !vo) {
 			if (content == null) {
 				// 文件不存在：落一份完整文档，或在内存里用默认语句
 				String generated = this.generator.fullDocument(meta, namespace);
@@ -321,8 +470,8 @@ public final class MetaSqlFileStore {
 		return statements.isEmpty() ? Map.of() : Collections.unmodifiableMap(statements);
 	}
 
-	private Source readSource(String datasource, String namespace, String table) {
-		List<String> names = fileNames(table);
+	private Source readSource(String datasource, String namespace, String table, boolean vo) {
+		List<String> names = fileNames(table, vo ? VO_FILE_SUFFIX : "");
 		String directory = segment(datasource) + "/" + segment(namespace);
 		Path base = this.rootDirectory == null ? null
 				: this.rootDirectory.resolve(segment(datasource)).resolve(segment(namespace));
@@ -346,7 +495,7 @@ public final class MetaSqlFileStore {
 					asFile == null ? -1L : stamp(asFile), null);
 		}
 		Path target = base == null ? null : base.resolve(names.get(0));
-		return new Source(null, describe(datasource, namespace, table), null, -1L, target);
+		return new Source(null, describe(datasource, namespace, table, vo), null, -1L, target);
 	}
 
 	/**
@@ -418,7 +567,11 @@ public final class MetaSqlFileStore {
 
 	/** 候选文件名：表名原样、小写、大写。元数据表名在 H2/Oracle 下常是大写，手写文件多按小写。 */
 	private static List<String> fileNames(String table) {
-		String base = MetaDirectories.safeFileName(table) + XML_EXTENSION;
+		return fileNames(table, "");
+	}
+
+	private static List<String> fileNames(String table, String suffix) {
+		String base = MetaDirectories.safeFileName(table) + suffix + XML_EXTENSION;
 		Set<String> names = new LinkedHashSet<>();
 		names.add(base);
 		names.add(base.toLowerCase(Locale.ROOT));
@@ -427,8 +580,12 @@ public final class MetaSqlFileStore {
 	}
 
 	private String describe(String datasource, String namespace, String table) {
+		return describe(datasource, namespace, table, false);
+	}
+
+	private String describe(String datasource, String namespace, String table, boolean vo) {
 		String directory = CLASSPATH_ROOT + segment(datasource) + "/" + segment(namespace) + "/";
-		String name = fileNames(table).get(0);
+		String name = fileNames(table, vo ? VO_FILE_SUFFIX : "").get(0);
 		return (this.rootDirectory == null ? "" : this.rootDirectory.resolve(segment(datasource))
 				.resolve(segment(namespace)).resolve(name) + " or ") + "classpath:" + directory + name;
 	}
