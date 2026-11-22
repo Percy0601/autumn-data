@@ -22,16 +22,24 @@ import java.util.List;
  * @param distinct 主语是否带 {@code Distinct}
  * @param limit {@code First/Top} 施加的行数上限（{@code 0} 表示不限制，由方言在运行期拼 {@code LIMIT}）
  * @param custom 是否来自 {@code @Query}：是则跳过一对多装配（自定义 SQL 未必选了外键列）
+ * @param vo 自定义返回类型（VO / DTO）的列映射；返回实体时为 {@code null}。VO 查询只取它要的那些列、
+ *            不做关联装配，也不参与一次性字段投影
  */
 record DerivedQuery(String methodName, DerivedQuery.Kind kind, String returnTypeSource, List<Parameter> parameters,
 		List<DerivedQuery.Binding> bindings, String sql, String projectionSql, String countSql, String selectSql,
-		boolean distinct, long limit, boolean custom) {
+		boolean distinct, long limit, boolean custom, VoMapping vo) {
 
 	/** 非分页查询：没有独立的计数语句。 */
 	DerivedQuery(String methodName, Kind kind, String returnTypeSource, List<Parameter> parameters,
-			List<Binding> bindings, String sql, String selectSql, boolean distinct, long limit, boolean custom) {
+			List<Binding> bindings, String sql, String selectSql, boolean distinct, long limit, boolean custom,
+			VoMapping vo) {
 		this(methodName, kind, returnTypeSource, parameters, bindings, sql, "", "", selectSql, distinct, limit,
-				custom);
+				custom, vo);
+	}
+
+	/** 该查询是否返回自定义 VO。 */
+	boolean voQuery() {
+		return this.vo != null;
 	}
 
 	/** 该查询取实体行的语句常量名后缀：有投影模板时才生成，运行期用它替换 {@code {cols}}。 */

@@ -400,7 +400,7 @@ final class EntityIntrospector {
 		return (declared == null || declared.isBlank()) ? defaultValue : declared;
 	}
 
-	private static String annotationString(Element element, String annotationFqn, String attribute) {
+	static String annotationString(Element element, String annotationFqn, String attribute) {
 		for (AnnotationMirror mirror : element.getAnnotationMirrors()) {
 			if (!annotationName(mirror).contentEquals(annotationFqn)) {
 				continue;
@@ -451,14 +451,14 @@ final class EntityIntrospector {
 	}
 
 	/** 擦除泛型后的可书写类型名：基本类型保留 {@code int}，数组保留 {@code byte[]}。 */
-	private static String typeSignature(TypeMirror type, Types types) {
+	static String typeSignature(TypeMirror type, Types types) {
 		if (type.getKind() == TypeKind.DECLARED) {
 			return ((TypeElement) ((DeclaredType) types.erasure(type)).asElement()).getQualifiedName().toString();
 		}
 		return type.toString();
 	}
 
-	private static boolean isScalarType(String javaType) {
+	static boolean isScalarType(String javaType) {
 		return !javaType.contains(".") || javaType.endsWith("[]") || javaType.startsWith("java.lang.")
 				|| javaType.startsWith("java.time.") || javaType.startsWith("java.math.")
 				|| javaType.startsWith("java.sql.") || javaType.equals("java.util.Date")

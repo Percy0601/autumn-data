@@ -272,6 +272,120 @@ class AutoRepositoryProcessorTests {
 			}
 			""";
 
+	/** 自定义返回类型（VO）：record 形态。 */
+	private static final String RECORD_VO = """
+			package demo;
+
+			public record UserNameView(java.lang.String name, int age) {
+			}
+			""";
+
+	/** VO 的普通类形态：成员来自公共 setter（含基本类型 int）。 */
+	private static final String BEAN_VO = """
+			package demo;
+
+			public class UserNameViewBean {
+
+				private java.lang.String name;
+
+				private int age;
+
+				public void setName(java.lang.String name) { this.name = name; }
+
+				public void setAge(int age) { this.age = age; }
+			}
+			""";
+
+	private static final String RECORD_VO_REPO = """
+			package demo;
+			@xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository
+			public interface VoRepository extends xyz.wewin.autumn.data.jdbc.repository.CrudRepository<User, java.lang.Long> {
+
+				java.util.List<UserNameView> findByNameOrderByAgeAsc(java.lang.String name);
+
+				java.util.Optional<UserNameView> findFirstByOrderByAgeDesc();
+
+				xyz.wewin.autumn.data.jdbc.page.Page<UserNameView> findByAgeGreaterThan(int age,
+						xyz.wewin.autumn.data.jdbc.page.Pageable pageable);
+
+				@xyz.wewin.autumn.data.jdbc.annotation.Query("SELECT name, age FROM demo_user WHERE age > ?")
+				java.util.List<UserNameView> adults(int age);
+			}
+			""";
+
+	private static final String BEAN_VO_REPO = """
+			package demo;
+			@xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository
+			public interface BeanVoRepository extends xyz.wewin.autumn.data.jdbc.repository.CrudRepository<User, java.lang.Long> {
+
+				java.util.List<UserNameViewBean> findByName(java.lang.String name);
+			}
+			""";
+
+	private static final String QUOTED_VO_REPO = """
+			package demo;
+			@xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository
+			public interface QuotedVoRepository extends xyz.wewin.autumn.data.jdbc.repository.CrudRepository<User, java.lang.Long> {
+
+				java.util.List<UserNameView> findByName(java.lang.String name);
+			}
+			""";
+
+	/** VO 成员在实体上找不到对应字段：应在方法声明处报错并放弃生成。 */
+	private static final String BAD_VO = """
+			package demo;
+
+			public record BadView(java.lang.String nickname) {
+			}
+			""";
+
+	private static final String BAD_VO_REPO = """
+			package demo;
+			@xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository
+			public interface BadVoRepository extends xyz.wewin.autumn.data.jdbc.repository.CrudRepository<User, java.lang.Long> {
+
+				java.util.List<BadView> findByName(java.lang.String name);
+			}
+			""";
+
+	/** 带枚举列的实体：库里存字符串，VO 成员是枚举。 */
+	private static final String STATUS_ENTITY = """
+			package demo;
+			@jakarta.persistence.Entity
+			@jakarta.persistence.Table(name = "demo_status")
+			public class StatusRow {
+				@jakarta.persistence.Id
+				@jakarta.persistence.GeneratedValue
+				private java.lang.Long id;
+				@jakarta.persistence.Column(name = "status_code")
+				private java.lang.String status;
+				public java.lang.Long getId() { return this.id; }
+				public void setId(java.lang.Long id) { this.id = id; }
+				public java.lang.String getStatus() { return this.status; }
+				public void setStatus(java.lang.String status) { this.status = status; }
+			}
+			""";
+
+	private static final String ENUM_VO = """
+			package demo;
+
+			public record StatusView(@jakarta.persistence.Column(name = "status_code") Code code) {
+
+				public enum Code {
+					NEW, PAID
+				}
+			}
+			""";
+
+	private static final String ENUM_VO_REPO = """
+			package demo;
+			@xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository
+			public interface StatusViewRepository extends xyz.wewin.autumn.data.jdbc.repository.CrudRepository<StatusRow, java.lang.Long> {
+
+				java.util.List<StatusView> findByStatus(java.lang.String status);
+			}
+			""";
+
 	/** 生成类里的 SQL 助手全名（运行期展开 {@code IN} 占位符、替换投影列清单）。 */
 	private static final String SQL = "xyz.wewin.autumn.data.jdbc.sql.Sql";
 
@@ -641,6 +755,91 @@ class AutoRepositoryProcessorTests {
 		assertThat(unknown.errorMessages()).anySatisfy(message -> assertThat(message)
 			.contains("unsupported value 'oracle'")
 			.contains("use mysql, postgresql, h2 or default"));
+	}
+
+	@Test
+	void generatesRecordVoMappingAndTrimsSelectedColumns(@TempDir Path dir) throws Exception {
+		Compilation result = compile(dir, List.of(new Source("demo/User.java", USER_ENTITY),
+				new Source("demo/UserNameView.java", RECORD_VO),
+				new Source("demo/VoRepository.java", RECORD_VO_REPO)));
+		assertThat(result.errorMessages()).isEmpty();
+		String source = Files.readString(dir.resolve("gen/demo/VoRepositoryImpl.java"));
+
+		// 派生查询只选 VO 要的两列，排序仍按实体列编译期映射
+		assertThat(source).contains("private static final String SQL_FIND_BY_NAME_ORDER_BY_AGE_ASC"
+				+ " = \"SELECT name, age FROM demo_user WHERE name = ? ORDER BY age ASC\"");
+		// VO 查询不生成 {cols} 投影模板（它本身就只取需要的列）
+		assertThat(source).doesNotContain("SQL_FIND_BY_NAME_ORDER_BY_AGE_ASC_PROJECTION");
+		// record：按组件顺序直接拼规范构造器，零反射、零列名匹配
+		assertThat(source).contains("= (rs, rowNum) -> new demo.UserNameView(rs.getObject(\"name\","
+				+ " java.lang.String.class), rs.getInt(\"age\"))");
+		// Optional + First：行数上限走带 limit 的重载
+		assertThat(source).contains("return this.autumn.queryOptional(1L, SQL_FIND_FIRST_BY_ORDER_BY_AGE_DESC,"
+				+ " SQL_FIND_FIRST_BY_ORDER_BY_AGE_DESC_VO_MAPPER)");
+		// Page<Vo>：内容按 VO 映射，总数走同一 WHERE 的 COUNT(*)
+		assertThat(source).contains("private static final String SQL_FIND_BY_AGE_GREATER_THAN"
+				+ " = \"SELECT name, age FROM demo_user WHERE age > ?\"");
+		assertThat(source).contains("private static final String SQL_FIND_BY_AGE_GREATER_THAN_COUNT"
+				+ " = \"SELECT COUNT(*) FROM demo_user WHERE age > ?\"");
+		assertThat(source).contains("this.autumn.page(SQL_FIND_BY_AGE_GREATER_THAN,"
+				+ " SQL_FIND_BY_AGE_GREATER_THAN_COUNT, SQL_FIND_BY_AGE_GREATER_THAN_VO_MAPPER, pageable, age)");
+		// @Query：SQL 原样内联，行映射按列标签（成员名转下划线，这里 name/age 恰好同名）
+		assertThat(source).contains("private static final String SQL_ADULTS"
+				+ " = \"SELECT name, age FROM demo_user WHERE age > ?\"");
+		assertThat(source).contains("return this.autumn.query(SQL_ADULTS, SQL_ADULTS_VO_MAPPER, age)");
+	}
+
+	@Test
+	void generatesSetterVoMapping(@TempDir Path dir) throws Exception {
+		Compilation result = compile(dir, List.of(new Source("demo/User.java", USER_ENTITY),
+				new Source("demo/UserNameViewBean.java", BEAN_VO),
+				new Source("demo/BeanVoRepository.java", BEAN_VO_REPO)));
+		assertThat(result.errorMessages()).isEmpty();
+		String source = Files.readString(dir.resolve("gen/demo/BeanVoRepositoryImpl.java"));
+		assertThat(source).contains("demo.UserNameViewBean row = new demo.UserNameViewBean();");
+		assertThat(source).contains("row.setName(rs.getObject(\"name\", java.lang.String.class));");
+		assertThat(source).contains("row.setAge(rs.getInt(\"age\"));");
+		assertThat(source).contains("return row;");
+	}
+
+	@Test
+	void reportsUnknownVoMemberOnTheMethodDeclaration(@TempDir Path dir) throws Exception {
+		Compilation result = compile(dir, List.of(new Source("demo/User.java", USER_ENTITY),
+				new Source("demo/BadView.java", BAD_VO),
+				new Source("demo/BadVoRepository.java", BAD_VO_REPO)));
+		assertThat(result.errorMessages()).anySatisfy(message -> assertThat(message)
+			.contains("VO member 'nickname' has no matching field on demo.User")
+			.contains("fields: id, name, age, createdAt"));
+		assertThat(dir.resolve("gen/demo/BadVoRepositoryImpl.java")).doesNotExist();
+	}
+
+	@Test
+	void quotesVoSelectColumnsButKeepsRowLabelsBare(@TempDir Path dir) throws Exception {
+		Compilation result = compile(dir, List.of(new Source("demo/User.java", USER_ENTITY),
+				new Source("demo/UserNameView.java", RECORD_VO),
+				new Source("demo/QuotedVoRepository.java", QUOTED_VO_REPO)),
+				List.of("-Aautumn.data.jdbc.dialect=mysql"));
+		assertThat(result.errorMessages()).isEmpty();
+		String source = Files.readString(dir.resolve("gen/demo/QuotedVoRepositoryImpl.java"));
+		// SQL 里的列加引号，结果集标签保持裸名
+		assertThat(source).contains("private static final String SQL_FIND_BY_NAME"
+				+ " = \"SELECT `name`, `age` FROM `demo_user` WHERE `name` = ?\"");
+		assertThat(source).contains("new demo.UserNameView(rs.getObject(\"name\", java.lang.String.class),"
+				+ " rs.getInt(\"age\"))");
+	}
+
+	@Test
+	void mapsEnumVoMemberFromColumnString(@TempDir Path dir) throws Exception {
+		Compilation result = compile(dir, List.of(new Source("demo/StatusRow.java", STATUS_ENTITY),
+				new Source("demo/StatusView.java", ENUM_VO),
+				new Source("demo/StatusViewRepository.java", ENUM_VO_REPO)));
+		assertThat(result.errorMessages()).isEmpty();
+		String source = Files.readString(dir.resolve("gen/demo/StatusViewRepositoryImpl.java"));
+		// 枚举成员按 @Column 指定的实体列读字符串，再由生成类里的泛型助手 Enum.valueOf
+		assertThat(source).contains("new demo.StatusView(__voEnum(rs, \"status_code\","
+				+ " demo.StatusView.Code.class))");
+		assertThat(source).contains("private static <E extends java.lang.Enum<E>> E __voEnum(");
+		assertThat(source).contains("java.lang.Enum.valueOf(type, raw)");
 	}
 
 	private Compilation compile(Path dir, List<Source> sources) throws Exception {

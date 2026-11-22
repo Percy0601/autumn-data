@@ -3,7 +3,6 @@ package xyz.wewin.autumn.data.jdbc.compiler;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.List;
 import java.util.Locale;
 import java.util.stream.Collectors;
 
@@ -98,7 +97,7 @@ final class DerivedQueryParser {
 	}
 
 	/**
-	 * 解析一个派生查询方法。
+	 * 解析一个派生查询方法（返回实体）。
 	 * @param methodName 接口上的方法名
 	 * @param returnTypeSource 返回类型的源码形态，如 {@code java.util.List<demo.User>}、{@code long}
 	 * @param parameters 形参表，顺序与声明一致
@@ -107,11 +106,11 @@ final class DerivedQueryParser {
 	 */
 	static DerivedQuery parse(String methodName, String returnTypeSource, List<Parameter> parameters,
 			EntityMetadata meta) {
-		return parse(methodName, returnTypeSource, parameters, meta, false);
+		return parse(methodName, returnTypeSource, parameters, meta, meta, false, null);
 	}
 
 	/**
-	 * 分页派生查询：末位形参是 {@code Pageable}，返回 {@code Page<T>}。
+	 * 分页派生查询（返回实体）：末位形参是 {@code Pageable}，返回 {@code Page<T>}。
 	 *
 	 * <p>排序依然来自方法名的 {@code OrderBy}，在编译期映射成列名后内联进 SQL 常量 —— 因此「分页 + 排序」
 	 * 组合依然是编译期安全的，不会把用户输入拼进 {@code ORDER BY}。{@code Pageable} 只提供页码与页大小，
@@ -119,16 +118,46 @@ final class DerivedQueryParser {
 	 */
 	static DerivedQuery parse(String methodName, String returnTypeSource, List<Parameter> parameters,
 			EntityMetadata meta, boolean paged) {
+		return parse(methodName, returnTypeSource, parameters, meta, meta, paged, null);
+	}
+
+	/**
+	 * 解析一个派生查询方法，返回类型可以是实体，也可以是自定义 VO（{@code List<Vo>} / {@code Optional<Vo>} /
+	 * {@code Page<Vo>}）。
+	 *
+	 * <p>{@code vo != null} 时只 {@code SELECT} VO 要的那些列（按实体字段名映射，{@code @Column} 可显式指定列），
+	 * 既不生成 {@code {cols}} 投影模板，也不装配关联 —— VO 是扁平结果，没有子集合可挂。</p>
+	 *
+	 * @param meta SQL 视图的实体元数据：编译期开启方言引号时列名已带引号，用于拼 {@code SELECT}
+	 * @param labelMeta 未引号的实体元数据：VO 行映射按它取结果集标签（引号不影响标签）；与 {@code meta} 等长同序
+	 * @param paged 是否分页（末位形参为 {@code Pageable}）
+	 * @param vo VO 元数据；{@code null} 表示返回实体
+	 */
+	static DerivedQuery parse(String methodName, String returnTypeSource, List<Parameter> parameters,
+			EntityMetadata meta, EntityMetadata labelMeta, boolean paged, VoMetadata vo) {
 		Subject subject = readSubject(methodName);
 		if (paged && subject.limit() > 0) {
 			throw fail(methodName, "First/Top and Pageable are mutually exclusive - Pageable already bounds"
 					+ " the page size");
 		}
+		if (vo != null && (subject.verb().equals("delete") || subject.verb().equals("remove")
+				|| subject.kind() == Kind.COUNT || subject.kind() == Kind.EXISTS)) {
+			throw fail(methodName, "'" + subject.verb() + "By' cannot return a VO - a custom result type needs a"
+					+ " find/read/get/query/search subject");
+		}
 		Ordering ordering = readOrdering(subject.predicateText(), meta, methodName);
 		List<List<Atom>> branches = ordering.predicateText().isEmpty() ? List.of()
 				: splitBranches(ordering.predicateText(), meta, methodName);
 		List<Atom> atoms = branches.stream().flatMap(List::stream).toList();
-		Kind kind = paged ? Kind.PAGE : kindOf(subject, returnTypeSource, meta, methodName);
+		Kind kind;
+		if (vo != null) {
+			// VO 只有三种形态：多行、单行、分页；count/exists/delete 已在上面挡掉
+			kind = paged ? Kind.PAGE
+					: (returnTypeSource.startsWith("java.util.Optional<") ? Kind.OPTIONAL : Kind.LIST);
+		}
+		else {
+			kind = paged ? Kind.PAGE : kindOf(subject, returnTypeSource, meta, methodName);
+		}
 		// 分页时末位 Pageable 只是翻页参数，不参与 ? 绑定
 		List<Parameter> bindable = paged ? parameters.subList(0, parameters.size() - 1) : parameters;
 		List<Binding> bindings = bind(atoms, bindable, methodName);
@@ -139,21 +168,26 @@ final class DerivedQueryParser {
 				: " ORDER BY " + ordering.sql();
 		String where = whereClause(branches);
 		String distinctPrefix = subject.distinct() ? "DISTINCT " : "";
+		// 返回实体时 SELECT 取全列；返回 VO 时只取它声明的列（顺带省掉网络与内存开销）
+		VoMapping voMapping = (vo == null) ? null : derivedVoMapping(vo, meta, labelMeta, methodName);
+		String selectColumns = (voMapping == null) ? columns(meta) : voMapping.selectColumns();
 		// 投影模板的列清单：与全列语句同形，只把列换成 {cols} 标记；实体全是必需列时不生成
-		String projectionColumns = meta.projectionEligible() ? distinctPrefix + EntityMetadata.PROJECTION_MARKER : null;
+		String projectionColumns = (voMapping == null && meta.projectionEligible())
+				? distinctPrefix + EntityMetadata.PROJECTION_MARKER
+				: null;
 		String selectSql;
 		String mainSql;
 		String projectionSql = "";
 		if (isDelete) {
 			// deleteBy 返回实体列表时，先 SELECT 把要删的行取回再 DELETE，两条语句共用同一 WHERE
-			selectSql = "SELECT " + distinctPrefix + columns(meta) + " FROM " + meta.table() + where + orderSql;
+			selectSql = "SELECT " + distinctPrefix + selectColumns + " FROM " + meta.table() + where + orderSql;
 			mainSql = "DELETE FROM " + meta.table() + where;
 			if (projectionColumns != null) {
 				projectionSql = "SELECT " + projectionColumns + " FROM " + meta.table() + where + orderSql;
 			}
 		}
 		else {
-			String projection = isCountOrExists ? "COUNT(*)" : distinctPrefix + columns(meta);
+			String projection = isCountOrExists ? "COUNT(*)" : distinctPrefix + selectColumns;
 			mainSql = "SELECT " + projection + " FROM " + meta.table() + where + orderSql;
 			selectSql = "";
 			if (!isCountOrExists && projectionColumns != null) {
@@ -163,11 +197,12 @@ final class DerivedQueryParser {
 		// 分页要回查总行数：同一 WHERE、不带 ORDER BY 的计数语句
 		String countSql = paged ? "SELECT COUNT(*) FROM " + meta.table() + where : "";
 		return new DerivedQuery(methodName, kind, returnTypeSource, parameters, bindings, mainSql, projectionSql,
-				countSql, selectSql, subject.distinct(), subject.limit(), false);
+				countSql, selectSql, subject.distinct(), subject.limit(), false, voMapping);
 	}
 
 	/**
-	 * 从 {@code @Query} 给出的 SQL 直接构造派生查询结果：不解析方法名，参数按声明顺序绑定到 {@code ?} 占位符。
+	 * 从 {@code @Query} 给出的 SQL 直接构造派生查询结果（返回实体）：不解析方法名，参数按声明顺序绑定到
+	 * {@code ?} 占位符。
 	 *
 	 * @param methodName 接口方法名（决定生成类里的 SQL 常量名）
 	 * @param sql 注解里写死的 SQL
@@ -176,9 +211,41 @@ final class DerivedQueryParser {
 	 * @throws DerivedQueryException 返回类型不在支持集合内
 	 */
 	static DerivedQuery custom(String methodName, String sql, String returnTypeSource, List<Parameter> parameters) {
+		return custom(methodName, sql, returnTypeSource, parameters, null);
+	}
+
+	/**
+	 * 同上，但允许返回自定义 VO：{@code List<Vo>} 或 {@code Optional<Vo>}。
+	 *
+	 * <p>VO 的列标签按成员名推导（成员名转下划线），{@code @Column(name)} 可显式指定别名 ——
+	 * {@code @Query} 的 SQL 由使用方写死，编译期无从校验列是否存在，只能约定标签。</p>
+	 *
+	 * @param vo VO 元数据；{@code null} 表示返回实体
+	 */
+	static DerivedQuery custom(String methodName, String sql, String returnTypeSource, List<Parameter> parameters,
+			VoMetadata vo) {
 		Kind kind;
 		boolean select = isSelect(sql);
-		if (returnTypeSource.startsWith("java.util.List<")) {
+		VoMapping voMapping = null;
+		if (vo != null) {
+			if (returnTypeSource.startsWith("java.util.List<")) {
+				kind = Kind.LIST;
+			}
+			else if (returnTypeSource.startsWith("java.util.Optional<")) {
+				kind = Kind.OPTIONAL;
+			}
+			else {
+				throw new DerivedQueryException("derived query '" + methodName + "' with @Query returning a VO must"
+						+ " be declared as java.util.List<" + vo.qualifiedName() + "> or java.util.Optional<"
+						+ vo.qualifiedName() + ">, but declares " + returnTypeSource);
+			}
+			if (!select) {
+				throw new DerivedQueryException("derived query '" + methodName + "' with @Query returns a VO but the"
+						+ " SQL is not a SELECT");
+			}
+			voMapping = customVoMapping(vo);
+		}
+		else if (returnTypeSource.startsWith("java.util.List<")) {
 			kind = Kind.LIST;
 		}
 		else if (returnTypeSource.startsWith("java.util.Optional<")) {
@@ -204,7 +271,63 @@ final class DerivedQueryParser {
 		for (Parameter parameter : parameters) {
 			bindings.add(new Binding(parameter.name(), parameter.collection(), Transform.NONE));
 		}
-		return new DerivedQuery(methodName, kind, returnTypeSource, parameters, bindings, sql, "", false, 0L, true);
+		return new DerivedQuery(methodName, kind, returnTypeSource, parameters, bindings, sql, "", false, 0L, true,
+				voMapping);
+	}
+
+	/**
+	 * 派生查询的 VO 映射：成员名 → 实体字段（{@code @Column(name)} 指定实体列）。
+	 *
+	 * <p>匹配一律在未引号的元数据上做（{@code @Column} 与字段名都不带引号），命中后按同一序号从 SQL 视图
+	 * 取列名 —— 编译期方言引号只影响 {@code SELECT}，结果集标签始终是未引号形态。</p>
+	 */
+	private static VoMapping derivedVoMapping(VoMetadata vo, EntityMetadata meta, EntityMetadata labelMeta,
+			String methodName) {
+		EntityMetadata plain = (labelMeta == null) ? meta : labelMeta;
+		List<VoMapping.Member> members = new ArrayList<>(vo.members().size());
+		for (VoMetadata.Member member : vo.members()) {
+			int index = indexOf(member, plain, methodName);
+			members.add(new VoMapping.Member(member.name(), member.setter(), member.typeSource(),
+					meta.columns().get(index).column(), plain.columns().get(index).column(), member.enumeration()));
+		}
+		return new VoMapping(vo.qualifiedName(), vo.canonicalConstructor(), List.copyOf(members));
+	}
+
+	/** 成员在实体列清单里的序号：写了 {@code @Column} 按列名找，否则按字段名找。 */
+	private static int indexOf(VoMetadata.Member member, EntityMetadata meta, String methodName) {
+		if (member.columnOverride() != null) {
+			for (int i = 0; i < meta.columns().size(); i++) {
+				if (meta.columns().get(i).column().equalsIgnoreCase(member.columnOverride())) {
+					return i;
+				}
+			}
+			throw fail(methodName, "VO member '" + member.name() + "' declares @Column(name = \""
+					+ member.columnOverride() + "\") but " + meta.qualifiedName() + " has no such column (columns: "
+					+ columnNames(meta) + ")");
+		}
+		for (int i = 0; i < meta.columns().size(); i++) {
+			if (meta.columns().get(i).field().equalsIgnoreCase(member.name())) {
+				return i;
+			}
+		}
+		throw fail(methodName, "VO member '" + member.name() + "' has no matching field on " + meta.qualifiedName()
+				+ " (fields: " + fieldNames(meta) + ", or give the member an explicit @Column(name))");
+	}
+
+	/** {@code @Query} 的 VO 映射：直接按结果集列标签取（成员名转下划线，{@code @Column} 覆盖）。 */
+	private static VoMapping customVoMapping(VoMetadata vo) {
+		List<VoMapping.Member> members = new ArrayList<>(vo.members().size());
+		for (VoMetadata.Member member : vo.members()) {
+			String column = (member.columnOverride() != null) ? member.columnOverride()
+					: EntityIntrospector.snakeCase(member.name());
+			members.add(new VoMapping.Member(member.name(), member.setter(), member.typeSource(), column, column,
+					member.enumeration()));
+		}
+		return new VoMapping(vo.qualifiedName(), vo.canonicalConstructor(), List.copyOf(members));
+	}
+
+	private static String columnNames(EntityMetadata meta) {
+		return meta.columns().stream().map(Column::column).collect(Collectors.joining(", "));
 	}
 
 	/** SQL 是否以 {@code SELECT} 开头（忽略前导空白、忽略大小写）。 */

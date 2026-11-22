@@ -14,6 +14,9 @@ import java.lang.annotation.Target;
  * <ul>
  *   <li>返回 {@code List<Entity>} → 走 {@code query}；</li>
  *   <li>返回 {@code Optional<Entity>} → 走 {@code queryOptional}；</li>
+ *   <li>返回 {@code List<Vo>} / {@code Optional<Vo>}（VO 即自定义返回类型，非实体）→ 同样走
+ *       {@code query} / {@code queryOptional}，行映射按结果集列标签（成员名转下划线，{@code @Column(name)}
+ *       可指定别名）；生成的实现类直接拼构造 / setter 调用，零反射；</li>
  *   <li>返回数值（{@code long/int/…}）：SQL 以 {@code SELECT} 开头按计数走 {@code count}，
  *       其余（{@code INSERT/UPDATE/DELETE}）走 {@code update} 拿受影响行数；</li>
  *   <li>返回 {@code void}：必须是 {@code INSERT/UPDATE/DELETE}；</li>

@@ -6,6 +6,7 @@ import java.util.List;
 import xyz.wewin.autumn.data.jdbc.annotation.AutumnRepository;
 import xyz.wewin.autumn.data.jdbc.repository.CrudRepository;
 import xyz.wewin.autumn.data.jdbc.repository.PagingRepository;
+import xyz.wewin.autumn.data.using.demo.vo.UserBriefVo;
 
 /**
  * 使用方式一（约定）：接口上标 {@code @AutumnRepository} 并继承 {@code CrudRepository}，
@@ -33,5 +34,11 @@ public interface UserRepository extends CrudRepository<User, Long>, PagingReposi
 
     /** 关联路径 + count：统计「下过单的用户数」。 */
     long countByOrdersOrderNoIsNotNull();
+
+    /**
+     * 自定义返回类型（VO，普通类形态）：成员由公共 setter 决定，只查 {@code id} / {@code username} 两列。
+     * 条件与关键词规则与返回实体时完全一致（这里是 {@code username LIKE %keyword%}）。
+     */
+    List<UserBriefVo> findByUsernameContaining(String keyword);
 
 }

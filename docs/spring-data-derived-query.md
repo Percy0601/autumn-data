@@ -199,6 +199,9 @@ boolean existsById(ID id);
 | `IgnoreCase` / `IgnoringCase` | `findByNameIgnoreCase` | 列与参数一起包 `LOWER()` |
 | `Like` 家族 | `Containing` / `StartingWith` / `EndingWith` | 运行期把实参包成 `%?%` / `?%` / `%?`，不依赖方言的字符串拼接 |
 | 返回形态 | `List<T>` / `Optional<T>` | 命中关联时结果仍走装配（两条语句，无 N+1） |
+| 自定义 VO | `List<OrderSummaryVo> findByUserIdOrderByAmountDesc(Long userId)` | `SELECT order_no, amount FROM demo_order WHERE user_id = ? ORDER BY amount DESC`：只取 VO 要的列，行映射直接 `new OrderSummaryVo(rs.getObject(…), …)` |
+| VO + `Optional` / `First` / `Page` | `Optional<OrderSummaryVo> findFirstBy…`、`Page<OrderSummaryVo> findByUserIdOrderByAmountDesc(Long, Pageable)` | 单行走 `queryOptional(1L, …)`；分页内容按 VO 映射、总数走同一 `WHERE` 的 `COUNT(*)` |
+| `@Query` + VO | `@Query("SELECT user_id, COUNT(*) AS order_count … GROUP BY user_id") List<UserOrderStatsVo> statsByUser(Long userId)` | SQL 原样内联，按结果集列标签取数（成员名转下划线，`@Column(name)` 可覆盖） |
 
 设了字段投影（第 8 节第 6 条）才启用的编译期产物：每条取实体行的语句旁多一条 `{cols}` 模板常量
 （`SQL_SELECT_ALL_PROJECTION`、`SQL_FIND_BY_NAME_PROJECTION`、`deleteBy` 返列表时挂在 `_SELECT` 上），
@@ -208,6 +211,57 @@ boolean existsById(ID id);
 
 编译期显式报错（不静默生成半成品）：裸实体返回值、多于一处的 `IN`、
 参数个数或类型与谓词不符、未知关键词、关联路径下钻到未声明关联的实体。
+
+### 9.1 自定义返回类型（VO / DTO 投影）
+
+返回类型不必是实体：`List<Vo>` / `Optional<Vo>` / `Page<Vo>` 里的 `Vo` 不是仓储实体时，按 VO 处理。
+
+```java
+// record 形态：成员 = 组件，按声明顺序走规范构造器
+public record OrderSummaryVo(String orderNo, BigDecimal amount) {}
+
+// 普通类形态：成员 = 公共 setter，无参构造 + setXxx 写入
+public class UserBriefVo {
+    private Long id;
+    private String username;
+    public void setId(Long id) { this.id = id; }
+    public void setUsername(String username) { this.username = username; }
+}
+
+@AutumnRepository
+public interface OrderSummaryRepository extends CrudRepository<Order, Long> {
+
+    // 派生查询：SELECT 只取 order_no / amount，条件与排序规则不变
+    List<OrderSummaryVo> findByUserIdOrderByAmountDesc(Long userId);
+
+    // 单行 VO：查不到返回 Optional.empty()
+    Optional<OrderSummaryVo> findFirstByUserIdOrderByAmountDesc(Long userId);
+
+    // 分页 VO：内容按 VO 映射，总数走同一 WHERE 的 COUNT(*)
+    Page<OrderSummaryVo> findByUserIdOrderByAmountDesc(Long userId, Pageable pageable);
+
+    // @Query：JOIN / GROUP BY 结果按列标签映射
+    @Query("SELECT user_id, COUNT(*) AS order_count, SUM(amount) AS total_amount"
+            + " FROM demo_order WHERE user_id = ? GROUP BY user_id")
+    List<UserOrderStatsVo> statsByUser(Long userId);
+}
+```
+
+映射规则：
+
+- **形态**：VO 必须是 `public` 的 `record` 或普通类（普通类需可访问的无参构造 + 公共 `setXxx`）。
+  不支持接口式投影 —— 那需要运行期动态代理，与「零反射」相悖，编译期直接报错。
+- **派生查询按实体字段名映射成员**：`orderNo` → 实体字段 `orderNo` → 列 `order_no`（尊重实体上的
+  `@Column`）；成员在实体上找不到对应字段时，在方法声明处报错并列出可用字段。VO 成员也可写
+  `@Column(name = "…")` 显式指定实体列。`SELECT` 只取 VO 用到的列（多个成员映射同一列只出现一次）。
+- **`@Query` 按结果集列标签映射**：成员名转下划线（`orderCount` → `order_count`），`@Column(name)` 可覆盖；
+  SQL 由使用方写死，编译期无法校验列是否存在，约定「别名与成员名对齐」。
+- **不做关联装配、不参与字段投影**：VO 是扁平结果，没有子集合可挂；一次性字段投影（第 8 节第 6 条）对它无效，
+  它也不会消费该上下文（与 `@Query` 一致）。VO 查询同样不生成 `{cols}` 投影模板。
+- **类型**：基本类型与包装类、`String`、`BigDecimal`、`java.time.*`、`java.sql.*`、`UUID`、`byte[]`、枚举
+  （库里存字符串时按 `Enum.valueOf` 转换）。枚举转换与 `getObject(label, Type.class)` 都是显式代码，
+  运行期零反射、零列名匹配。
+- 返回 `count` / `exists` / `delete` 语义的方法不能声明 VO 返回类型（编译期报错）。
 
 标识符引号（保留字安全）由编译期选项开启：`-Aautumn.data.jdbc.dialect=mysql|postgresql|h2|default`；
 默认不加引号（裸标识符），与既有 schema 一致。开启后生成 SQL 里的表名/列名按方言加引号，

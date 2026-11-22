@@ -13,6 +13,7 @@ import xyz.wewin.autumn.data.jdbc.compiler.DerivedQuery.Kind;
 import xyz.wewin.autumn.data.jdbc.compiler.DerivedQuery.Transform;
 import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Association;
 import xyz.wewin.autumn.data.jdbc.compiler.EntityMetadata.Column;
+import xyz.wewin.autumn.data.jdbc.compiler.VoMapping.Member;
 
 /**
  * 生成 {@code <名称>Impl} 的 Java 源码文本。
@@ -294,6 +295,16 @@ final class ImplementationSource {
 				sb.append(projectedRowMethod());
 				sb.append(projectedMapperMethod());
 			}
+			// 自定义返回类型（VO）每条语句一个映射器：直接拼构造 / setter 调用，零反射
+			for (int i = 0; i < this.queries.size(); i++) {
+				DerivedQuery query = this.queries.get(i);
+				if (query.voQuery()) {
+					sb.append(voMapperField(query, queryConstNames.get(i) + "_VO_MAPPER"));
+				}
+			}
+			if (this.queries.stream().anyMatch(query -> query.voQuery() && query.vo().hasEnumeration())) {
+				sb.append(enumHelper());
+			}
 			sb.append("\tprivate final " + AUTUMN_JDBC + " autumn;\n\n");
 			sb.append(constructor());
 			sb.append(method("<S extends " + this.entity + "> S save(S entity)", saveBody()));
@@ -436,6 +447,13 @@ final class ImplementationSource {
 			}
 			// AutumnJdbc 的形参顺序是 (sql, mapper, args...)，取值实参在行映射器之后
 			String tailArguments = bindings.isEmpty() ? "" : ", " + valueArguments;
+			if (query.voQuery()) {
+				// VO 是扁平结果：只带自己的映射器，不做关联装配，也不读/不消费一次性字段投影
+				String countArgument = (query.kind() == Kind.PAGE)
+						? inWrapped(constName + "_COUNT", collection)
+						: "";
+				return prelude + voBody(query, constName, sqlArgument, countArgument, tailArguments);
+			}
 			// deleteBy 返回实体列表：SELECT 与 DELETE 共用同一 WHERE，因此走同一个 inClause 展开与取值实参
 			String selectArgument = query.kind() == Kind.DELETE_LIST ? inWrapped(selectConstName, collection)
 					: sqlArgument;
@@ -558,6 +576,79 @@ final class ImplementationSource {
 		private String rowMapperField(EntityMetadata meta, String fieldName, String type) {
 			return "\tprivate static final " + ROW_MAPPER + '<' + type + "> " + fieldName
 					+ " = (rs, rowNum) -> {\n" + indent(rowConstruction(meta)) + "\t};\n\n";
+		}
+
+		/**
+		 * VO 行映射器：按成员顺序直接拼出构造实参或 {@code setter} 调用。record / 全参构造给
+		 * {@code new Vo(a, b, c)}，普通类给「无参构造 + setXxx」。全程零反射，也不需要运行期列名匹配。
+		 */
+		private String voMapperField(DerivedQuery query, String fieldName) {
+			VoMapping vo = query.vo();
+			List<String> reads = vo.members().stream().map(this::voRead).toList();
+			if (vo.canonicalConstructor()) {
+				return "\tprivate static final " + ROW_MAPPER + '<' + vo.voType() + "> " + fieldName
+						+ " = (rs, rowNum) -> new " + vo.voType() + "(" + String.join(", ", reads) + ");\n\n";
+			}
+			List<String> body = new ArrayList<>();
+			body.add(vo.voType() + " row = new " + vo.voType() + "();");
+			for (int i = 0; i < vo.members().size(); i++) {
+				Member member = vo.members().get(i);
+				body.add("row." + member.setter() + "(" + reads.get(i) + ");");
+			}
+			body.add("return row;");
+			return "\tprivate static final " + ROW_MAPPER + '<' + vo.voType() + "> " + fieldName
+					+ " = (rs, rowNum) -> {\n" + indent(String.join("\n", body)) + "\t};\n\n";
+		}
+
+		/** 从结果集读一个 VO 成员：基本类型走专用 getter，枚举读字符串后 {@code valueOf}，其余类型化 {@code getObject}。 */
+		private String voRead(Member member) {
+			String label = '"' + escapeJava(member.label()) + '"';
+			if (member.enumeration()) {
+				return "__voEnum(rs, " + label + ", " + member.typeSource() + ".class)";
+			}
+			return switch (member.typeSource()) {
+				case "int" -> "rs.getInt(" + label + ")";
+				case "long" -> "rs.getLong(" + label + ")";
+				case "short" -> "rs.getShort(" + label + ")";
+				case "byte" -> "rs.getByte(" + label + ")";
+				case "double" -> "rs.getDouble(" + label + ")";
+				case "float" -> "rs.getFloat(" + label + ")";
+				case "boolean" -> "rs.getBoolean(" + label + ")";
+				case "char" -> "rs.getString(" + label + ").charAt(0)";
+				case "byte[]" -> "rs.getBytes(" + label + ")";
+				default -> "rs.getObject(" + label + ", " + member.typeSource() + ".class)";
+			};
+		}
+
+		/** 枚举取值助手：库里存字符串（{@code VARCHAR}）时按 {@code Enum.valueOf} 转成枚举，NULL 保持 null。 */
+		private static String enumHelper() {
+			return "\tprivate static <E extends java.lang.Enum<E>> E __voEnum(java.sql.ResultSet rs,"
+					+ " java.lang.String label, java.lang.Class<E> type) throws java.sql.SQLException {\n"
+					+ "\t\tjava.lang.String raw = rs.getString(label);\n"
+					+ "\t\treturn (raw == null) ? null : java.lang.Enum.valueOf(type, raw);\n" + "\t}\n\n";
+		}
+
+		/**
+		 * VO 查询的方法体：{@code query / queryOptional / page} 三选一，{@code First/Top} 的行数上限作为
+		 * 字面量传给带 {@code limit} 的重载。分页内容与计数共用同一组实参（计数语句同样要展开 {@code IN}）。
+		 */
+		private String voBody(DerivedQuery query, String constName, String sqlArgument, String countArgument,
+				String tailArguments) {
+			String mapper = constName + "_VO_MAPPER";
+			long limit = query.limit();
+			if (limit > 0 && (query.kind() == Kind.LIST || query.kind() == Kind.OPTIONAL)) {
+				String receiver = query.kind() == Kind.LIST ? "this.autumn.query" : "this.autumn.queryOptional";
+				return "return " + receiver + "(" + limit + "L, " + sqlArgument + ", " + mapper + tailArguments + ");";
+			}
+			return switch (query.kind()) {
+				case LIST -> "return this.autumn.query(" + sqlArgument + ", " + mapper + tailArguments + ");";
+				case OPTIONAL -> "return this.autumn.queryOptional(" + sqlArgument + ", " + mapper + tailArguments
+						+ ");";
+				case PAGE -> "return this.autumn.page(" + sqlArgument + ", " + countArgument + ", " + mapper
+						+ ", pageable" + tailArguments + ");";
+				default -> throw new IllegalStateException(
+						"VO query " + query.methodName() + " has unsupported result kind " + query.kind());
+			};
 		}
 
 		/** 子行映射器：把外键值和子实体成对带回，分组就靠这个键，子实体不必暴露外键字段。 */

@@ -78,6 +78,10 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 
 	private static final String PAGE_FQN = "xyz.wewin.autumn.data.jdbc.page.Page";
 
+	private static final String LIST_FQN = "java.util.List";
+
+	private static final String OPTIONAL_FQN = "java.util.Optional";
+
 	private static final String COLLECTION_FQN = "java.util.Collection";
 
 	/**
@@ -126,7 +130,8 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 			// SQL 生成吃「引号视图」，生成实现类的代码仍吃原元数据（结果集标签不受引号影响）
 			Dialect dialect = compileTimeDialect(repositoryInterface);
 			EntityMetadata sqlMetadata = EntityMetadata.quoted(metadata, dialect);
-			List<DerivedQuery> queries = collectDerivedQueries(repositoryInterface, sqlMetadata, elements, types);
+			List<DerivedQuery> queries = collectDerivedQueries(repositoryInterface, metadata, sqlMetadata, elements,
+					types);
 			if (queries == null) {
 				// 已经有方法解析失败并在声明处报错，不生成半成品实现
 				continue;
@@ -165,7 +170,7 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 	 * @return 解析成功的查询列表；返回 {@code null} 表示已有方法报错、不应继续生成
 	 */
 	private List<DerivedQuery> collectDerivedQueries(TypeElement repositoryInterface, EntityMetadata metadata,
-			Elements elements, Types types) {
+			EntityMetadata sqlMetadata, Elements elements, Types types) {
 		TypeElement collectionType = elements.getTypeElement(COLLECTION_FQN);
 		List<DerivedQuery> queries = new ArrayList<>();
 		Set<String> visited = new LinkedHashSet<>();
@@ -196,12 +201,17 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 				parameters.add(new DerivedQuery.Parameter(sourceName(parameterType, types),
 						parameter.getSimpleName().toString(), collection));
 			}
+			String name = member.getSimpleName().toString();
 			String querySql = queryAnnotationValue(method);
 			if (querySql != null) {
 				// 方法上写了 @Query：直接采用其 SQL，不再解析方法名
+				VoMetadata vo = voOf(method, metadata, elements, types);
+				if (vo == VO_FAILED) {
+					failed = true;
+					continue;
+				}
 				try {
-					queries.add(DerivedQueryParser.custom(member.getSimpleName().toString(), querySql, returnType,
-							parameters));
+					queries.add(DerivedQueryParser.custom(name, querySql, returnType, parameters, vo));
 				}
 				catch (DerivedQueryException ex) {
 					error(ex.getMessage(), method);
@@ -209,7 +219,6 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 				}
 				continue;
 			}
-			String name = member.getSimpleName().toString();
 			// 返回 Page<T> 且末位形参是 Pageable → 分页派生查询（排序仍由方法名的 OrderBy 编译期映射）
 			boolean pageReturn = returnType.startsWith(PAGE_FQN + "<");
 			boolean paged = pageReturn && !parameters.isEmpty()
@@ -220,14 +229,19 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 				failed = true;
 				continue;
 			}
-			if (paged && !returnType.equals(PAGE_FQN + "<" + metadata.qualifiedName() + ">")) {
+			VoMetadata vo = voOf(method, metadata, elements, types);
+			if (vo == VO_FAILED) {
+				failed = true;
+				continue;
+			}
+			if (paged && vo == null && !returnType.equals(PAGE_FQN + "<" + metadata.qualifiedName() + ">")) {
 				error("derived query '" + name + "' must return " + PAGE_FQN + "<" + metadata.qualifiedName()
 						+ "> but declares " + returnType, method);
 				failed = true;
 				continue;
 			}
 			try {
-				queries.add(DerivedQueryParser.parse(name, returnType, parameters, metadata, paged));
+				queries.add(DerivedQueryParser.parse(name, returnType, parameters, sqlMetadata, metadata, paged, vo));
 			}
 			catch (DerivedQueryException ex) {
 				error(ex.getMessage(), method);
@@ -235,6 +249,40 @@ public class AutoRepositoryProcessor extends AbstractProcessor {
 			}
 		}
 		return failed ? null : queries;
+	}
+
+	/** {@code voOf} 的哨兵：VO 提取已经报错，调用方应放弃生成（与「不是 VO，返回实体」区分开）。 */
+	private static final VoMetadata VO_FAILED = new VoMetadata("", true, List.of());
+
+	/**
+	 * 方法返回类型若是 {@code List<X>} / {@code Optional<X>} / {@code Page<X>} 且 {@code X} 不是仓储实体，
+	 * 就把 {@code X} 当成自定义 VO 提取；返回 {@code null} 表示返回实体。
+	 *
+	 * @return VO 元数据；{@code null} 表示返回实体；{@link #VO_FAILED} 表示提取失败（已报错）
+	 */
+	private VoMetadata voOf(ExecutableElement method, EntityMetadata metadata, Elements elements, Types types) {
+		TypeMirror rowType = containerArgument(method.getReturnType());
+		if (rowType == null || sourceName(rowType, types).equals(metadata.qualifiedName())) {
+			return null;
+		}
+		VoMetadata vo = VoIntrospector.introspect(rowType, elements, types, processingEnv.getMessager(), method);
+		return (vo == null) ? VO_FAILED : vo;
+	}
+
+	/** 取 {@code List<X>} / {@code Optional<X>} / {@code Page<X>} 里的 {@code X}；其他返回类型返回 {@code null}。 */
+	private static TypeMirror containerArgument(TypeMirror returnType) {
+		if (returnType.getKind() != TypeKind.DECLARED) {
+			return null;
+		}
+		DeclaredType declared = (DeclaredType) returnType;
+		String raw = ((TypeElement) declared.asElement()).getQualifiedName().toString();
+		if (!raw.equals(LIST_FQN) && !raw.equals(OPTIONAL_FQN) && !raw.equals(PAGE_FQN)) {
+			return null;
+		}
+		if (declared.getTypeArguments().size() != 1) {
+			return null;
+		}
+		return declared.getTypeArguments().get(0);
 	}
 
 	/** 方法是否来自 {@code java.lang.Object}（接口的成员清单会把它们一起列出来）。 */
