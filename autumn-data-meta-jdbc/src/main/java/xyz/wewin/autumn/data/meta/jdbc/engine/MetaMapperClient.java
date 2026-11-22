@@ -182,7 +182,7 @@ public final class MetaMapperClient {
 		}
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
-			SqlTemplate statement = selectStatement(table, MetaSqlGenerator.FIND_PAGE);
+			SqlTemplate statement = entityStatement(table, MetaSqlGenerator.FIND_PAGE);
 			MarkedSql select = tidy(render(table, statement, params));
 			MetaSqlPlan selectPlan = this.plans.plan(table, select);
 			MetaSqlPlan countPlan = this.plans.plan(table, derivedCount(select));
@@ -345,12 +345,69 @@ public final class MetaMapperClient {
 		}
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
-			SqlTemplate statement = selectStatement(table, statementId);
+			SqlTemplate statement = entityStatement(table, statementId);
 			MarkedSql select = tidy(render(table, statement, params));
 			MetaSqlPlan selectPlan = this.plans.plan(table, select);
 			MetaSqlPlan countPlan = this.plans.plan(table, derivedCount(select));
 			List<MetaClass> content = this.jdbc.query(selectPlan, select.values().toArray(), mapper(table, statement),
 					pageable.limit(), pageable.offset());
+			long total = this.jdbc.count(countPlan, select.values().toArray());
+			return Page.of(content, pageable, total);
+		});
+	}
+
+	// ------------------------------------------------------------------
+	// 跨表 / 自定义形状：resultType="map" 的命名语句
+	// ------------------------------------------------------------------
+
+	/**
+	 * 自定义结果形状的列表：语句必须在 XML 里声明 {@code resultType="map"}，返回的每一行是
+	 * 「结果集列标签（小写）→ 值」，列由 SELECT 决定，不受锚定表结构的限制。
+	 *
+	 * <p>这条路径是给<b>跨表 JOIN、聚合、报表</b>这类查询用的：SQL 仍写在锚定表的语句文件里
+	 * （{@code ${table}} 只展开锚定表，其它表名照常写在 SQL 里），参数实体与 {@code <if>/<foreach>}
+	 * 完全复用同一条渲染 / 编译 / 执行链路，只是结果集不再往生成实体上套。</p>
+	 */
+	public List<Map<String, Object>> selectMaps(String tableName, String statementId, MetaClass params) {
+		return selectMaps(tableName, statementId, params, this.defaultListLimit);
+	}
+
+	/** 限行的 map 查询：只跑一条 SELECT，limit 是行数上限。 */
+	public List<Map<String, Object>> selectMaps(String tableName, String statementId, MetaClass params, long limit) {
+		if (limit <= 0) {
+			throw new IllegalArgumentException("limit must be > 0");
+		}
+		return withConnection(() -> {
+			MetaTable table = this.registry.require(tableName);
+			SqlTemplate statement = mapStatement(table, statementId);
+			Bound sql = bind(table, tidy(render(table, statement, params)));
+			return this.jdbc.query(sql.plan(), sql.args(), MetaMapRowMapper.INSTANCE, limit);
+		});
+	}
+
+	/** 取一行 map 结果（最多一行）；没有行时返回 {@link Optional#empty()}。 */
+	public Optional<Map<String, Object>> selectMap(String tableName, String statementId, MetaClass params) {
+		List<Map<String, Object>> rows = selectMaps(tableName, statementId, params, 1);
+		return rows.isEmpty() ? Optional.empty() : Optional.of(rows.get(0));
+	}
+
+	/**
+	 * map 结果分页：内容用语句本身，count 仍是对整条 SELECT 包子查询，
+	 * 所以跨表 JOIN 的查询也能直接翻页（不需要另写 count 语句，也不受 JOIN 行数放大的影响）。
+	 */
+	public Page<Map<String, Object>> selectPageMaps(String tableName, String statementId, MetaClass params,
+			Pageable pageable) {
+		if (pageable == null) {
+			throw new IllegalArgumentException("pageable must not be null");
+		}
+		return withConnection(() -> {
+			MetaTable table = this.registry.require(tableName);
+			SqlTemplate statement = mapStatement(table, statementId);
+			MarkedSql select = tidy(render(table, statement, params));
+			MetaSqlPlan selectPlan = this.plans.plan(table, select);
+			MetaSqlPlan countPlan = this.plans.plan(table, derivedCount(select));
+			List<Map<String, Object>> content = this.jdbc.query(selectPlan, select.values().toArray(),
+					MetaMapRowMapper.INSTANCE, pageable.limit(), pageable.offset());
 			long total = this.jdbc.count(countPlan, select.values().toArray());
 			return Page.of(content, pageable, total);
 		});
@@ -466,7 +523,7 @@ public final class MetaMapperClient {
 		}
 		return withConnection(() -> {
 			MetaTable table = this.registry.require(tableName);
-			SqlTemplate s = selectStatement(table, statementId);
+			SqlTemplate s = entityStatement(table, statementId);
 			Bound sql = bind(table, tidy(render(table, s, params)));
 			return this.jdbc.query(sql.plan(), sql.args(), mapper(table, s), limit);
 		});
@@ -495,6 +552,31 @@ public final class MetaMapperClient {
 		if (s.type() != StatementType.SELECT) {
 			throw new MetaSqlException("statement '" + statementId + "' of table '" + table.name()
 					+ "' is not a <select>; use execute(...) instead — it is " + tag(s));
+		}
+		return s;
+	}
+
+	/**
+	 * 走「生成实体」收口的语句：声明了 {@code resultType="map"} 的语句在这里挡回去，
+	 * 否则 JOIN 出来的额外列会被固定列 READER 静默跳过，看起来查到了、其实少了字段。
+	 */
+	private SqlTemplate entityStatement(MetaTable table, String statementId) {
+		SqlTemplate s = selectStatement(table, statementId);
+		if (s.returnsMap()) {
+			throw new MetaSqlException("statement '" + statementId + "' of table '" + table.name()
+					+ "' declares resultType=\"" + s.resultType()
+					+ "\"; read it with selectMaps/selectMap/selectPageMaps(...) instead");
+		}
+		return s;
+	}
+
+	/** 走 {@code Map} 收口的语句：必须是 SELECT，且显式声明 {@code resultType="map"}，不做隐式猜测。 */
+	private SqlTemplate mapStatement(MetaTable table, String statementId) {
+		SqlTemplate s = selectStatement(table, statementId);
+		if (!s.returnsMap()) {
+			throw new MetaSqlException("statement '" + statementId + "' of table '" + table.name()
+					+ "' does not declare resultType=\"map\"; add it to the <select> to read a cross-table "
+					+ "or custom result shape — otherwise use selectList/selectOne(...)");
 		}
 		return s;
 	}

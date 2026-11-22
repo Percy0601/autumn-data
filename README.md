@@ -42,10 +42,11 @@ Autumn 数据访问层，参考 `autumn-gateway` 的多模块 Maven 工程结构
 - [x] compiler：解析不了的接口方法（未知属性/关键词、参数或返回类型不符、`Distinct`/`First`/`deleteBy`/两层以上关联）在**方法声明处**报错，不再静默跳过后由 javac 报「实现类未覆盖…」
 - [x] 一次性取数上下文（`AutumnDataContextHolder`，按线程保存 + `wrap` 线程池透传）：分页关联加载三态（`DEFAULT` 阈值级联 / `CASCADE` 强制级联 / `DISABLED` 强制关闭）与**字段投影**（`selectFields` / `excludeFields` 运行期真裁剪 `SELECT` 列清单，主键与多对一外键编译期判定为不可省略，级联不被裁剪打断）；被最近一次取实体行的查询消费后自动清除，无需手动 `clear`
 - [x] starter 多数据源接管（`autumn.data.meta.enabled=true`，默认关闭）：`SpringMetaDataSource` 继承 Spring 的 `AbstractDataSource` 成为应用唯一的 `DataSource`（配置排在 `DataSourceAutoConfiguration` 之前，Boot 建池自动退让），底层就是 `MetaDataSource` 注册表；默认池参数仍来自 `spring.datasource.*`（含 `spring.datasource.hikari.*` 调优项），额外池 `autumn.data.meta.pools.<名称>.*` 懒建 + 空闲回收，运行期 `register(name, supplier)` 可继续追加；Spring 事务只绑默认池，`@Transactional` 提交/回滚实测不变（using 模块有示例与集成测试）
-- [x] `autumn-data-meta-jdbc` 动态表 CRUD：`MetaMapper` 静态门面 + `of(池, 命名空间)` 绑定客户端 + `DatabaseMetaData` 元数据快照 + `refresh` 热更新；查询条件 = 参数实体 + XML `<if>`，写入范围 = 实体变更集（`changed('col')`），删除语义由 XML 的 `delete` 语句决定（有逻辑删除列默认逻辑删除、否则物理删除）；47 个 H2 用例 + using 模块 6 个上层用法示例覆盖「建表 → 不重启读写 → 加列 refresh → 复合主键 → 默认语句落 XML（七条生成块，手写文件首次访问自动插入）→ 自定义语句保留/覆盖 → 名字忽略大小写/注入拒绝 → 缓存分级清理与 reload」
+- [x] `autumn-data-meta-jdbc` 动态表 CRUD：`MetaMapper` 静态门面 + `of(池, 命名空间)` 绑定客户端 + `DatabaseMetaData` 元数据快照 + `refresh` 热更新；查询条件 = 参数实体 + XML `<if>`，写入范围 = 实体变更集（`changed('col')`），删除语义由 XML 的 `delete` 语句决定（有逻辑删除列默认逻辑删除、否则物理删除）；94 个 H2 用例 + using 模块 6 个上层用法示例覆盖「建表 → 不重启读写 → 加列 refresh → 复合主键 → 默认语句落 XML（七条生成块，手写文件首次访问自动插入）→ 自定义语句保留/覆盖 → 名字忽略大小写/注入拒绝 → 缓存分级清理与 reload」
 - [ ] 动态表 CRUD 接入 Spring 事务（当前单方法内自提交，跨方法 `@Transactional` 暂不生效）
 - [ ] `OrderBy` 之外的排序入参（`findAllBy(Sort)`）与 `Pageable` 排序
 - [ ] `autumn-data-meta-jdbc` 同步去 Spring 依赖（同样挪到各自 starter）
+- [x] `autumn-data-meta-jdbc` 跨表 / 自定义结果形状查询：语句在 XML 上声明 `resultType="map"`，`selectMaps/selectMap/selectPageMaps` 返回「结果集列标签（小写）→ 值」，用于 JOIN 其它表、分组聚合这类结果形状不由单表结构决定的查询；SQL 仍写在锚定表的语句文件里，参数实体 / `<if>/<foreach>` / `${}` 白名单 / 绑定槽编译 / 分页包子查询计数全部复用同一条链路；map 语句与实体入口互相显式拒绝（不静默丢列），时序值归一成 `java.time`。示例：`MetaDataController#joinQuery`（`meta_demo_form` LEFT JOIN `meta_demo_customer` + 按客户聚合）
 - [x] `autumn-data-meta-jdbc`：**唯一语句库** `MetaSqlFileStore`——一张表一个 XML（`{根}/{数据源}/{命名空间}/{表名}.xml`），首次访问生成七条默认语句（`findList/findPage/findOne/findById/save/update/delete`）的 `GENERATED START/END` 块；表结构变化只重写该块，标记之外的自定义语句逐字保留；无标记的手写文件一个字不改写、只在内存补齐默认语句；`SqlTemplate` 解释执行 common 的同一套 MyBatis XML 语法（另有内置谓词 `changed('col')`），`#{}` 解析期摘成 JDBC 绑定、`${}` 只放标识符白名单；命名语句走 `sqlFor/selectList/selectOne/selectCount/execute`，参数一律是 `MetaClass`
 - [x] `autumn-data-meta-jdbc` SQL 三段：抽取（`MarkedSql`：文本 + 每槽列引用 + 本次实参）→ 再转换（`MetaSqlPlan`：类型判断、列查找、setter 一次做完，按形状缓存）→ 执行（零槽走 `Statement`，有槽走 `PreparedStatement`），动态形状也能吃到游标/执行计划复用
 - [x] XML 方言下沉 `autumn-data-common`（`TemplateParser` / `TemplateNode` / `MapperXmlParser`），编译期生成器与动态运行期共用一棵 AST；**动态 SQL 只认 MyBatis 语法**（`<#if>` 这类模板引擎指令本来就不是合法 XML，`test` 表达式也只认 `a != null` / `a == 'x'` / `!a` / `a && b`，不再兼容 `name??` / `name?has_content`）
@@ -92,7 +93,7 @@ Spring 事务只绑定默认池那一个实例，额外池不参与外层 `@Tran
 引入 starter 后自动安装 `MetaMapper` 静态门面；默认池直接用静态方法，多数据源 / 业务划分用 `of(池, 命名空间)` 把边界固定在客户端句柄上：
 
 ```java
-MetaClass order = MetaMapper.newEntity("form_order");   // 操作对象一律是实体，没有 Map 入口
+MetaClass order = MetaMapper.newEntity("form_order");   // 读写操作对象是实体；Map 只用于显式声明的跨表查询
 order.set("order_no", "A001");
 order.set("amount", "12.50");
 MetaMapper.save(order);                                 // 赋过值的列才进 INSERT，自增主键回填到 order
@@ -106,12 +107,19 @@ MetaClass query = new MetaClass();
 query.set("status", 1);
 Page<MetaClass> page = MetaMapper.findPage("form_order", query, Pageable.of(0, 20));
 
+// 跨表 / 自定义结果形状：XML 上声明 resultType="map"，行是「列标签（小写）→ 值」
+List<Map<String, Object>> joined = MetaMapper.selectMaps("form_order", "formWithCustomer", query);
+Page<Map<String, Object>> joinedPage = MetaMapper.selectPageMaps("form_order", "formWithCustomer", query,
+        Pageable.of(0, 10));
+
 row.set("status", 2);                                   // 改过的列才进 SET，写 null 是显式置空
 MetaMapper.update(row);
 MetaMapper.delete(row);                                 // 执行 XML 里的 delete 语句
 
 MetaMapper.of("tenant-a", "erp").findList("form_order", query);   // 绑定数据源 + 命名空间
 ```
+
+- **跨表查询走显式的 `resultType="map"`**：JOIN 其它表、聚合新列时结果形状由 SQL 决定，套锚定表实体只会丢掉额外列；这类语句在 XML 上写 `resultType="map"`，用 `selectMaps` / `selectMap` / `selectPageMaps` 读，列由 SELECT 决定，分页仍是对整条 SELECT 包子查询。两条路径互相拒绝（map 语句用实体入口、实体语句用 map 入口都会报错），不静默降级。示例：`MetaDataController` 的 `GET /metadata/query/join`（`meta_demo_form` LEFT JOIN `meta_demo_customer` + 按客户聚合）；
 
 - **返回的 `MetaClass` 是动态生成的实体实例**：首次访问按 `DatabaseMetaData` 的列结构用 `MetaEntitySource` 拼出 `MetaClass` 子类源码并编译加载，每列有 `Long` / `BigDecimal` / `LocalDateTime` 等真实字段和 getter，结果集映射是生成代码里的直接 setter 调用（逐行零反射）；`getProperties()` 同时保留 `type` / `jdbcType` / 主键 / 可空等描述。完全静态的实体类应付不了运行期建表，全 Map 又丢了类型，这一层就落在两者之间。`MetaMapper.entityType(table)` 可拿到生成出来的类；
 - 结构指纹参与包名：加列/改类型后 `MetaMapper.refresh("form_order")` 会生成新类，已取到的旧实例仍可用，不会同名重定义；

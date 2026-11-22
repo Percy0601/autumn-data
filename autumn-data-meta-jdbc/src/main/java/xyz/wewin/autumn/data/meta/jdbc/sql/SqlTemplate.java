@@ -32,7 +32,9 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
  *   <li>{@code <sql>/<include>} —— 片段在解析阶段就内联进语句 AST，运行期解释的仍是一棵树，
  *       所以额外切片的开销为零；</li>
  *   <li>{@code <resultMap>/<result>} —— 结果集列名与 {@link xyz.wewin.autumn.data.common.meta.MetaClass}
- *       属性名的对应关系随语句一起带下来，运行期按这份映射逐列取值。</li>
+ *       属性名的对应关系随语句一起带下来，运行期按这份映射逐列取值；</li>
+ *   <li>{@code resultType="map"} —— 不套生成实体，按「结果集列标签 → 值」收口，承载跨表 JOIN /
+ *       聚合这类结果形状不由单表结构决定的查询（见 {@link #returnsMap()}）。</li>
  * </ul>
  *
  * <p>关键结构约束：SQL 文本和绑定参数在同一次遍历里按同一顺序产出。写坏模板最多让占位符个数
@@ -57,14 +59,25 @@ public final class SqlTemplate {
 
 	private final List<MapperDefinition.ResultMapping> resultMappings;
 
+	/**
+	 * 语句声明的 {@code resultType}：只在 {@code map} 这一档有意义。
+	 *
+	 * <p>动态层不认识编译期实体类（表结构是运行期才有的），所以 {@code resultType} 不作为 Java 类型使用，
+	 * 只承认 {@code "map"} / {@code "java.util.Map"} 这类写法，表示「这一行按结果集列标签装进 {@code Map}」，
+	 * 用来承载跨表 JOIN、聚合这类<b>结果形状不由单表元数据决定</b>的查询；其余取值按「按生成实体读取」处理。</p>
+	 */
+	private final String resultType;
+
 	SqlTemplate(MapperDefinition.StatementDefinition statement) {
-		this(statement.id(), statement.type(), statement.template(), statement.resultMappings());
+		this(statement.id(), statement.type(), statement.resultType(), statement.template(),
+				statement.resultMappings());
 	}
 
-	private SqlTemplate(String id, MapperDefinition.StatementType type, List<TemplateNode> nodes,
+	private SqlTemplate(String id, MapperDefinition.StatementType type, String resultType, List<TemplateNode> nodes,
 			List<MapperDefinition.ResultMapping> resultMappings) {
 		this.id = id;
 		this.type = type;
+		this.resultType = resultType == null || resultType.isBlank() ? null : resultType.trim();
 		this.nodes = List.copyOf(nodes);
 		this.resultMappings = resultMappings == null ? List.of() : List.copyOf(resultMappings);
 	}
@@ -81,7 +94,7 @@ public final class SqlTemplate {
 	 * @param sql    手写 SQL 文本
 	 */
 	public static SqlTemplate ofText(String id, MapperDefinition.StatementType type, String sql) {
-		return new SqlTemplate(id, type, SqlTextParser.parse(sql), List.of());
+		return new SqlTemplate(id, type, null, SqlTextParser.parse(sql), List.of());
 	}
 
 	/** 语句 id，与 XML 里的 {@code id} 属性一致。 */
@@ -92,6 +105,29 @@ public final class SqlTemplate {
 	/** 语句类型，决定走查询还是更新执行。 */
 	public MapperDefinition.StatementType type() {
 		return this.type;
+	}
+
+	/** 语句声明的 {@code resultType}（原样保留，空白视为没写）；识别规则见 {@link #returnsMap()}。 */
+	public String resultType() {
+		return this.resultType;
+	}
+
+	/**
+	 * 这一行是否按「结果集列标签 → 值」的 {@code Map} 收口（{@code resultType="map"}）。
+	 *
+	 * <p>认 {@code map} / {@code hashmap} / {@code linkedhashmap} 及其 {@code java.util} 全名，大小写不敏感；
+	 * 其余 {@code resultType} 取值在动态层没有对应类型，一律按生成实体读取，不做静默替换。</p>
+	 */
+	public boolean returnsMap() {
+		if (this.resultType == null) {
+			return false;
+		}
+		String type = this.resultType.toLowerCase(java.util.Locale.ROOT);
+		return switch (type) {
+			case "map", "java.util.map", "hashmap", "java.util.hashmap", "linkedhashmap",
+					"java.util.linkedhashmap" -> true;
+			default -> false;
+		};
 	}
 
 	/** 语句声明的结果列映射；空表示按生成实体的固定列读取。 */

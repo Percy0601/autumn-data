@@ -50,6 +50,12 @@ import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
  * {@code GENERIC} 档写通用 {@link MetaClass}（Native Image 用）。两档都通过
  * {@code getProperties()} 保留列类型描述。</p>
  *
+ * <p><b>唯一的 Map 入口是显式声明的跨表查询</b>：语句写 {@code resultType="map"} 时，
+ * {@code selectMaps/selectMap/selectPageMaps} 返回「结果集列标签（小写）→ 值」的 {@link Map}，
+ * 用来承载 JOIN、聚合这类<b>结果形状不由单表结构决定</b>的查询；这类语句不能用
+ * {@code selectList/selectOne/selectPage} 读（会被固定列 READER 丢掉额外列），反过来
+ * 普通实体语句也不能用 map 入口读，两条路径互相挡回去而不是静默降级。</p>
+ *
  * <pre>{@code
  * MetaMapper.install(MetaMapperEngine.forDataSource("primary", dataSource));
  *
@@ -195,6 +201,31 @@ public final class MetaMapper {
 	public static Page<MetaClass> selectPage(String tableName, String statementId, MetaClass params,
 			Pageable pageable) {
 		return defaultClient().selectPage(tableName, statementId, params, pageable);
+	}
+
+	/**
+	 * 跨表 / 自定义形状查询：语句必须在 XML 里声明 {@code resultType="map"}，
+	 * 返回「列标签（小写）→ 值」。列由 SELECT 决定，不受锚定表结构限制。
+	 */
+	public static List<Map<String, Object>> selectMaps(String tableName, String statementId, MetaClass params) {
+		return defaultClient().selectMaps(tableName, statementId, params);
+	}
+
+	/** 跨表 / 自定义形状查询的限行版本。 */
+	public static List<Map<String, Object>> selectMaps(String tableName, String statementId, MetaClass params,
+			long limit) {
+		return defaultClient().selectMaps(tableName, statementId, params, limit);
+	}
+
+	/** 跨表 / 自定义形状查询取一行：{@code resultType="map"} 的语句最多返回一行。 */
+	public static Optional<Map<String, Object>> selectMap(String tableName, String statementId, MetaClass params) {
+		return defaultClient().selectMap(tableName, statementId, params);
+	}
+
+	/** 跨表 / 自定义形状查询分页：count 仍是对整条 SELECT 包子查询，JOIN 查询也能直接翻页。 */
+	public static Page<Map<String, Object>> selectPageMaps(String tableName, String statementId, MetaClass params,
+			Pageable pageable) {
+		return defaultClient().selectPageMaps(tableName, statementId, params, pageable);
 	}
 
 	/** 执行 {@code <insert>}/{@code <update>}/{@code <delete>} 语句，返回影响行数。 */

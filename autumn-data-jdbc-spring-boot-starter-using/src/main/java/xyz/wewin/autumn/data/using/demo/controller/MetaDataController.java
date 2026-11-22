@@ -48,11 +48,13 @@ import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
  * <p>推荐调用顺序：{@code POST /metadata/init} → {@code GET /metadata/schema} →
  * {@code POST /metadata/rows} → {@code GET /metadata/rows} → {@code POST /metadata/column} →
  * {@code GET /metadata/statements} → {@code GET /metadata/query/statement} →
- * {@code GET /metadata/cache} → {@code GET /metadata/safety} → {@code DELETE /metadata/drop}。</p>
+ * {@code GET /metadata/query/join} → {@code GET /metadata/cache} → {@code GET /metadata/safety} →
+ * {@code DELETE /metadata/drop}。</p>
  *
  * <p>覆盖的能力：运行期建表不重启即 CRUD、按表结构运行期生成强类型实体（entityClass）、
  * 加列后 refresh 换实体类、参数实体 + XML 语句与分页、语句 XML 自动生成块与自定义语句、
- * 自定义语句的分页 / 写 / 按条件取一行、表结构 / 实体类 / 语句三级缓存的分开清理与重载、
+ * 自定义语句的分页 / 写 / 按条件取一行、<b>跨表 JOIN 的自定义结果形状</b>（{@code resultType="map"} +
+ * {@code selectMaps/selectMap/selectPageMaps}）、表结构 / 实体类 / 语句三级缓存的分开清理与重载、
  * 逻辑删除自动过滤、列名与标识符白名单（防注入）、按池绑定的客户端与缓存诊断。</p>
  *
  * <p>启动：{@code mvn spring-boot:run -Dspring-boot.run.profiles=demo}（连本地 H2）。
@@ -64,6 +66,12 @@ public class MetaDataController {
 
 	/** 运行期建出来的演示表：单一自增主键 + 逻辑删除列（查询自动追加 deleted_flag = 0）。 */
 	private static final String TABLE = "meta_demo_form";
+
+	/**
+	 * 跨表查询的第二张表：只作为 SQL 里 JOIN 的对象存在，不经过 MetaMapper 的实体读写，
+	 * 所以不需要 refresh / 生成实体；init/drop 与 {@link #TABLE} 同生命周期。
+	 */
+	private static final String CUSTOMER = "meta_demo_customer";
 
 	private static final Pattern COLUMN_NAME = Pattern.compile("[A-Za-z][A-Za-z0-9_]{0,30}");
 
@@ -176,6 +184,28 @@ public class MetaDataController {
 			    <select id="byFormNo">
 			        SELECT id, form_no, remark FROM ${table} WHERE form_no = #{formNo}
 			    </select>
+
+			    <!-- 跨表自定义形状：SQL 写在锚定表 meta_demo_form 的文件里，JOIN 另一张表 meta_demo_customer。
+			         resultType="map" 表示这一行按「结果集列标签 → 值」收口，不再硬套锚定表的生成实体；
+			         列由 SELECT 决定，客户名 / 区域这些锚定表没有的列也能带出来。 -->
+			    <select id="formWithCustomer" resultType="map">
+			        SELECT f.id, f.form_no, f.title, f.amount, f.status,
+			               c.customer_no, c.customer_name, c.region
+			        FROM ${table} f
+			        LEFT JOIN meta_demo_customer c ON c.customer_no = f.customer_no
+			        WHERE f.deleted_flag = 0
+			        <if test="status != null">AND f.status = #{status}</if>
+			        ORDER BY f.id
+			    </select>
+			    <select id="amountByCustomer" resultType="map">
+			        SELECT c.customer_no, c.customer_name,
+			               COUNT(*) AS order_count, SUM(f.amount) AS total_amount
+			        FROM ${table} f
+			        JOIN meta_demo_customer c ON c.customer_no = f.customer_no
+			        WHERE f.deleted_flag = 0
+			        GROUP BY c.customer_no, c.customer_name
+			        ORDER BY c.customer_no
+			    </select>
 			</mapper>
 			""";
 
@@ -195,29 +225,51 @@ public class MetaDataController {
 		this.jdbc.execute("CREATE TABLE " + TABLE + " ("
 				+ " id BIGINT AUTO_INCREMENT PRIMARY KEY,"
 				+ " form_no VARCHAR(32) NOT NULL,"
+				+ " customer_no VARCHAR(32),"
 				+ " title VARCHAR(64),"
 				+ " amount DECIMAL(12,2),"
 				+ " status INT,"
 				+ " remark VARCHAR(64),"
 				+ " create_time TIMESTAMP,"
 				+ " deleted_flag INT DEFAULT 0)");
+		seedCustomers();
 		MetaMapper.refresh(TABLE); // 丢掉旧表结构快照 / 旧实体类 / 语句与计划缓存
 		writePresetStatementFile(); // 写一份手写语句区；首次访问时框架会把默认语句生成块插进去
 		List<MetaClass> saved = MetaMapper.saveAll(seedRows());
-		this.log.info("runtime table {} created, {} rows seeded, entity={}", TABLE, saved.size(),
-				MetaMapper.entityType(TABLE).getName());
+		this.log.info("runtime table {} created, {} rows seeded, entity={}; join table {} ready", TABLE, saved.size(),
+				MetaMapper.entityType(TABLE).getName(), CUSTOMER);
 		Map<String, Object> result = schema();
 		result.put("seedRows", saved.size());
 		return result;
+	}
+
+	/**
+	 * 跨表查询的第二张表：主键就是客户编号，不与演示表建外键（演示表可以先建、后灌数据）。
+	 * 用参数化 INSERT 灌种子行，和 {@link #TABLE} 的 DDL 一样不接受用户输入拼串。
+	 */
+	private void seedCustomers() {
+		this.jdbc.execute("DROP TABLE IF EXISTS " + CUSTOMER);
+		this.jdbc.execute("CREATE TABLE " + CUSTOMER + " ("
+				+ " customer_no VARCHAR(32) PRIMARY KEY,"
+				+ " customer_name VARCHAR(64),"
+				+ " region VARCHAR(32))");
+		String[][] seeds = { { "C-001", "北辰贸易", "north" }, { "C-002", "东海物流", "east" },
+				{ "C-003", "南岭实业", "south" } };
+		for (String[] seed : seeds) {
+			this.jdbc.update("INSERT INTO " + CUSTOMER + " (customer_no, customer_name, region) VALUES (?, ?, ?)",
+					seed[0], seed[1], seed[2]);
+		}
 	}
 
 	/** 清掉演示表，方便反复验证「运行期建表」。 */
 	@DeleteMapping("/drop")
 	public Map<String, Object> drop() {
 		this.jdbc.execute("DROP TABLE IF EXISTS " + TABLE);
+		this.jdbc.execute("DROP TABLE IF EXISTS " + CUSTOMER);
 		MetaMapper.refresh(TABLE);
 		dropStatementFile();
-		return linked("dropped", TABLE, "hint", "POST /metadata/init to rebuild it at runtime");
+		return linked("dropped", TABLE, "joinTableDropped", CUSTOMER,
+				"hint", "POST /metadata/init to rebuild it at runtime");
 	}
 
 	/**
@@ -524,6 +576,39 @@ public class MetaDataController {
 				"rereadRemark", reread.getString("remark"));
 	}
 
+	/**
+	 * 跨表自定义查询：语句写在锚定表 {@code meta_demo_form.xml} 的自定义区，SQL 里 JOIN 第二张表
+	 * {@code meta_demo_customer}，XML 上声明 {@code resultType="map"}。
+	 *
+	 * <p>结果不再套锚定表的生成实体，而是「结果集列标签（小写）→ 值」，所以客户名、区域这些
+	 * 锚定表没有的列能原样带出来；分页仍由 {@code selectPageMaps} 自动包子查询计数，JOIN 也不会把总数算错。
+	 * 同一份语句配两个 id：{@code formWithCustomer} 明细、{@code amountByCustomer} 分组聚合。</p>
+	 */
+	@GetMapping("/query/join")
+	public Map<String, Object> joinQuery(@RequestParam(required = false) Integer status,
+			@RequestParam(defaultValue = "0") int page,
+			@RequestParam(defaultValue = "5") int size) {
+		requireInitialized();
+		if (page < 0 || size < 1 || size > 50) {
+			throw new IllegalArgumentException("page must be >= 0 and size between 1 and 50");
+		}
+		MetaMapperClient client = MetaMapper.defaultClient();
+		MetaClass query = params();
+		if (status != null) {
+			query.set("status", status);
+		}
+		MarkedSql preview = client.sqlFor(TABLE, "formWithCustomer", query);
+		Page<Map<String, Object>> joined = client.selectPageMaps(TABLE, "formWithCustomer", query,
+				Pageable.of(page, size));
+		List<Map<String, Object>> byCustomer = client.selectMaps(TABLE, "amountByCustomer", params());
+		return linked("shape", "resultType=\"map\"：列由 SELECT 决定，" + TABLE + " JOIN " + CUSTOMER,
+				"sql", preview.sql(), "boundValues", preview.values(),
+				"page", joined.page(), "size", joined.size(), "total", joined.total(),
+				"totalPages", joined.totalPages(), "content", joined.content(),
+				"aggregation", byCustomer,
+				"hint", "两个语句都在 " + TABLE + ".xml 里；普通实体入口读它们会被明确拒绝，请用 selectMaps/selectPageMaps");
+	}
+
 	/** 各级缓存条目与上限：表结构、实体类、语句、执行计划分别有界。 */
 	@GetMapping("/cache")
 	public Map<String, Object> cache() {
@@ -589,6 +674,7 @@ public class MetaDataController {
 				"GET /metadata/rows/1", "PUT /metadata/rows/1?remark=加急&status=2",
 				"POST /metadata/rows/1/void", "GET /metadata/query/operators",
 				"GET /metadata/statements", "GET /metadata/query/statement?status=1&minAmount=50&page=0&size=5",
+				"GET /metadata/query/join?status=1&page=0&size=5",
 				"GET /metadata/cache",
 				"POST /metadata/cache/clear?scope=table", "POST /metadata/reload",
 				"GET /metadata/safety", "GET /metadata/engine"));
@@ -631,6 +717,7 @@ public class MetaDataController {
 		for (int i = 0; i < amounts.length; i++) {
 			MetaClass row = MetaMapper.newEntity(TABLE);
 			row.set("form_no", "F-00" + (i + 1));
+			row.set("customer_no", "C-00" + (i + 1)); // 与 seedCustomers 的客户编号对齐，供跨表查询 JOIN
 			row.set("title", "动态单据-" + (i + 1));
 			row.set("amount", new BigDecimal(amounts[i]));
 			row.set("status", i == 1 ? 2 : 1);

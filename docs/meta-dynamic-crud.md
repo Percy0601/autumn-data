@@ -170,6 +170,47 @@ REM 期望输出 NATIVE_SMOKE_OK strategy=GENERIC type=xyz.wewin.autumn.data.com
 「小写列标签 → 序号」索引，缺列就跳过、字段保持 null，不会因 `rs.getObject("未投影列")`
 抛 `SQLException`，也不会串位；同时兼容 H2/Oracle 给大写列名、手写 SQL 用小写列名的差异。
 
+### 跨表 / 自定义结果形状（`resultType="map"`）
+
+投影只解决「锚定表的列少选几列」；**JOIN 另一张表、聚合出新的列**时，结果形状由 SQL 决定，
+再套锚定表实体就只能拿到它自己那几列。这类语句在 XML 上声明 `resultType="map"`，
+用 `selectMaps / selectMap / selectPageMaps` 读，每行是「结果集列标签（小写）→ 值」：
+
+```xml
+<!-- sql/{数据源}/{命名空间}/form_order.xml 的自定义区；${table} 仍只展开锚定表 -->
+<select id="formWithCustomer" resultType="map">
+    SELECT f.id, f.form_no, f.amount, c.customer_no, c.customer_name, c.region
+    FROM ${table} f
+    LEFT JOIN meta_demo_customer c ON c.customer_no = f.customer_no
+    WHERE f.deleted_flag = 0
+    <if test="status != null">AND f.status = #{status}</if>
+    ORDER BY f.id
+</select>
+```
+
+```java
+MetaClass query = new MetaClass();
+query.set("status", 1);
+List<Map<String, Object>> rows = MetaMapper.selectMaps("form_order", "formWithCustomer", query);
+Optional<Map<String, Object>> first = MetaMapper.selectMap("form_order", "formWithCustomer", query);
+Page<Map<String, Object>> page = MetaMapper.selectPageMaps("form_order", "formWithCustomer", query,
+        Pageable.of(0, 10));   // count 仍是对整条 SELECT 包子查询，JOIN 不会把总数算错
+```
+
+几条约定：
+
+- **必须显式声明**：没有 `resultType="map"` 的语句用 map 入口读会直接报错，不做隐式猜测；
+- **反过来也挡**：map 语句用 `selectList/selectOne/selectPage` 读同样报错——固定列 READER 会把额外列静默丢掉，
+  宁可拒绝也不返回缺字段的行；
+- 列键统一小写（`MetaEntityColumns` 同一份索引），`java.sql.Timestamp/Date/Time` 归一成
+  `LocalDateTime/LocalDate/LocalTime`，与生成实体读同列的类型一致；
+- SQL 仍然只写在**锚定表**的文件里，参数实体、`<if>/<foreach>`、`${}` 白名单、绑定槽编译、分页计数
+  全部复用同一条链路；其它表名照常写在 SQL 里，不需要为它们建元数据快照。
+
+示例见 `MetaDataController#joinQuery`（`GET /metadata/query/join`）：`meta_demo_form` LEFT JOIN
+`meta_demo_customer` 的明细，加上 `amountByCustomer` 的按客户分组聚合，两个语句都声明了
+`resultType="map"`。
+
 ## API
 
 ```java
@@ -227,6 +268,11 @@ MarkedSql sql = client.sqlFor("form_order", "findByNo", query);          // 只�
 client.statementIds("form_order");                                       // 七条默认 + 自定义
 client.ensureStatementFile("form_order");                                // 显式生成 / 更新文件
 
+// 跨表 / 自定义结果形状：语句声明 resultType="map"，行是「列标签（小写）→ 值」
+client.selectMaps("form_order", "formWithCustomer", query);
+client.selectMap("form_order", "formWithCustomer", query);
+client.selectPageMaps("form_order", "formWithCustomer", query, Pageable.of(0, 10));
+
 // 改 SQL：直接在语句 XML 里改；条件片段与列清单是共用入口
 //   __autumn_where    三条 select 共用的 WHERE
 //   __autumn_columns  列清单
@@ -242,8 +288,9 @@ MetaClass rebuilt = MetaMapper.defaultClient().reload("form_order");  // 清缓�
 ```
 
 静态门面只保留常用路径：`findById/findOne/findList/findPage` 四条读，`save/saveAll/update/delete`
-四条写，`selectList/selectOne/selectCount/selectPage/execute/sqlFor` 六个命名语句入口，加上
-`install/of/engine/newEntity/entityType/statementIds/ensureStatementFile/refresh/cacheStats`。
+四条写，`selectList/selectOne/selectCount/selectPage/execute/sqlFor` 六个命名语句入口，
+另有跨表专用的 `selectMaps/selectMap/selectPageMaps`（只接受 `resultType="map"` 的语句），
+加上 `install/of/engine/newEntity/entityType/statementIds/ensureStatementFile/refresh/cacheStats`。
 `findByKey`、`count`、`exists`、`findBySql` 系列已删除——都能由上面几条一行替代；
 限行查询 `findList(table, params, limit)` 只在 `MetaMapperClient` 上保留（压测/批量拉取用）。
 
@@ -619,7 +666,7 @@ ThreadLocal 最多作为“请求级默认池”的便利糖，不能作为唯�
   `sql`（`MetaSqlFileStore` 唯一语句库 + `MetaSqlGenerator` 七条默认语句 + `SqlTemplate` 解释 XML、
   `MarkedSql` → `MetaPlanCompiler` → `MetaSqlPlan` 三段与 `MetaPlanCache`）、`support`（有界缓存与目录）。
   方言与编译期生成器共用 `autumn-data-common` 的 `TemplateParser` / `TemplateNode`，本层只解释执行。
-- 用例（meta-jdbc 模块 93 个）：`engine/MetaMapperDynamicTest` 47 个、`engine/MetaMapperMetaApiTest` 9 个、
+- 用例（meta-jdbc 模块 94 个）：`engine/MetaMapperDynamicTest` 48 个、`engine/MetaMapperMetaApiTest` 9 个、
   `sql/MetaSqlFileStoreTest` 8 个、`sql/MetaSqlPlanTest` 6 个、`support/BoundedCacheTest` 15 个、
   `entity/MetaEntityStrategyTest` 4 个、`entity/MetaEntityCompilerTest` 1 个、
   `engine/MetaEntityGenericModeTest` 1 个、`engine/MetaMapperDialectTest` 2 个。
@@ -628,7 +675,8 @@ ThreadLocal 最多作为“请求级默认池”的便利糖，不能作为唯�
   名字忽略大小写对齐 → `#{}` 绑定与注入拒绝 → `${}` 白名单 → `<foreach>` / `<trim>` / `<choose>` /
   `<resultMap>` → `changed('col')` 变更集 → 默认语句生成块落 XML 与手改入口 → 表 / 实体 / 语句三级缓存分开清理与
   `reload` → 生成类的真实字段类型 / 零反射源码 / 加列生成新类 / 源码落盘 / 投影缺列 /
-  各缓存淘汰后可重建 / 并发单飞 / 连续改表。
-  starter 装配与事务 40 个；using 模块 67 个（含 `MetaMapperXmlUsingTest` 6 个上层用法示例与
-  `MetaDataControllerTest` 的 HTTP 验证）。
-- 全 reactor：`mvn -B test`，294 个用例全绿（common 41 / meta-jdbc 93 / starter 40 / compiler 53 / using 67）。
+  各缓存淘汰后可重建 / 并发单飞 / 连续改表 →
+  `resultType="map"` 的跨表 JOIN 明细 / 分组聚合 / map 分页与实体入口互斥。
+  starter 装配与事务 40 个；using 模块 72 个（含 `MetaMapperXmlUsingTest` 6 个上层用法示例与
+  `MetaDataControllerTest` 的 HTTP 验证，后者走查 `GET /metadata/query/join`）。
+- 全 reactor：`mvn -B test`，305 个用例全绿（common 41 / meta-jdbc 94 / starter 40 / compiler 58 / using 72）。

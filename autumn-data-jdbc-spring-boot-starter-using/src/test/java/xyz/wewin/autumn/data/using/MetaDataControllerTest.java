@@ -131,14 +131,27 @@ class MetaDataControllerTest {
 		assertThat(this.controller.addColumn("courier", "VARCHAR(64)")).containsEntry("added", false);
 
 		// ⑨ 命名语句：手写语句 XML 与七条默认语句共存，sqlFor / selectList / selectCount / execute 都能跑
-		Map<String, Object> statements = this.controller.namedStatements();
-		assertThat((String) statements.get("listSql")).contains("?");
+		Map<String, Object> statements = this.controller.namedStatements();		assertThat((String) statements.get("listSql")).contains("?");
 		assertThat((List<?>) statements.get("listValues")).hasSize(1);
 		assertThat(((Number) statements.get("selectCount")).longValue()).isGreaterThanOrEqualTo(1L);
 		assertThat((String) statements.get("insertSql")).containsIgnoringCase("form_no");
 		assertThat(statements).containsEntry("insertedRows", 1).containsEntry("updatedRows", 1);
 		assertThat(statements.get("afterUpdateRemark")).isEqualTo("生成语句改的");
 		assertThat((String) statements.get("statementFile")).endsWith(".xml");
+
+		// ⑨-b 跨表自定义形状：resultType="map" 的语句 JOIN 第二张表 meta_demo_customer，
+		// 客户名 / 区域这些锚定表没有的列能带出来，分页计数仍是对整条 SELECT 包子查询
+		Map<String, Object> join = this.controller.joinQuery(1, 0, 50);
+		assertThat((String) join.get("sql")).containsIgnoringCase("join meta_demo_customer");
+		assertThat(((Number) join.get("total")).longValue()).isGreaterThanOrEqualTo(1L);
+		List<?> joinedRows = (List<?>) join.get("content");
+		Map<?, ?> seedJoin = joinedRows.stream().map(row -> (Map<?, ?>) row)
+				.filter(row -> "F-003".equals(row.get("form_no"))).findFirst().orElseThrow();
+		assertThat(seedJoin.get("customer_no")).isEqualTo("C-003");
+		assertThat(seedJoin.get("customer_name")).isEqualTo("南岭实业");
+		assertThat(seedJoin.get("region")).isEqualTo("south");
+		// 未挂客户的单据也能查出来（LEFT JOIN），客户列就是 null
+		assertThat((List<?>) join.get("aggregation")).isNotEmpty();
 
 		// ⑩ 防注入：值不进 SQL 文本，非法列名/排序标识符都被元数据挡住
 		Map<String, Object> safety = this.controller.safety();
@@ -189,6 +202,7 @@ class MetaDataControllerTest {
 		assertThat(get("/metadata/engine", 200)).contains("defaultPoolName");
 		assertThat(get("/metadata/safety", 200)).contains("valueInSqlText");
 		assertThat(get("/metadata/statements", 200)).contains("statementFile");
+		assertThat(get("/metadata/query/join", 200)).contains("aggregation");
 		assertThat(request("POST", "/metadata/rows?count=1", 200)).contains("generatedKeys");
 		assertThat(request("DELETE", "/metadata/drop", 200)).contains("dropped");
 		assertThat(get("/metadata/schema", 400)).contains("/metadata/init");

@@ -133,6 +133,26 @@ class MetaMapperDynamicTest {
 			        SELECT id, order_no, amount FROM ${table} WHERE order_no = #{order_no}
 			    </select>
 			    <select id="rawStats">SELECT id FROM ${table}</select>
+
+			    <!-- 跨表自定义形状：SQL 写在锚定表（form_order）的文件里，JOIN 另一张表。
+			         resultType="map" 表示按结果集列标签收口，不再硬套 form_order 的生成实体。 -->
+			    <select id="joinCustomer" resultType="map">
+			        SELECT o.id, o.order_no, o.amount, o.status, o.create_time,
+			               c.customer_no, c.customer_name, c.region
+			        FROM ${table} o
+			        LEFT JOIN customer c ON c.customer_no = o.customer_no
+			        WHERE o.deleted_flag = 0
+			        <if test="status != null">AND o.status = #{status}</if>
+			        ORDER BY o.id
+			    </select>
+			    <select id="amountByCustomer" resultType="java.util.Map">
+			        SELECT c.customer_no, c.customer_name, COUNT(*) AS order_count, SUM(o.amount) AS total_amount
+			        FROM ${table} o
+			        JOIN customer c ON c.customer_no = o.customer_no
+			        WHERE o.deleted_flag = 0
+			        GROUP BY c.customer_no, c.customer_name
+			        ORDER BY c.customer_no
+			    </select>
 			</mapper>
 			""";
 
@@ -157,10 +177,18 @@ class MetaMapperDynamicTest {
 			statement.execute("CREATE TABLE form_order ("
 					+ "id BIGINT AUTO_INCREMENT PRIMARY KEY, "
 					+ "order_no VARCHAR(32) NOT NULL, "
+					+ "customer_no VARCHAR(32), "
 					+ "amount DECIMAL(12,2), "
 					+ "status INT, "
 					+ "create_time TIMESTAMP, "
 					+ "deleted_flag INT NOT NULL DEFAULT 0)");
+			// 跨表查询用的第二张表：只在 SQL 里 JOIN，不经过 MetaMapper 的实体读写
+			statement.execute("CREATE TABLE customer ("
+					+ "customer_no VARCHAR(32) PRIMARY KEY, "
+					+ "customer_name VARCHAR(64), "
+					+ "region VARCHAR(32))");
+			statement.execute("INSERT INTO customer (customer_no, customer_name, region) VALUES "
+					+ "('C1', '北京客户', 'north'), ('C2', '上海客户', 'east')");
 		}
 		// 预置一份「使用方手写」的 XML：首次访问时框架把默认语句生成块插进来，自定义语句保留。
 		Path file = statementFile();
@@ -1140,6 +1168,58 @@ class MetaMapperDynamicTest {
 		assertThat(this.client.findOne("form_order", params("status", 1)).orElseThrow().getString("order_no"))
 				.isEqualTo("RG-2");
 		assertThat(Files.readString(statementFile())).contains("ORDER BY amount DESC");
+	}
+
+	@Test
+	void crossTableQueryReturnsCustomShapeThroughResultTypeMap() {
+		this.client.save(row("form_order", "order_no", "J1", "customer_no", "C1", "amount", "10.00", "status", 1,
+				"create_time", "2026-11-11 09:00:00"));
+		this.client.save(row("form_order", "order_no", "J2", "customer_no", "C2", "amount", "20.00", "status", 1));
+		this.client.save(row("form_order", "order_no", "J3", "customer_no", "C1", "amount", "30.00", "status", 2));
+
+		// 跨表 JOIN：列来自两张表，按 resultType="map" 收口，锚定表的生成实体拦不住这些额外列
+		List<Map<String, Object>> joined = this.client.selectMaps("form_order", "joinCustomer", params("status", 1));
+		assertThat(joined).hasSize(2);
+		Map<String, Object> first = joined.get(0);
+		assertThat(first).containsKeys("id", "order_no", "amount", "customer_no", "customer_name", "region");
+		assertThat(first.get("order_no")).isEqualTo("J1");
+		assertThat(first.get("customer_name")).isEqualTo("北京客户");
+		assertThat(first.get("amount")).isInstanceOf(java.math.BigDecimal.class);
+		// 时序列归一成 java.time，和生成实体读同一列的类型一致
+		assertThat(first.get("create_time")).isInstanceOf(LocalDateTime.class);
+
+		// 取一行 / 限行 / 分页都走同一份语句，分页计数仍是对整条 SELECT 包子查询
+		assertThat(this.client.selectMap("form_order", "joinCustomer", params("status", 1)))
+				.hasValueSatisfying(row -> assertThat(row.get("region")).isEqualTo("north"));
+		assertThat(this.client.selectMaps("form_order", "joinCustomer", params(), 1)).hasSize(1);
+		Page<Map<String, Object>> page = this.client.selectPageMaps("form_order", "joinCustomer", params(),
+				Pageable.of(0, 2));
+		assertThat(page.content()).hasSize(2);
+		assertThat(page.total()).isEqualTo(3);
+		assertThat(page.totalPages()).isEqualTo(2);
+
+		// 聚合 + 分组：列数是 SQL 决定的，没有实体可套
+		List<Map<String, Object>> stats = this.client.selectMaps("form_order", "amountByCustomer", params());
+		assertThat(stats).hasSize(2);
+		assertThat(stats.get(0)).containsEntry("customer_no", "C1");
+		assertThat(((Number) stats.get(0).get("order_count")).intValue()).isEqualTo(2);
+		assertThat((java.math.BigDecimal) stats.get(0).get("total_amount")).isEqualByComparingTo("40.00");
+	}
+
+	@Test
+	void entityAndMapStatementPathsRejectEachOther() {
+		// 普通实体语句不能用 map 入口读：没有显式声明 resultType 就不猜结果形状
+		assertThatThrownBy(() -> this.client.selectMaps("form_order", "highValue", params("status", 1)))
+				.isInstanceOf(MetaSqlException.class)
+				.hasMessageContaining("does not declare resultType=\"map\"");
+
+		// 反过来，map 语句不能用实体入口读：额外列会被固定列 READER 静默丢掉
+		assertThatThrownBy(() -> this.client.selectList("form_order", "joinCustomer", params()))
+				.isInstanceOf(MetaSqlException.class)
+				.hasMessageContaining("selectMaps");
+		assertThatThrownBy(() -> this.client.selectPage("form_order", "joinCustomer", params(), Pageable.of(0, 2)))
+				.isInstanceOf(MetaSqlException.class)
+				.hasMessageContaining("selectMaps");
 	}
 
 	@Test
