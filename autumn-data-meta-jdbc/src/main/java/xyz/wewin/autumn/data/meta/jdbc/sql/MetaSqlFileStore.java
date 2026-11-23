@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -600,7 +601,8 @@ public final class MetaSqlFileStore {
 
 	private static long stamp(Path file) {
 		try {
-			return Files.getLastModifiedTime(file).toMillis() * 31 + Files.size(file);
+			BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+			return attributes.lastModifiedTime().toMillis() * 31 + attributes.size();
 		}
 		catch (IOException ex) {
 			return -1L;

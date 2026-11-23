@@ -34,12 +34,13 @@ public record MarkedSql(String sql, List<String> refs, List<Object> values) {
 		// 实参里 null 是合法值（显式把一列写成 NULL），所以只能拷贝后包一层，不能用 List.copyOf
 		values = values == null ? List.of()
 				: Collections.unmodifiableList(new ArrayList<>(values));
+		int slotCount = placeholders(sql);
 		if (refs.size() != values.size()) {
-			throw new MetaSqlException("marked SQL has " + placeholders(sql) + " placeholders but produced "
+			throw new MetaSqlException("marked SQL has " + slotCount + " placeholders but produced "
 					+ refs.size() + " refs and " + values.size() + " values: " + sql);
 		}
-		if (refs.size() != placeholders(sql)) {
-			throw new MetaSqlException("marked SQL has " + placeholders(sql) + " '?' placeholders but "
+		if (refs.size() != slotCount) {
+			throw new MetaSqlException("marked SQL has " + slotCount + " '?' placeholders but "
 					+ refs.size() + " bind slots; template is broken: " + sql);
 		}
 	}

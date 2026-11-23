@@ -98,16 +98,6 @@ public final class MetaTable {
 		return this.primaryKeys.size() == 1 ? this.primaryKeys.get(0) : null;
 	}
 
-	/** 自增列；没有返回 {@code null}。 */
-	public MetaProperty autoIncrementColumn() {
-		for (MetaProperty column : this.columns) {
-			if (column.isAutoIncrement()) {
-				return column;
-			}
-		}
-		return null;
-	}
-
 	/** 逻辑删除列（未配置/未命中返回 {@code null}）。 */
 	public String logicDeleteColumn() {
 		return this.logicDeleteColumn;
@@ -119,20 +109,6 @@ public final class MetaTable {
 			return null;
 		}
 		return this.lookup.get(normalize(column));
-	}
-
-	/** 按列名查列（大小写不敏感）；不存在抛 {@link MetaSqlException}。 */
-	public MetaProperty requireColumn(String column) {
-		MetaProperty found = findColumn(column);
-		if (found == null) {
-			throw new MetaSqlException("unknown column '" + column + "' on table '" + this.metaClass.getName() + "'");
-		}
-		return found;
-	}
-
-	/** 该列是否存在。 */
-	public boolean hasColumn(String column) {
-		return findColumn(column) != null;
 	}
 
 	/**

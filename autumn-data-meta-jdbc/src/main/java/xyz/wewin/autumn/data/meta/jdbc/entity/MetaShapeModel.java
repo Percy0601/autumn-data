@@ -25,9 +25,4 @@ import xyz.wewin.autumn.data.common.meta.MetaClass;
 public record MetaShapeModel(Class<? extends MetaClass> type, MetaEntityReader reader,
 		Supplier<MetaClass> factory, String packageName, String className, String qualifiedName,
 		String fingerprint, List<MetaShapeColumn> columns) {
-
-	/** 每行对象的实际类名，便于调用方/诊断直接展示具体类型。 */
-	public String rowType() {
-		return this.qualifiedName;
-	}
 }

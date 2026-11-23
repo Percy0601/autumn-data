@@ -1,5 +1,6 @@
 package xyz.wewin.autumn.data.meta.jdbc.entity;
 
+import java.lang.ref.WeakReference;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
@@ -14,21 +15,43 @@ import java.util.Map;
  * {@code SQLException}。索引让生成代码可以先判断列在不在，缺列就跳过、字段保持 null，
  * 与原先「按结果集列标签逐列收集」的行为一致。同时兼容 H2/Oracle 给大写列名、
  * MySQL 习惯写小写列名的差异。</p>
+ *
+ * <p><b>索引按结果集缓存</b>：逐行读取同一个结果集时元数据只扫一次，后续行直接复用；
+ * 换结果集自动重建。缓存项用弱引用持有 ResultSet，不阻止它关闭后被回收。</p>
  */
 public final class MetaEntityColumns {
+
+	private static final ThreadLocal<Cached> CACHE = new ThreadLocal<>();
 
 	private MetaEntityColumns() {
 	}
 
+	private static final class Cached {
+		final WeakReference<ResultSet> resultSet;
+		final Map<String, Integer> columns;
+
+		Cached(ResultSet resultSet, Map<String, Integer> columns) {
+			this.resultSet = new WeakReference<>(resultSet);
+			this.columns = columns;
+		}
+	}
+
+	/** 当前结果集的列标签索引；同一结果集的连续多行共用同一份。 */
 	public static Map<String, Integer> index(ResultSet rs) throws SQLException {
+		Cached cached = CACHE.get();
+		if (cached != null && cached.resultSet.get() == rs) {
+			return cached.columns;
+		}
 		ResultSetMetaData metaData = rs.getMetaData();
-		Map<String, Integer> index = new LinkedHashMap<>();
-		for (int i = 1; i <= metaData.getColumnCount(); i++) {
+		Map<String, Integer> columns = new LinkedHashMap<>();
+		int count = metaData.getColumnCount();
+		for (int i = 1; i <= count; i++) {
 			String label = metaData.getColumnLabel(i);
 			if (label != null) {
-				index.putIfAbsent(label.toLowerCase(Locale.ROOT), i);
+				columns.putIfAbsent(label.toLowerCase(Locale.ROOT), i);
 			}
 		}
-		return index;
+		CACHE.set(new Cached(rs, columns));
+		return columns;
 	}
 }

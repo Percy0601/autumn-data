@@ -56,11 +56,6 @@ public record MetaDirectories(Path rootDirectory) {
 		return new MetaDirectories(trimmed.isEmpty() ? null : Paths.get(trimmed));
 	}
 
-	/** 是否落盘。 */
-	public boolean onDisk() {
-		return this.rootDirectory != null;
-	}
-
 	/** 子目录绝对化前的相对路径；纯内存模式返回 {@code null}。 */
 	public Path directory(String subDirectory) {
 		return this.rootDirectory == null ? null : this.rootDirectory.resolve(subDirectory);
