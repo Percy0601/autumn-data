@@ -6,67 +6,70 @@ import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperClient;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperEngine;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperOptions;
-import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityStrategy;
 
 /**
- * meta-jdbc 两档实体形态的引擎与客户端：{@code CODE}（运行期生成强类型子类）与 {@code GENERIC}。
+ * 动态层基准客户端：实体统一为通用 {@link xyz.wewin.autumn.data.common.meta.MetaClass}，
+ * 不再有 CODE / GENERIC 两档。
  *
- * <p>刻意不走 {@code MetaMapper.install} 的静态门面：那个全局单例会互相覆盖，两档要同时存在
- * 只能各建一个 {@link MetaMapperEngine}。两边共用同一个 DataSource，连接池成本完全对齐。</p>
+ * <p>刻意不走 {@code MetaMapper.install} 的静态门面：那个全局单例会互相覆盖，基准要和其它使用方
+ * 分开。纯内存选项（{@code metaDirectory=""} + {@code generateFiles=false}）：基准不往项目目录写产物。</p>
  *
- * <p>纯内存选项（{@code metaDirectory=""} + {@code generateFiles=false}）：基准不能往项目目录
- * 里写 meta 产物。</p>
+ * <p>旧基准标签 {@code code} / {@code generic} 仍保留为别名，只为复跑历史脚本；两者现在指向同一个
+ * 引擎，不能再用来比较两档实体形态。</p>
  */
 public final class BenchMeta {
 
 	private static final Object LOCK = new Object();
 
-	private static volatile MetaMapperEngine codeEngine;
-
-	private static volatile MetaMapperEngine genericEngine;
+	private static volatile MetaMapperEngine engine;
 
 	private BenchMeta() {
 	}
 
-	/** CODE 档引擎：运行期 javac 生成并加载强类型实体类，逐行 READER 直接写字段。 */
+	public static MetaMapperEngine engine() {
+		MetaMapperEngine local = engine;
+		if (local == null) {
+			synchronized (LOCK) {
+				if (engine == null) {
+					engine = createEngine();
+				}
+				local = engine;
+			}
+		}
+		return local;
+	}
+
+	public static MetaMapperClient client() {
+		return engine().defaultClient();
+	}
+
+	/** @deprecated CODE 档已删除，仅为兼容旧基准脚本。 */
+	@Deprecated
 	public static MetaMapperEngine codeEngine() {
-		MetaMapperEngine local = codeEngine;
-		if (local == null) {
-			synchronized (LOCK) {
-				if (codeEngine == null) {
-					codeEngine = engine(MetaEntityStrategy.CODE);
-				}
-				local = codeEngine;
-			}
-		}
-		return local;
+		return engine();
 	}
 
-	/** GENERIC 档引擎：不生成子类，逐行写通用 MetaClass 属性列表。 */
+	/** @deprecated GENERIC 档已删除，仅为兼容旧基准脚本。 */
+	@Deprecated
 	public static MetaMapperEngine genericEngine() {
-		MetaMapperEngine local = genericEngine;
-		if (local == null) {
-			synchronized (LOCK) {
-				if (genericEngine == null) {
-					genericEngine = engine(MetaEntityStrategy.GENERIC);
-				}
-				local = genericEngine;
-			}
-		}
-		return local;
+		return engine();
 	}
 
+	/** @deprecated CODE 档已删除，仅为兼容旧基准脚本。 */
+	@Deprecated
 	public static MetaMapperClient code() {
-		return codeEngine().defaultClient();
+		return client();
 	}
 
+	/** @deprecated GENERIC 档已删除，仅为兼容旧基准脚本。 */
+	@Deprecated
 	public static MetaMapperClient generic() {
-		return genericEngine().defaultClient();
+		return client();
 	}
 
-	private static MetaMapperEngine engine(MetaEntityStrategy strategy) {
-		MetaMapperOptions options = new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), "", false, 1000,
-				strategy);
+	private static MetaMapperEngine createEngine() {
+		MetaMapperOptions options = new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), "", false,
+				1000, 1000);
 		return MetaMapperEngine.forDataSource("bench", BenchDatabase.dataSource(), options);
 	}
 

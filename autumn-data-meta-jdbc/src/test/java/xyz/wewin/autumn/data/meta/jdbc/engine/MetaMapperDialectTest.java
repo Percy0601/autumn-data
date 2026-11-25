@@ -25,6 +25,7 @@ import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaPlanCache;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlFileStore;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -70,8 +71,8 @@ class MetaMapperDialectTest {
 		JdbcConnectionSource connections = new JdbcConnectionSource(dataSource);
 		AutumnJdbc jdbc = new AutumnJdbc(connections, dialect, FetchPolicy.defaults());
 		MetaTableRegistry registry = new MetaTableRegistry(dataSource, dialect, Set.of("deleted_flag"));
-		MetaSqlFileStore statements = new MetaSqlFileStore(this.mapperDirectory, getClass().getClassLoader(),
-				10_000, new MetaSqlGenerator(dialect), true);
+		MetaSqlFileStore statements = new MetaSqlFileStore(MetaDirectories.of(this.mapperDirectory.toString()),
+				getClass().getClassLoader(), 10_000, new MetaSqlGenerator(dialect), true);
 		MetaMapperClient client = new MetaMapperClient("test", jdbc, connections, registry,
 				new MetaEntityRegistry(), new MetaPlanCache(), 1000, statements);
 

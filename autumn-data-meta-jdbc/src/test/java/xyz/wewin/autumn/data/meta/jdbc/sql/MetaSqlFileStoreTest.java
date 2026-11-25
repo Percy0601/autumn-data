@@ -8,10 +8,12 @@ import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * {@code meta/{数据源}/{命名空间}/{表}.xml} 语句库：懒加载、宽松解析、按修改时间重读。
+ * spec/xml 手写语句库：懒加载、宽松解析、按修改时间重读。
  */
 class MetaSqlFileStoreTest {
 
@@ -120,7 +122,8 @@ class MetaSqlFileStoreTest {
 	}
 
 	private Path write(String datasource, String namespace, String table, String content) throws IOException {
-		Path file = this.root.resolve(datasource).resolve(namespace).resolve(table + ".xml");
+		Path file = MetaDirectories.of(this.root.toString())
+				.specXmlDirectory(datasource, namespace).resolve(table + ".xml");
 		Files.createDirectories(file.getParent());
 		Files.writeString(file, content, StandardCharsets.UTF_8);
 		return file;

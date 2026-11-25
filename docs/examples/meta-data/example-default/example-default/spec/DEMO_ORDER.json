@@ -1,0 +1,13 @@
+{
+  "name" : "DEMO_ORDER",
+  "namespace" : "PUBLIC",
+  "metaType" : "ENTITY",
+  "logicDeleteColumn" : null,
+  "comment" : "按表结构生成一次；定义优先，只写你想改的键，其余以数据库为准",
+  "properties" : [
+    { "name" : "ID", "type" : "java.lang.Long", "jdbcType" : -5, "sqlTypeName" : "BIGINT", "nullable" : false, "primaryKey" : true, "autoIncrement" : true, "defaultValue" : null },
+    { "name" : "USER_ID", "type" : "java.lang.Long", "jdbcType" : -5, "sqlTypeName" : "BIGINT", "nullable" : true, "primaryKey" : false, "autoIncrement" : false, "defaultValue" : null },
+    { "name" : "ORDER_NO", "type" : "java.lang.String", "jdbcType" : 12, "sqlTypeName" : "CHARACTER VARYING", "nullable" : false, "primaryKey" : false, "autoIncrement" : false, "defaultValue" : null },
+    { "name" : "AMOUNT", "type" : "java.math.BigDecimal", "jdbcType" : 3, "sqlTypeName" : "DECIMAL", "nullable" : true, "primaryKey" : false, "autoIncrement" : false, "defaultValue" : null }
+  ]
+}

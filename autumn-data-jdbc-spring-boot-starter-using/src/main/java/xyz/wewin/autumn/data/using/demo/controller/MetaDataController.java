@@ -42,20 +42,19 @@ import xyz.wewin.autumn.data.meta.jdbc.sql.MarkedSql;
 import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
 
 /**
- * autumn-data-meta-jdbc 的 HTTP 验证入口：所有端点只操作运行期建出来的演示表 {@value #TABLE}，
- * 不碰示例库里已有的 basic_user / lib_* 表。
+ * autumn-data-meta-jdbc 的 HTTP 验证入口：所有端点只操作运行期建出来的演示表 {@value #TABLE}。
  *
  * <p>推荐调用顺序：{@code POST /metadata/init} → {@code GET /metadata/schema} →
  * {@code POST /metadata/rows} → {@code GET /metadata/rows} → {@code POST /metadata/column} →
  * {@code GET /metadata/statements} → {@code GET /metadata/query/statement} →
- * {@code GET /metadata/query/join} → {@code GET /metadata/cache} → {@code GET /metadata/safety} →
+ * {@code GET /metadata/cache} → {@code GET /metadata/safety} →
  * {@code DELETE /metadata/drop}。</p>
  *
- * <p>覆盖的能力：运行期建表不重启即 CRUD、按表结构运行期生成强类型实体（entityClass）、
- * 加列后 refresh 换实体类、参数实体 + XML 语句与分页、语句 XML 自动生成块与自定义语句、
- * 自定义语句的分页 / 写 / 按条件取一行、<b>跨表 JOIN 的自定义结果形状</b>（{@code resultType="map"} /
- * {@code "metaclass"} + {@code selectShape/selectShapeOne/selectShapePage}，每行是 {@link MetaClass}）、
- * 表结构 / 实体类 / 语句三级缓存的分开清理与重载、
+ * <p>覆盖的能力：运行期建表不重启即 CRUD、统一用 common 的 {@link MetaClass} 承载任意表结构
+ * （属性描述里带着每列的 Java/JDBC 类型）、加列后 refresh 用新结构继续读写、
+ * 参数实体 + XML 语句与分页、spec/xml 自定义语句与 auto/xml 默认语句分时管理、
+ * 自定义语句的分页 / 写 / 按条件取一行、
+ * 表结构 / 实体模型 / 语句三级缓存的分开清理与重载、
  * 逻辑删除自动过滤、列名与标识符白名单（防注入）、按池绑定的客户端与缓存诊断。</p>
  *
  * <p>启动：{@code mvn spring-boot:run -Dspring-boot.run.profiles=demo}（连本地 H2）。
@@ -68,12 +67,6 @@ public class MetaDataController {
 	/** 运行期建出来的演示表：单一自增主键 + 逻辑删除列（查询自动追加 deleted_flag = 0）。 */
 	private static final String TABLE = "meta_demo_form";
 
-	/**
-	 * 跨表查询的第二张表：只作为 SQL 里 JOIN 的对象存在，不经过 MetaMapper 的实体读写，
-	 * 所以不需要 refresh / 生成实体；init/drop 与 {@link #TABLE} 同生命周期。
-	 */
-	private static final String CUSTOMER = "meta_demo_customer";
-
 	private static final Pattern COLUMN_NAME = Pattern.compile("[A-Za-z][A-Za-z0-9_]{0,30}");
 
 	/** 加列端点允许的类型：DDL 只拼白名单里的字面量。 */
@@ -84,18 +77,18 @@ public class MetaDataController {
 
 	private final JdbcOperations jdbc;
 
-	/** 语句 XML 根目录；纯内存模式为 null。init/drop 时只清理本演示表自己的文件。 */
+	/** spec/xml 手写语句目录；纯内存模式为 null。init/drop 时只清理本演示表自己的 spec 文件。 */
 	private final Path sqlDirectory;
 
 	public MetaDataController(JdbcOperations jdbc,
-			@Value("${autumn.data.meta.mapper.meta-directory:autumn-meta}") String metaDirectory) {
+			@Value("${autumn.data.meta.mapper.meta-directory:meta-data}") String metaDirectory) {
 		this.jdbc = jdbc;
-		this.sqlDirectory = MetaDirectories.of(metaDirectory).sqlDirectory();
+		this.sqlDirectory = MetaDirectories.of(metaDirectory).specXmlDirectory("default", "default");
 	}
 
 	/**
-	 * 使用方手写的自定义语句区：框架第一次访问时会把七条默认语句的生成块插到 {@code <mapper>} 之后，
-	 * 自定义语句留在生成块后面、逐字保留；两者在同一份文件里共存，改完直接生效。
+	 * 使用方手写的 spec/xml：框架只读、绝不改写；七条默认语句另放在 auto/xml，
+	 * 同 id 时 spec 覆盖 auto。改完这段 XML 清一下语句缓存即可生效。
 	 */
 	private static final String PRESET_STATEMENTS = """
 			<?xml version="1.0" encoding="UTF-8"?>
@@ -188,42 +181,14 @@ public class MetaDataController {
 			</mapper>
 			""";
 
-	/**
-	 * 跨表结果形状语句：单独写到 {@code meta_demo_form.vo.xml}，不再和实体 CRUD 混在同一份 XML。
-	 * 第一次 init 时落盘；之后这份文件归使用方，框架不再生成 / 覆盖，改 SQL 直接编辑文件即可。
-	 */
-	private static final String SHAPE_FORM_WITH_CUSTOMER = """
-			<select id="formWithCustomer" resultType="metaclass">
-			    SELECT f.id, f.form_no, f.title, f.amount, f.status,
-			           c.customer_no, c.customer_name, c.region
-			    FROM ${table} f
-			    LEFT JOIN meta_demo_customer c ON c.customer_no = f.customer_no
-			    WHERE f.deleted_flag = 0
-			    <if test="status != null">AND f.status = #{status}</if>
-			    ORDER BY f.id
-			</select>
-			""";
-
-	private static final String SHAPE_AMOUNT_BY_CUSTOMER = """
-			<select id="amountByCustomer" resultType="map">
-			    SELECT c.customer_no, c.customer_name,
-			           COUNT(*) AS order_count, SUM(f.amount) AS total_amount
-			    FROM ${table} f
-			    JOIN meta_demo_customer c ON c.customer_no = f.customer_no
-			    WHERE f.deleted_flag = 0
-			    GROUP BY c.customer_no, c.customer_name
-			    ORDER BY c.customer_no
-			</select>
-			""";
-
 	// ==================================================================
 	// 一、运行期建表 / 元数据 / 运行期生成的实体类
 	// ==================================================================
 
 	/**
 	 * 运行期建表并灌入种子数据：不重启、不改代码，建完立刻就能 newEntity/save/findById。
-	 * 同时预置一份「使用方手写」的语句 XML；框架第一次访问会把七条默认语句的生成块插进去，
-	 * 之后 {@code meta_demo_form.xml} 里 findOne / findList / save 等默认语句全部可见。
+	 * 同时预置一份 spec/xml 手写语句；首次访问时框架在 auto/xml 生成 findOne / findList / save
+	 * 等七条默认语句，spec 文件保持原样。
 	 */
 	@PostMapping("/init")
 	public Map<String, Object> init() {
@@ -239,52 +204,28 @@ public class MetaDataController {
 				+ " remark VARCHAR(64),"
 				+ " create_time TIMESTAMP,"
 				+ " deleted_flag INT DEFAULT 0)");
-		seedCustomers();
 		MetaMapper.refresh(TABLE); // 丢掉旧表结构快照 / 旧实体类 / 语句与计划缓存
-		writePresetStatementFile(); // 实体 CRUD 语句：一份使用方手写文件；首次访问时框架插入默认语句生成块
-		writePresetShapeStatements(); // VO 语句单独落 meta_demo_form.vo.xml；已有文件绝不覆盖
+		writePresetStatementFile(); // 使用方手写 spec/xml；默认语句由框架另写 auto/xml
 		List<MetaClass> saved = MetaMapper.saveAll(seedRows());
-		this.log.info("runtime table {} created, {} rows seeded, entity={}; join table {} ready", TABLE, saved.size(),
-				MetaMapper.entityType(TABLE).getName(), CUSTOMER);
+		this.log.info("runtime table {} created, {} rows seeded, entity={}", TABLE, saved.size(),
+				MetaMapper.entityType(TABLE).getName());
 		Map<String, Object> result = schema();
 		result.put("seedRows", saved.size());
 		result.put("statementFile", existingStatementFile() == null ? null : existingStatementFile().toString());
-		result.put("shapeStatementFile",
-				existingShapeStatementFile() == null ? null : existingShapeStatementFile().toString());
 		return result;
-	}
-
-	/**
-	 * 跨表查询的第二张表：主键就是客户编号，不与演示表建外键（演示表可以先建、后灌数据）。
-	 * 用参数化 INSERT 灌种子行，和 {@link #TABLE} 的 DDL 一样不接受用户输入拼串。
-	 */
-	private void seedCustomers() {
-		this.jdbc.execute("DROP TABLE IF EXISTS " + CUSTOMER);
-		this.jdbc.execute("CREATE TABLE " + CUSTOMER + " ("
-				+ " customer_no VARCHAR(32) PRIMARY KEY,"
-				+ " customer_name VARCHAR(64),"
-				+ " region VARCHAR(32))");
-		String[][] seeds = { { "C-001", "北辰贸易", "north" }, { "C-002", "东海物流", "east" },
-				{ "C-003", "南岭实业", "south" } };
-		for (String[] seed : seeds) {
-			this.jdbc.update("INSERT INTO " + CUSTOMER + " (customer_no, customer_name, region) VALUES (?, ?, ?)",
-					seed[0], seed[1], seed[2]);
-		}
 	}
 
 	/** 清掉演示表，方便反复验证「运行期建表」。 */
 	@DeleteMapping("/drop")
 	public Map<String, Object> drop() {
 		this.jdbc.execute("DROP TABLE IF EXISTS " + TABLE);
-		this.jdbc.execute("DROP TABLE IF EXISTS " + CUSTOMER);
 		MetaMapper.refresh(TABLE);
 		dropStatementFile();
-		return linked("dropped", TABLE, "joinTableDropped", CUSTOMER,
-				"hint", "POST /metadata/init to rebuild it at runtime");
+		return linked("dropped", TABLE, "hint", "POST /metadata/init to rebuild it at runtime");
 	}
 	/**
-	 * 表结构快照：列名、Java 类型、JDBC 类型、主键/自增/可空全来自 DatabaseMetaData，
-	 * entityClass 是按这版结构在运行期编译出来的 MetaClass 子类（GENERIC 模式恒为 MetaClass）。
+	 * 表结构快照：列名、Java 类型、JDBC 类型、主键/自增/可空全来自 DatabaseMetaData；
+	 * entityClass 恒为通用 {@link MetaClass}，类型信息在每列的 MetaProperty 上。
 	 */
 	@GetMapping("/schema")
 	public Map<String, Object> schema() {
@@ -299,12 +240,12 @@ public class MetaDataController {
 		}
 		Class<? extends MetaClass> type = MetaMapper.entityType(TABLE);
 		return linked("table", entity.getName(), "columnCount", columns.size(), "columns", columns,
-				"entityClass", type.getName(), "generatedEntity", type != MetaClass.class,
-				"logicDeleteColumn", "deleted_flag", "tip", "列类型跟着表结构走，加列后 entityClass 会换成新类");
+				"entityClass", type.getName(), "unifiedMetaClass", type == MetaClass.class,
+				"logicDeleteColumn", "deleted_flag", "tip", "列类型跟着表结构走，加列后属性描述会同步更新");
 	}
 
 	/**
-	 * 运行期加列 + refresh：不重启服务新列即刻可读写，且结构指纹变化会生成一份新的实体类。
+	 * 运行期加列 + refresh：不重启服务新列即刻可读写，结构指纹变化会让 auto/xml 整份重写。
 	 * 列名过正则、类型过白名单，用户输入不会拼进 DDL。
 	 */
 	@PostMapping("/column")
@@ -317,26 +258,26 @@ public class MetaDataController {
 		if (!COLUMN_TYPES.contains(type)) {
 			throw new IllegalArgumentException("unsupported column type: " + type);
 		}
-		String before = MetaMapper.entityType(TABLE).getName();
+		int columnsBefore = MetaMapper.newEntity(TABLE).getProperties().size();
 		if (MetaMapper.newEntity(TABLE).has(name)) {
 			return linked("added", false, "column", name, "reason", "column already exists",
-					"entityClass", before);
+					"columnCount", columnsBefore);
 		}
 		this.jdbc.execute("ALTER TABLE " + TABLE + " ADD COLUMN " + name + " " + type);
 		MetaMapper.refresh(TABLE);
-		String after = MetaMapper.entityType(TABLE).getName();
+		int columnsAfter = MetaMapper.newEntity(TABLE).getProperties().size();
 
 		// 新列立即参与写与读：拿一行写入，再按主键读回来
 		MetaClass row = MetaMapper.findPage(TABLE, params(), Pageable.of(0, 1)).content().get(0);
 		row.set(name, sampleValue(type));
 		int updated = MetaMapper.update(row);
 		MetaClass reread = MetaMapper.findById(TABLE, row.get("id")).orElseThrow();
-		this.log.info("column {} added, entity {} -> {}", name, before, after);
+		this.log.info("column {} added, columns {} -> {}", name, columnsBefore, columnsAfter);
 		return linked("added", true, "column", name, "type", type,
-				"entityClassBefore", before, "entityClassAfter", after,
-				"entityClassChanged", !before.equals(after), "writtenRows", updated,
+				"columnCountBefore", columnsBefore, "columnCountAfter", columnsAfter,
+				"structureChanged", columnsAfter > columnsBefore, "writtenRows", updated,
 				"readBack", reread.get(name), "readBackJavaType", reread.property(name).getType(),
-				"statementFile", "表结构变化只重写 GENERATED 块，自定义语句与注释逐字保留");
+				"statementFile", "auto/xml 整份重写，spec/xml 自定义语句保持原样");
 	}
 
 	// ==================================================================
@@ -483,8 +424,8 @@ public class MetaDataController {
 	}
 
 	/**
-	 * 命名语句（同一份语句 XML）：七条默认语句在 GENERATED 块里按表结构生成，
-	 * 标记之外的自定义语句归使用方、表结构变化时逐字保留。
+	 * 命名语句：七条默认语句在 auto/xml 按表结构生成，自定义语句在 spec/xml 归使用方所有、
+	 * 表结构变化时逐字保留；同 id 时 spec 覆盖 auto。
 	 * sqlFor 只抽取不执行，selectList/selectCount/execute 分别走读、计数与写。
 	 */
 	@GetMapping("/statements")
@@ -511,9 +452,7 @@ public class MetaDataController {
 				"listedRows", maps(listed), "selectCount", count,
 				"insertSql", insertSql.sql(), "insertValues", insertSql.values(),
 				"insertedRows", inserted, "updatedRows", updated,
-				"afterUpdateRemark", after.getString("remark"),
-				"shapeStatementFile", existingShapeStatementFile() == null ? null
-						: existingShapeStatementFile().toString());
+				"afterUpdateRemark", after.getString("remark"));
 	}
 
 	/**
@@ -588,59 +527,6 @@ public class MetaDataController {
 				"rereadRemark", reread.getString("remark"));
 	}
 
-	/**
-	 * 跨表自定义查询：语句写在锚定表 {@code meta_demo_form.xml} 的自定义区，SQL 里 JOIN 第二张表
-	 * {@code meta_demo_customer}。两条语句故意用两种写法演示同一件事：
-	 * {@code formWithCustomer} 声明 {@code resultType="map"}（历史名字），
-	 * {@code amountByCustomer} 声明 {@code resultType="metaclass"}（显式名字）。
-	 *
-	 * <p>结果不再套锚定表的生成实体，而是每行一个 {@link MetaClass}：列名 = 属性名、列类型 = 属性类型，
-	 * 客户名、区域、聚合出来的 {@code total_amount} 这些锚定表没有的列都能带出来。分页仍由
-	 * {@code selectShapePage} 自动包子查询计数，JOIN 也不会把总数算错。</p>
-	 */
-	@GetMapping("/query/join")
-	public Map<String, Object> joinQuery(@RequestParam(required = false) Integer status,
-			@RequestParam(defaultValue = "0") int page,
-			@RequestParam(defaultValue = "5") int size) {
-		requireInitialized();
-		if (page < 0 || size < 1 || size > 50) {
-			throw new IllegalArgumentException("page must be >= 0 and size between 1 and 50");
-		}
-		MetaMapperClient client = MetaMapper.defaultClient();
-		MetaClass query = params();
-		if (status != null) {
-			query.set("status", status);
-		}
-		MarkedSql preview = client.sqlFor(TABLE, "formWithCustomer", query);
-		Page<MetaClass> joined = client.selectShapePage(TABLE, "formWithCustomer", query, Pageable.of(page, size));
-		List<MetaClass> byCustomer = client.selectShape(TABLE, "amountByCustomer", params());
-		MetaClass firstRow = joined.content().isEmpty() ? null : joined.content().get(0);
-		MetaClass example = byCustomer.isEmpty() ? null : byCustomer.get(0);
-		return linked("shape", "resultType=\"map\"/\"metaclass\"：每行是 MetaClass，列由 SELECT 决定，"
-						+ TABLE + " JOIN " + CUSTOMER,
-				"statementFile", existingStatementFile() == null ? null : existingStatementFile().toString(),
-				"shapeStatementFile", existingShapeStatementFile() == null ? null
-						: existingShapeStatementFile().toString(),
-				"sql", preview.sql(), "boundValues", preview.values(),
-				"page", joined.page(), "size", joined.size(), "total", joined.total(),
-				"totalPages", joined.totalPages(), "content", maps(joined.content()),
-				"shapeColumns", shapeColumns(firstRow),
-				"rowType", firstRow == null ? null : firstRow.getClass().getName(),
-				"rowPackage", firstRow == null ? null : firstRow.getClass().getPackageName(),
-				"rowClass", firstRow == null ? null : firstRow.getClass().getSimpleName(),
-				"aggregation", maps(byCustomer),
-				"metaClass", example == null ? null : linked(
-						"customerName", example.getString("customer_name"),
-						"orderCount", example.getLong("order_count"),
-						"totalAmount", example.getBigDecimal("total_amount"),
-						"rowType", example.getClass().getName(),
-						"rowClass", example.getClass().getSimpleName(),
-						"columns", shapeColumns(example),
-						"hasChanges", example.hasChanges()),
-				"hint", "两条语句都在 " + TABLE + ".xml 里；用 selectShape/selectShapeOne/selectShapePage 读，"
-						+ "需要 Map 时对每行调 toMap()");
-	}
-
 	/** 各级缓存条目与上限：表结构、实体类、语句、执行计划分别有界。 */
 	@GetMapping("/cache")
 	public Map<String, Object> cache() {
@@ -649,15 +535,13 @@ public class MetaDataController {
 	}
 
 	/**
-	 * 分级清理：{@code scope=table} 只丢表结构快照、{@code entity} 只丢编译出来的实体类、
+	 * 分级清理：{@code scope=table} 只丢表结构快照、{@code entity} 只丢实体模型读取器、
 	 * {@code statement} 只丢语句与执行计划、{@code all} 四件套一起丢。
-	 *
-	 * <p>{@code entityClassReused=true} 说明这次清理没有连带换类，正好验证两套缓存是分开的。</p>
+	 * 实体类型恒为 {@link MetaClass}，用列数和缓存统计验证各级缓存是分开的。
 	 */
 	@PostMapping("/cache/clear")
 	public Map<String, Object> clearCache(@RequestParam(defaultValue = "table") String scope) {
 		requireInitialized();
-		Class<? extends MetaClass> before = MetaMapper.entityType(TABLE);
 		switch (scope) {
 			case "table" -> MetaMapper.defaultClient().clearTableCache(TABLE);
 			case "entity" -> MetaMapper.defaultClient().clearEntityCache(TABLE);
@@ -666,24 +550,21 @@ public class MetaDataController {
 			default -> throw new IllegalArgumentException(
 					"scope must be table | entity | statement | all, got: " + scope);
 		}
-		Class<? extends MetaClass> after = MetaMapper.entityType(TABLE);
-		return linked("scope", scope, "entityClass", after.getName(), "entityClassReused", before == after,
+		return linked("scope", scope, "entityClass", MetaMapper.entityType(TABLE).getName(),
 				"columnCount", MetaMapper.newEntity(TABLE).getProperties().size(),
 				"stats", MetaMapper.cacheStats());
 	}
 
 	/**
-	 * 重新加载：清缓存 + 当场回读元数据 + 当场重编实体类，而不是等下一次查询才懒加载。
+	 * 重新加载：清缓存 + 当场回读元数据 + 当场重建实体模型，而不是等下一次查询才懒加载。
 	 * 表已被删掉时这里就会直接报错，不会留到业务请求才炸。
 	 */
 	@PostMapping("/reload")
 	public Map<String, Object> reload() {
 		requireInitialized();
-		Class<? extends MetaClass> before = MetaMapper.entityType(TABLE);
 		MetaClass rebuilt = MetaMapper.defaultClient().reload(TABLE);
 		return linked("table", TABLE, "columns", rebuilt.getProperties().stream().map(MetaProperty::getName).toList(),
-				"entityClass", rebuilt.getClass().getName(), "entityClassReused", before == rebuilt.getClass(),
-				"stats", MetaMapper.cacheStats());
+				"entityClass", rebuilt.getClass().getName(), "stats", MetaMapper.cacheStats());
 	}
 
 	/** 概览 + 端点索引，方便直接照着敲 URL 手工验证。 */
@@ -706,7 +587,6 @@ public class MetaDataController {
 				"GET /metadata/rows/1", "PUT /metadata/rows/1?remark=加急&status=2",
 				"POST /metadata/rows/1/void", "GET /metadata/query/operators",
 				"GET /metadata/statements", "GET /metadata/query/statement?status=1&minAmount=50&page=0&size=5",
-				"GET /metadata/query/join?status=1&page=0&size=5",
 				"GET /metadata/cache",
 				"POST /metadata/cache/clear?scope=table", "POST /metadata/reload",
 				"GET /metadata/safety", "GET /metadata/engine"));
@@ -749,7 +629,6 @@ public class MetaDataController {
 		for (int i = 0; i < amounts.length; i++) {
 			MetaClass row = MetaMapper.newEntity(TABLE);
 			row.set("form_no", "F-00" + (i + 1));
-			row.set("customer_no", "C-00" + (i + 1)); // 与 seedCustomers 的客户编号对齐，供跨表查询 JOIN
 			row.set("title", "动态单据-" + (i + 1));
 			row.set("amount", new BigDecimal(amounts[i]));
 			row.set("status", i == 1 ? 2 : 1);
@@ -775,7 +654,6 @@ public class MetaDataController {
 	/** 只清本表演示文件：让每次 init 都按当前表结构重新预置一次（生产代码不要这么做）。 */
 	private void dropStatementFile() {
 		deleteIfExists(statementFile());
-		deleteIfExists(shapeStatementFile());
 	}
 
 	private static void deleteIfExists(Path file) {
@@ -796,34 +674,16 @@ public class MetaDataController {
 		return file != null && Files.isRegularFile(file) ? file : null;
 	}
 
-	private Path existingShapeStatementFile() {
-		Path file = shapeStatementFile();
-		return file != null && Files.isRegularFile(file) ? file : null;
-	}
-
-	/** 路径 = {语句根}/{数据源}/{命名空间}/{表名}.xml，与引擎里的唯一语句库保持一致。 */
+	/** 手写语句文件路径 = {语句根}/{数据源}/{命名空间}/spec/xml/{表名}.xml，与引擎的 spec 语句库一致。 */
 	private Path statementFile() {
-		if (this.sqlDirectory == null) {
-			return null;
-		}
-		return this.sqlDirectory.resolve(MetaMapper.engine().defaultPoolName())
-				.resolve(MetaMapper.DEFAULT_NAMESPACE).resolve(TABLE + ".xml");
+		return this.sqlDirectory == null ? null : this.sqlDirectory.resolve(TABLE + ".xml");
 	}
 
-	/** VO 语句文件路径：{@code meta_demo_form.vo.xml}，跟实体语句文件分开。 */
-	private Path shapeStatementFile() {
-		if (this.sqlDirectory == null) {
-			return null;
-		}
-		return this.sqlDirectory.resolve(MetaMapper.engine().defaultPoolName())
-				.resolve(MetaMapper.DEFAULT_NAMESPACE).resolve(TABLE + ".vo.xml");
-	}
-
-	/** init 时写一份手写语句区：没有 GENERATED 标记，首次访问时框架插入默认语句生成块。 */
+	/** init 时写一份 spec/xml 手写语句；框架只读，默认语句另写 auto/xml。 */
 	private void writePresetStatementFile() {
 		Path file = statementFile();
 		if (file == null) {
-			return; // 纯内存模式：默认语句照样在内存里生成，生成块不落盘
+			return; // 纯内存模式：默认语句照样在内存里生成，不落盘
 		}
 		try {
 			Files.createDirectories(file.getParent());
@@ -834,39 +694,8 @@ public class MetaDataController {
 		}
 	}
 
-	/**
-	 * VO 语句首次落盘：文件不存在才写，之后归使用方。演示里两条一次写入，
-	 * 避免第二条看到文件已存在而跳过。
-	 */
-	private void writePresetShapeStatements() {
-		if (shapeStatementFile() == null) {
-			return;
-		}
-		Map<String, String> snippets = new LinkedHashMap<>();
-		snippets.put("formWithCustomer", SHAPE_FORM_WITH_CUSTOMER);
-		snippets.put("amountByCustomer", SHAPE_AMOUNT_BY_CUSTOMER);
-		MetaMapper.registerShapeStatements(TABLE, snippets);
-	}
-
 	private static List<Map<String, Object>> maps(List<MetaClass> rows) {
 		return rows.stream().map(MetaDataController::rowMap).toList();
-	}
-
-	/**
-	 * 自定义形状的列描述：完全来自那一行 {@link MetaClass} 的 {@link MetaProperty}，
-	 * 不是另抄一份元数据。前端 / 报表拿这份就能知道每个列叫什么、是什么 Java 类型。
-	 */
-	private static List<Map<String, Object>> shapeColumns(MetaClass row) {
-		if (row == null) {
-			return List.of();
-		}
-		List<Map<String, Object>> columns = new ArrayList<>(row.getProperties().size());
-		for (MetaProperty column : row.getProperties()) {
-			columns.add(linked("name", column.getName(), "javaType", column.getType(),
-					"jdbcType", column.getJdbcType(), "sqlType", column.getSqlTypeName(),
-					"nullable", column.isNullable()));
-		}
-		return columns;
 	}
 
 	/** 列名统一转小写：H2 元数据是大写、MySQL 习惯小写，HTTP 输出对齐一种形状。 */

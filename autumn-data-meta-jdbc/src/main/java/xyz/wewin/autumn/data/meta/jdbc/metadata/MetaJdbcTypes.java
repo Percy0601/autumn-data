@@ -11,7 +11,7 @@ import java.time.LocalTime;
  *
  * <p>表结构元数据和自定义结果形状都按 JDBC 类型码描述列，两处必须给出同一种 Java 类型，
  * 否则 {@code row.property("total_amount").getType()} 在不同入口下会得到不同答案。
- * 值归一也放在这里：{@code java.sql.Timestamp/Date/Time} → {@code java.time}，与生成实体读同一列一致。</p>
+ * 值归一也放在这里：{@code java.sql.Timestamp/Date/Time} → {@code java.time}，与通用实体读同一列一致。</p>
  */
 public final class MetaJdbcTypes {
 

@@ -53,36 +53,31 @@ class MetaDataControllerTest {
 	@Test
 	@Order(1)
 	void dynamicTableEndToEnd() throws Exception {
-		// ① 运行期建表：不重启服务，表结构与强类型实体类都在这一次调用里现生成
+		// ① 运行期建表：不重启服务，表结构与通用 MetaClass 的属性描述都在这一次调用里现建
 		Map<String, Object> init = this.controller.init();
 		assertThat(init).containsEntry("seedRows", 3);
-		assertThat((int) init.get("columnCount")).isGreaterThanOrEqualTo(8);
-		assertThat(init.get("generatedEntity")).isEqualTo(Boolean.TRUE);
-		assertThat((String) init.get("entityClass")).isNotEqualTo(MetaClass.class.getName());
+		int columnsBefore = ((Number) init.get("columnCount")).intValue();
+		assertThat(columnsBefore).isGreaterThanOrEqualTo(8);
+		assertThat(init.get("unifiedMetaClass")).isEqualTo(Boolean.TRUE);
+		assertThat((String) init.get("entityClass")).isEqualTo(MetaClass.class.getName());
 		assertThat(init.get("columns").toString()).containsIgnoringCase("deleted_flag");
-		assertThat((String) init.get("shapeStatementFile")).endsWith("meta_demo_form.vo.xml");
 
-		// ①-b 生成 SQL 落 XML：meta_demo_form.xml 里能直接看到 findOne / findList 等默认语句，
-		// 想改语义就改文件里的 SQL，不用回到 Java。
-		Path statementXml = MetaDirectories.of(
-				this.environment.getProperty("autumn.data.meta.mapper.meta-directory")).sqlDirectory()
-				.resolve(MetaMapper.engine().defaultPoolName()).resolve(MetaMapper.DEFAULT_NAMESPACE)
-				.resolve("meta_demo_form.xml");
-		assertThat(statementXml).isRegularFile();
-		String statementSql = Files.readString(statementXml);
-		assertThat(statementSql).contains("AUTUMN-DATA GENERATED START", "id=\"selectList\"");
+		// ①-b 语句分两份：spec/xml 是手写语句（框架只读），auto/xml 是框架生成的七条默认语句
+		MetaDirectories directories = MetaDirectories.of(
+				this.environment.getProperty("autumn.data.meta.mapper.meta-directory"));
+		Path specXml = directories.specXmlDirectory("default", "default").resolve("meta_demo_form.xml");
+		assertThat(specXml).isRegularFile();
+		String handWritten = Files.readString(specXml);
+		assertThat(handWritten).contains("id=\"selectList\"", "id=\"countVoided\"")
+				.doesNotContain("AUTUMN-DATA GENERATED");
+		Path autoXml = Path.of(MetaMapper.defaultClient().ensureStatementFile("meta_demo_form"));
+		assertThat(autoXml).isRegularFile();
+		String generated = Files.readString(autoXml);
+		assertThat(generated).contains("AUTUMN-DATA GENERATED fingerprint=");
 		for (String id : MetaMapper.DEFAULT_STATEMENT_IDS) {
-			assertThat(statementSql).contains("id=\"" + id + "\"");
+			assertThat(generated).contains("id=\"" + id + "\"");
 		}
-		assertThat(statementSql).contains("id=\"countVoided\""); // 手写自定义语句与默认语句共存
-		// VO 语句已经拆到独立文件，实体文件里不再混入 JOIN / 聚合 SQL
-		assertThat(statementSql).doesNotContain("formWithCustomer", "amountByCustomer");
-
-		Path shapeXml = statementXml.resolveSibling("meta_demo_form.vo.xml");
-		assertThat(shapeXml).isRegularFile();
-		String shapeSql = Files.readString(shapeXml);
-		assertThat(shapeSql).contains("id=\"formWithCustomer\"", "resultType=\"metaclass\"",
-				"id=\"amountByCustomer\"", "resultType=\"map\"");
+		assertThat(generated).doesNotContain("id=\"countVoided\"");
 
 		// ② 元数据：DECIMAL 列被识别成 BigDecimal，自增主键被标记
 		Map<String, Object> schema = this.controller.schema();
@@ -129,11 +124,11 @@ class MetaDataControllerTest {
 		assertThat(operators.get("EXISTS_F-001")).isEqualTo(Boolean.TRUE);
 		assertThat(((Number) operators.get("COUNT_status_1")).longValue()).isGreaterThanOrEqualTo(1L);
 
-		// ⑧ 运行期加列：refresh 后新列立刻可读写，结构指纹变化生成新的实体类
-		String entityBefore = (String) this.controller.engine().get("entityClass");
+		// ⑧ 运行期加列：refresh 后新列立刻可读写，结构指纹变化让 auto/xml 整份重写
 		Map<String, Object> column = this.controller.addColumn("courier", "VARCHAR(64)");
-		assertThat(column).containsEntry("added", true).containsEntry("entityClassChanged", true);
-		assertThat(column).containsEntry("entityClassBefore", entityBefore);
+		assertThat(column).containsEntry("added", true).containsEntry("structureChanged", true);
+		assertThat(column).containsEntry("columnCountBefore", columnsBefore);
+		assertThat(((Number) column.get("columnCountAfter")).intValue()).isEqualTo(columnsBefore + 1);
 		assertThat(column.get("readBack")).isEqualTo("加列后立即写入");
 		assertThat(column.get("readBackJavaType")).isEqualTo("java.lang.String");
 		// 重复加列是幂等的
@@ -148,51 +143,6 @@ class MetaDataControllerTest {
 		assertThat(statements.get("afterUpdateRemark")).isEqualTo("生成语句改的");
 		assertThat((String) statements.get("statementFile")).endsWith(".xml");
 
-		// ⑨-b 跨表自定义形状：resultType="map" 的语句 JOIN 第二张表 meta_demo_customer，
-		// 客户名 / 区域这些锚定表没有的列能带出来，分页计数仍是对整条 SELECT 包子查询
-		Map<String, Object> join = this.controller.joinQuery(1, 0, 50);
-		assertThat((String) join.get("sql")).containsIgnoringCase("join meta_demo_customer");
-		assertThat(((Number) join.get("total")).longValue()).isGreaterThanOrEqualTo(1L);
-		List<?> joinedRows = (List<?>) join.get("content");
-		Map<?, ?> seedJoin = joinedRows.stream().map(row -> (Map<?, ?>) row)
-				.filter(row -> "F-003".equals(row.get("form_no"))).findFirst().orElseThrow();
-		assertThat(seedJoin.get("customer_no")).isEqualTo("C-003");
-		assertThat(seedJoin.get("customer_name")).isEqualTo("南岭实业");
-		assertThat(seedJoin.get("region")).isEqualTo("south");
-		// 未挂客户的单据也能查出来（LEFT JOIN），客户列就是 null
-		assertThat((List<?>) join.get("aggregation")).isNotEmpty();
-
-		// 自定义形状的列描述来自 MetaClass 的属性，不是另抄一份元数据
-		List<?> shapeColumns = (List<?>) join.get("shapeColumns");
-		assertThat(shapeColumns).isNotEmpty();
-		assertThat(((Map<?, ?>) shapeColumns.get(0)).get("name")).isEqualTo("id");
-
-		// 具体类型：由语句 id 派生，包名带表名和形状指纹；不是通用 MetaClass
-		assertThat(join.get("rowClass")).isEqualTo("FormWithCustomer");
-		assertThat((String) join.get("rowPackage"))
-				.startsWith("xyz.wewin.autumn.data.meta.jdbc.shape.generated.")
-				.contains(".meta_demo_form.v");
-		assertThat((String) join.get("rowType"))
-				.isEqualTo(join.get("rowPackage") + ".FormWithCustomer");
-		assertThat((String) join.get("shapeStatementFile")).endsWith("meta_demo_form.vo.xml");
-
-		// VO 源码按目录落盘：meta/vo/... 下面有具体类，能直接打开看字段 / getter / read 方法
-		Path voSource = MetaDirectories.of(
-				this.environment.getProperty("autumn.data.meta.mapper.meta-directory")).voDirectory()
-				.resolve(((String) join.get("rowPackage")).replace('.', '/'))
-				.resolve("FormWithCustomer.java");
-		assertThat(voSource).isRegularFile();
-		assertThat(Files.readString(voSource)).contains("public final class FormWithCustomer extends MetaClass",
-				"getCustomerName()");
-
-		// MetaClass 示例：按列名取值 + 类型化读取（聚合列 total_amount 是 BigDecimal）
-		Map<?, ?> metaExample = (Map<?, ?>) join.get("metaClass");
-		assertThat(metaExample.get("customerName")).isEqualTo("北辰贸易");
-		assertThat(((Number) metaExample.get("orderCount")).intValue()).isGreaterThanOrEqualTo(1);
-		assertThat(metaExample.get("totalAmount")).isInstanceOf(BigDecimal.class);
-		assertThat(metaExample.get("rowClass")).isEqualTo("AmountByCustomer");
-		assertThat(metaExample.get("hasChanges")).isEqualTo(Boolean.FALSE);
-
 		// ⑩ 防注入：值不进 SQL 文本，非法列名/排序标识符都被元数据挡住
 		Map<String, Object> safety = this.controller.safety();
 		assertThat(safety.get("valueInSqlText")).isEqualTo(Boolean.FALSE);
@@ -201,11 +151,11 @@ class MetaDataControllerTest {
 		assertThat((String) safety.get("illegalConditionColumn")).contains("unknown column");
 		assertThat((String) safety.get("illegalOrderByIdentifier")).contains("unknown column");
 
-		// ⑪ 引擎诊断：按池绑定、当前实体类已换新版
+		// ⑪ 引擎诊断：按池绑定、实体类型恒为通用 MetaClass
 		Map<String, Object> engine = this.controller.engine();
 		assertThat(engine).containsEntry("defaultPoolName", "default").containsEntry("boundPool", "default");
 		assertThat(engine.get("activePools").toString()).contains("default");
-		assertThat(engine.get("entityClass")).isNotEqualTo(entityBefore);
+		assertThat(engine.get("entityClass")).isEqualTo(MetaClass.class.getName());
 
 		// ⑫ 逻辑删除：查询自动过滤，显式按标志查行还在；删除语义由 XML 的 delete 语句决定
 		Map<String, Object> voided = this.controller.voidRow(1L);
@@ -242,7 +192,6 @@ class MetaDataControllerTest {
 		assertThat(get("/metadata/engine", 200)).contains("defaultPoolName");
 		assertThat(get("/metadata/safety", 200)).contains("valueInSqlText");
 		assertThat(get("/metadata/statements", 200)).contains("statementFile");
-		assertThat(get("/metadata/query/join", 200)).contains("aggregation");
 		assertThat(request("POST", "/metadata/rows?count=1", 200)).contains("generatedKeys");
 		assertThat(request("DELETE", "/metadata/drop", 200)).contains("dropped");
 		assertThat(get("/metadata/schema", 400)).contains("/metadata/init");

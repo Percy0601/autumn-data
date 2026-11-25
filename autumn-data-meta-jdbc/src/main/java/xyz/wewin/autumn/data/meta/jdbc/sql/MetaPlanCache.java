@@ -3,8 +3,8 @@ package xyz.wewin.autumn.data.meta.jdbc.sql;
 import java.util.Locale;
 
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTable;
-import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCache;
-import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCaches;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaCache;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaCaches;
 
 /**
  * 形状 → 执行计划的有界缓存：同一形状只编译一次。
@@ -23,14 +23,14 @@ import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCaches;
  */
 public final class MetaPlanCache {
 
-	private final BoundedCache<String, MetaSqlPlan> plans;
+	private final MetaCache<String, MetaSqlPlan> plans;
 
 	public MetaPlanCache(int maximumSize) {
-		this.plans = BoundedCaches.lru(maximumSize);
+		this.plans = MetaCaches.lru(maximumSize);
 	}
 
 	public MetaPlanCache() {
-		this(BoundedCache.DEFAULT_MAXIMUM_SIZE);
+		this(MetaCache.DEFAULT_MAXIMUM_SIZE);
 	}
 
 	/** 命中直接返回；未命中时编译一次并放进缓存。 */

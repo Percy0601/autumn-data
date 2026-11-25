@@ -17,19 +17,18 @@ import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
 /**
  * 动态表 CRUD 的静态门面，读写的操作对象一律是 {@link MetaClass}。
  *
- * <p><b>SQL 只有一个来源：XML 语句文件。</b>一张表一个文件，路径
- * {@code {根}/{数据源}/{命名空间}/{表名}.xml}，语法与 MyBatis 一致（{@code #{}} 绑定、
- * {@code ${}} 标识符、{@code <if>/<where>/<trim>/<foreach>/<choose>}、{@code <sql>/<include>}）。
- * 框架在文件里维护一个 {@code GENERATED START/END} 自动生成区，按表结构生成七条默认语句：</p>
+ * <p><b>SQL 只有一个来源：XML 语句文件。</b>一张表两份文件，路径
+ * {@code {根}/{数据源}-default/{命名空间}-default/{spec|auto}/xml/{表名}.xml}，语法与 MyBatis 一致
+ * （{@code #{}} 绑定、{@code ${}} 标识符、{@code <if>/<where>/<trim>/<foreach>/<choose>}、
+ * {@code <sql>/<include>}、{@code <resultMap>}）。框架在 auto 文件里按表结构生成七条默认语句：</p>
  *
  * <pre>
  * findList / findPage / findOne / findById / save / update / delete
  * </pre>
  *
- * <p>标记之外的自定义语句归使用方所有：表结构变化时框架<b>只重写生成块</b>，其余内容逐字保留。
- * 手写文件第一次被访问时框架会把生成块<b>插进文件</b>——{@code findOne} 之类的默认语句因此在 XML 里
- * 看得见、也改得动；想换语义就在生成块之后写一条同 id 的自定义语句（后出现者优先）。
- * 文件读过后进有界缓存，磁盘文件按「修改时间 + 长度」自动重读，classpath 内资源只读一次。</p>
+ * <p>spec 文件归使用方所有，框架只读；表结构变化时框架<b>整份重写 auto 文件</b>，spec 一个字不改。
+ * 同 id 时 spec 覆盖 auto，因此想换语义就在 spec 里写一条同名语句。文件读过后进有界缓存，
+ * 磁盘文件按「修改时间 + 长度」自动重读，classpath 内资源只读一次。</p>
  *
  * <p><b>查询条件 = 参数实体 + {@code <if>}</b>：传一个 {@link MetaClass}，赋了值的列才进 WHERE；
  * 比较、模糊、IN、排序等复杂条件写在 XML 里（自定义语句用 {@code selectList/selectOne/selectCount/
@@ -45,20 +44,8 @@ import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
  * {@code changed('col')}（{@link MetaClass#isChanged(String)}），因此「显式置 NULL」和
  * 「这一列没动」是两件事，读出来的行改过的列才进 UPDATE。</p>
  *
- * <p>进出都不是通用 Map 容器，而是按表结构确定的实体实例：{@code CODE} 档在首次访问时按
- * {@code DatabaseMetaData} 生成并编译 {@code MetaClass} 子类（真实类型字段、逐行零反射）；
- * {@code GENERIC} 档写通用 {@link MetaClass}（Native Image 用）。两档都通过
- * {@code getProperties()} 保留列类型描述。</p>
- *
- * <p><b>自定义结果是按语句生成的具体 MetaClass 子类，不是裸 Map，也不是通用 MetaClass</b>：语句写
- * {@code resultType="map"}（或显式的 {@code resultType="metaclass"}）时，
- * {@code selectShape/selectShapeOne/selectShapePage} 返回的每一行是运行期按结果列生成、javac 编译、
- * 内存加载的 {@link MetaClass} 子类——类名由语句 id 派生（{@code formWithCustomer → FormWithCustomer}），
- * 包名是 {@code ...shape.generated.<schema>.<table>.v<列形状指纹>}，字段与 typed getter 真实声明，
- * 逐行走生成类的静态读取。列名是属性名，列类型是 {@link xyz.wewin.autumn.data.common.meta.MetaProperty}
- * 上的类型描述；{@code row.getClass().getName()/getPackageName()/getSimpleName()} 直接给出具体类型，
- * 需要 Map 时再 {@code toMap()}。这类语句不能用 {@code selectList/selectOne/selectPage} 读
- * （会被固定列 READER 丢掉额外列），反过来普通实体语句也不能用形状入口读，两条路径互相挡回去而不是静默降级。</p>
+ * <p>进出都是 {@link MetaClass}：每行一份属性列表，属性上带 Java / JDBC 类型、主键与自增信息，
+ * {@code getProperties()} 保留列类型描述；没有运行期代码生成，Native Image 下同样可跑。</p>
  *
  * <pre>{@code
  * MetaMapper.install(MetaMapperEngine.forDataSource("primary", dataSource));
@@ -123,7 +110,7 @@ public final class MetaMapper {
 		return engine().defaultClient();
 	}
 
-	/** 当前表结构对应的实体类型：CODE 是运行期生成并加载的子类；GENERIC 恒为 {@link MetaClass}。 */
+	/** 当前表结构对应的实体类型：统一为 {@link MetaClass}，列类型信息在属性列表上。 */
 	public static Class<? extends MetaClass> entityType(String tableName) {
 		return defaultClient().entityType(tableName);
 	}
@@ -205,57 +192,6 @@ public final class MetaMapper {
 	public static Page<MetaClass> selectPage(String tableName, String statementId, MetaClass params,
 			Pageable pageable) {
 		return defaultClient().selectPage(tableName, statementId, params, pageable);
-	}
-
-	/**
-	 * 跨表 / 自定义形状查询：语句必须在 XML 里声明 {@code resultType="map"} 或 {@code "metaclass"}，
-	 * 返回的行是 {@link MetaClass}——列名即属性名、列类型即属性类型；列由 SELECT 决定，不受锚定表结构限制。
-	 *
-	 * <pre>{@code
-	 * List<MetaClass> joined = MetaMapper.selectShape("form_order", "formWithCustomer", query);
-	 * for (MetaClass row : joined) {
-	 *     String customerName = row.getString("customer_name");   // JOIN 出来的额外列
-	 *     BigDecimal amount = row.getBigDecimal("amount");       // 锚定表原有的列
-	 *     Map<String, Object> map = row.toMap();                  // 需要 Map 时再转
-	 * }
-	 * }</pre>
-	 */
-	public static List<MetaClass> selectShape(String tableName, String statementId, MetaClass params) {
-		return defaultClient().selectShape(tableName, statementId, params);
-	}
-
-	/** 跨表 / 自定义形状查询的限行版本。 */
-	public static List<MetaClass> selectShape(String tableName, String statementId, MetaClass params, long limit) {
-		return defaultClient().selectShape(tableName, statementId, params, limit);
-	}
-
-	/** 跨表 / 自定义形状查询取一行：{@code resultType="map"/"metaclass"} 的语句最多返回一行。 */
-	public static Optional<MetaClass> selectShapeOne(String tableName, String statementId, MetaClass params) {
-		return defaultClient().selectShapeOne(tableName, statementId, params);
-	}
-
-	/** 跨表 / 自定义形状查询分页：count 仍是对整条 SELECT 包子查询，JOIN 查询也能直接翻页。 */
-	public static Page<MetaClass> selectShapePage(String tableName, String statementId, MetaClass params,
-			Pageable pageable) {
-		return defaultClient().selectShapePage(tableName, statementId, params, pageable);
-	}
-
-	/**
-	 * 动态注册 VO 语句到独立的 {@code {表名}.vo.xml}，返回文件路径。
-	 * 低代码平台第一次生成 SQL 时调用；后续调 SQL 直接编辑那个文件，重新查询即按修改时间自动重读。
-	 */
-	public static String registerShapeStatement(String tableName, String statementId, String xml) {
-		return defaultClient().registerShapeStatement(tableName, statementId, xml);
-	}
-
-	/** 首次批量创建 VO 语句文件；文件已存在时保持原样，方便人工继续调 SQL。 */
-	public static String registerShapeStatements(String tableName, java.util.Map<String, String> xmlByStatementId) {
-		return defaultClient().registerShapeStatements(tableName, xmlByStatementId);
-	}
-
-	/** VO 语句文件路径（给前端 / 运维直接打开编辑）。 */
-	public static String shapeStatementFile(String tableName) {
-		return defaultClient().shapeStatementFile(tableName);
 	}
 
 	/** 执行 {@code <insert>}/{@code <update>}/{@code <delete>} 语句，返回影响行数。 */

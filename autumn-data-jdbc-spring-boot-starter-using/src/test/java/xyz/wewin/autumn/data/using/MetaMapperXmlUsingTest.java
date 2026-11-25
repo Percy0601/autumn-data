@@ -32,27 +32,27 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <p>引擎由 {@code autumn-data-jdbc-spring-boot-starter} 自动装配并装进 {@link MetaMapper} 门面，
  * 使用方只配了数据源（见 {@code src/test/resources/application.properties}）；
  * 工作目录配成 {@code autumn.data.meta.mapper.meta-directory=target/autumn-meta}，
- * 产物落在它的固定子目录里（{@code meta-class} 元类定义 / {@code entity} 生成的实体源码 /
- * {@code sql} 语句 XML），生成的文件不污染源码目录。</p>
+ * 产物落在它的固定子目录里（{@code spec/xml} 使用方手写语句 /
+ * {@code auto/xml} 框架生成的默认语句），生成的文件不污染源码目录。</p>
  *
- * <p><b>SQL 只有一个来源</b>：一张表一个 XML 文件，路径
- * {@code {语句根}/{数据源}/{命名空间}/{表名}.xml}。框架在文件里维护一个
- * {@code AUTUMN-DATA GENERATED START/END} 自动生成区，按表结构生成七条默认语句
- * （{@code findList/findPage/findOne/findById/save/update/delete}）；标记之外的使用方自定义语句
- * 逐字保留。查询条件用「参数实体 + XML 里的 {@code <if>}」，不再有第二套语句库或 Java 侧现拼 SQL。</p>
+ * <p><b>SQL 分两份</b>：一张表两份 XML，使用方手写语句在
+ * {@code {根}/{数据源}-default/{命名空间}-default/spec/xml/{表名}.xml}（框架只读、绝不覆盖），
+ * 框架生成的七条默认语句在 {@code {根}/{数据源}-default/{命名空间}-default/auto/xml/{表名}.xml}
+ * （{@code findList/findPage/findOne/findById/save/update/delete}，结构指纹变了整份重写）。
+ * 查询条件用「参数实体 + XML 里的 {@code <if>}」，不再有第二套语句库或 Java 侧现拼 SQL。</p>
  *
  * <p>操作对象始终是 {@link MetaClass}：写用的实体由 {@link MetaMapper#newEntity(String)} 按当前表结构
  * 生成，读回来的行也是同一个类的实例，「读出来 — 改几列 — 写回去」中间不需要任何转换。</p>
  *
  * <p>示例按语句文件的三种状态分：</p>
  * <ul>
- *   <li>{@link #sevenDefaultStatementsDriveCrudWithoutHandWrittenXml()}：文件不存在，框架生成默认语句区；</li>
- *   <li>{@link #handWrittenFileGetsGeneratedBlockInjected()}：手写文件没有生成块，框架把默认语句
- *       生成块<b>插进文件</b>，findOne 之类的 SQL 在 XML 里可见可改；</li>
- *   <li>{@link #generatedBlockIsRefreshedButCustomStatementsArePreserved()}：生成块与自定义语句共存，
- *       表结构变化只重写生成块；</li>
+ *   <li>{@link #sevenDefaultStatementsDriveCrudWithoutHandWrittenXml()}：两份文件都不存在，框架生成默认语句；</li>
+ *   <li>{@link #handWrittenSpecFileCoexistsWithAutoStatements()}：spec/xml 手写语句与 auto/xml 默认语句分工，
+ *       手写文件一个字都不会被框架改；</li>
+ *   <li>{@link #autoFileIsRewrittenButSpecStatementsArePreserved()}：表结构变化只重写 auto/xml，
+ *       spec/xml 里的自定义语句逐字保留；</li>
  *   <li>{@link #handWrittenMapperFileDrivesDynamicSql()}：classpath 里的手写文件
- *       {@code meta/default/default/demo_order.xml} 直接生效。</li>
+ *       {@code meta-data/default-default/default-default/spec/xml/demo_order.xml} 直接生效。</li>
  * </ul>
  */
 @SpringBootTest(classes = UsingApplication.class)
@@ -67,8 +67,8 @@ class MetaMapperXmlUsingTest {
 	private static final String META_DIRECTORY = "target/autumn-meta";
 
 	/**
-	 * 使用方手写的自定义语句区：首次访问时框架会把默认语句生成块插到 mapper 开头，
-	 * 于是 {@code selectList/selectCount/insert/updateByKey} 与默认 CRUD 在同一份文件里共存。
+	 * 使用方手写的 spec/xml：框架只读，绝不改写；默认语句另在 auto/xml，
+	 * 于是 {@code selectList/selectCount/insert/updateByKey} 与默认 CRUD 合起来可用。
 	 */
 	private static final String HAND_WRITTEN = """
 			<?xml version="1.0" encoding="UTF-8"?>
@@ -160,31 +160,35 @@ class MetaMapperXmlUsingTest {
 
 		// 比较 / 模糊 / 排序这类复杂条件写在语句 XML 的自定义区；总数用分页的 total
 		MetaMapperClient client = MetaMapper.defaultClient();
-		Path dynFile = statementFile(DYN);
-		assertThat(dynFile).isNotNull();
-		Files.writeString(dynFile, read(dynFile).replace("</mapper>", """
+		Path specFile = statementDirectory().resolve(DYN + ".xml");
+		Files.createDirectories(specFile.getParent());
+		Files.writeString(specFile, """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<mapper namespace="default/default/dyn_form_demo">
 				    <select id="highValue">
 				        SELECT order_no FROM ${table} WHERE amount &gt;= #{min} ORDER BY amount DESC
 				    </select>
 				    <select id="byNo">
 				        SELECT id FROM ${table} WHERE order_no LIKE #{kw} ORDER BY id
 				    </select>
-				</mapper>"""));
+				</mapper>
+				""");
 		client.clearStatementCache(DYN);
 		assertThat(client.selectList(DYN, "highValue", params("min", new BigDecimal("50"))))
 				.extracting(row -> row.getString("order_no")).containsExactly("SO-3");
 		assertThat(client.selectList(DYN, "byNo", params("kw", "SO-%"))).hasSize(3);
 		assertThat(client.statementIds(DYN)).contains("highValue", "byNo");
 
-		// 文件按 {语句根}/{数据源}/{命名空间}/{表名}.xml 生成，自动生成区里就是那七条语句
-		Path file = statementFile(DYN);
-		assertThat(file).isNotNull();
-		String generated = read(file);
-		assertThat(generated).contains("AUTUMN-DATA GENERATED START", "AUTUMN-DATA GENERATED END");
+		// auto/xml 里是框架生成的七条默认语句；spec/xml 只放使用方自己的语句
+		Path autoFile = autoStatementFile(DYN);
+		assertThat(autoFile).isNotNull();
+		String generated = read(autoFile);
+		assertThat(generated).contains("AUTUMN-DATA GENERATED fingerprint=");
 		for (String id : MetaMapper.DEFAULT_STATEMENT_IDS) {
 			assertThat(generated).contains("id=\"" + id + "\"");
 		}
 		assertThat(generated).contains("changed('"); // save/update 靠变更集区分「没动」与「置 NULL」
+		assertThat(read(specFile)).contains("id=\"highValue\"").doesNotContain("id=\"findOne\"");
 		assertThat(client.statementIds(DYN)).containsAll(MetaMapper.DEFAULT_STATEMENT_IDS);
 
 		// 多数据源 / 业务划分：of(池, 命名空间) 把边界固定在客户端句柄上，各自一份语句文件
@@ -196,11 +200,10 @@ class MetaMapperXmlUsingTest {
 	}
 
 	/**
-	 * ② 手写文件（无 GENERATED 标记）首次访问时被插入默认语句生成块：
-	 * findOne 之类的 SQL 在 XML 里可见、可改，自定义语句原样保留。
+	 * ② spec/xml 手写语句与 auto/xml 默认语句各占一份文件：框架只读 spec，手写内容一个字不改。
 	 */
 	@Test
-	void handWrittenFileGetsGeneratedBlockInjected() throws Exception {
+	void handWrittenSpecFileCoexistsWithAutoStatements() throws Exception {
 		Files.createDirectories(statementDirectory());
 		Path target = statementDirectory().resolve(DYN + ".xml");
 		Files.writeString(target, HAND_WRITTEN);
@@ -210,9 +213,10 @@ class MetaMapperXmlUsingTest {
 		assertThat(client.statementIds(DYN))
 				.contains("selectList", "selectCount", "insert", "updateByKey")
 				.containsAll(MetaMapper.DEFAULT_STATEMENT_IDS);
-		String injected = Files.readString(target);
-		assertThat(injected).contains("AUTUMN-DATA GENERATED START", "id=\"findOne\"", "id=\"__autumn_where\"");
-		assertThat(injected).contains("id=\"selectList\"", "id=\"updateByKey\"");
+		assertThat(Files.readString(target)).isEqualTo(HAND_WRITTEN);
+		String generated = read(autoStatementFile(DYN));
+		assertThat(generated).contains("AUTUMN-DATA GENERATED fingerprint=", "id=\"findOne\"", "id=\"__autumn_where\"")
+				.doesNotContain("id=\"selectList\"");
 
 		MetaClass order = MetaMapper.save(form(DYN, "order_no", "SO-1", "amount", "12.50", "status", 1));
 		assertThat(client.selectCount(DYN, "selectCount", params())).isEqualTo(1);
@@ -223,35 +227,36 @@ class MetaMapperXmlUsingTest {
 		assertThat(MetaMapper.findById(DYN, order.get("id")).orElseThrow().getString("remark"))
 				.isEqualTo("手写语句改的");
 
-		// 表结构变化只刷新生成块，手写区仍逐字保留
+		// 表结构变化只重写 auto/xml，spec/xml 仍逐字保留
 		this.jdbcOperations.execute("ALTER TABLE " + DYN + " ADD COLUMN courier VARCHAR(32)");
 		MetaMapper.refresh(DYN);
 		assertThat(client.statementIds(DYN)).contains("selectList", "findList"); // 触发重建并落盘
-		String after = Files.readString(target);
-		assertThat(after).containsIgnoringCase("courier").contains("id=\"selectList\"", "id=\"updateByKey\"");
-		assertThat(after.indexOf("AUTUMN-DATA GENERATED START"))
-				.isEqualTo(after.lastIndexOf("AUTUMN-DATA GENERATED START"));
+		assertThat(Files.readString(target)).isEqualTo(HAND_WRITTEN);
+		assertThat(read(autoStatementFile(DYN))).containsIgnoringCase("courier")
+				.doesNotContain("id=\"selectList\"");
 	}
 
 	/**
-	 * ③ 生成块与自定义语句共存：改表加列后框架<b>只重写 GENERATED 块</b>，标记外内容逐字保留。
+	 * ③ 表结构变化时框架<b>只重写 auto/xml</b>，spec/xml 里的自定义语句逐字保留。
 	 */
 	@Test
-	void generatedBlockIsRefreshedButCustomStatementsArePreserved() throws Exception {
+	void autoFileIsRewrittenButSpecStatementsArePreserved() throws Exception {
 		MetaClass order = MetaMapper.save(form(DYN, "order_no", "SO-1", "status", 1));
-		Path file = statementFile(DYN);
-		assertThat(file).isNotNull();
-		String generated = read(file);
-
-		String custom = "    <select id=\"myCustom\">SELECT COUNT(*) FROM ${table}</select>\n";
-		Files.writeString(file, generated.replace("</mapper>", custom + "</mapper>"));
+		Path specFile = statementDirectory().resolve(DYN + ".xml");
+		Files.createDirectories(specFile.getParent());
+		Files.writeString(specFile, """
+				<?xml version="1.0" encoding="UTF-8"?>
+				<mapper namespace="default/default/dyn_form_demo">
+				    <select id="myCustom">SELECT COUNT(*) FROM ${table}</select>
+				</mapper>
+				""");
 		MetaMapper.defaultClient().clearStatementCache(DYN);
 
 		MetaMapperClient client = MetaMapper.defaultClient();
 		assertThat(client.statementIds(DYN)).contains("myCustom", "findList", "delete");
 		assertThat(client.selectCount(DYN, "myCustom", params())).isEqualTo(1);
 
-		// 加列 + refresh：新列立刻可读写，生成块被重写，自定义语句还在
+		// 加列 + refresh：新列立刻可读写，auto 被整份重写，spec 里的自定义语句还在
 		this.jdbcOperations.execute("ALTER TABLE " + DYN + " ADD COLUMN courier VARCHAR(32)");
 		MetaMapper.refresh(DYN);
 		MetaClass row = MetaMapper.findById(DYN, order.get("id")).orElseThrow();
@@ -260,15 +265,15 @@ class MetaMapperXmlUsingTest {
 		assertThat(MetaMapper.findById(DYN, order.get("id")).orElseThrow().getString("courier"))
 				.isEqualTo("SF");
 
-		String after = read(statementFile(DYN));
-		assertThat(after).contains("AUTUMN-DATA GENERATED START", "AUTUMN-DATA GENERATED END");
-		assertThat(after).contains("myCustom").containsIgnoringCase("courier");
+		assertThat(read(autoStatementFile(DYN))).contains("AUTUMN-DATA GENERATED fingerprint=")
+				.containsIgnoringCase("courier").doesNotContain("id=\"myCustom\"");
+		assertThat(read(specFile)).contains("id=\"myCustom\"").doesNotContain("courier");
 		assertThat(client.statementIds(DYN)).contains("myCustom", "findList");
 	}
 
 	/**
-	 * ④ 语句来自 classpath 的 {@code meta/default/default/demo_order.xml}：手写文件命中后不再落盘生成，
-	 * 动态 SQL 的写法全在 XML 里，七条默认语句在内存补齐。
+	 * ④ 语句来自 classpath 的 {@code meta-data/default-default/default-default/spec/xml/demo_order.xml}：
+	 * 手写文件命中后不再落盘生成，动态 SQL 的写法全在 XML 里，七条默认语句在内存补齐。
 	 */
 	@Test
 	void handWrittenMapperFileDrivesDynamicSql() {
@@ -418,17 +423,18 @@ class MetaMapperXmlUsingTest {
 		return rows.stream().map(row -> row.getString("order_no")).toList();
 	}
 
-	/** 语句目录 = {语句根}/{数据源}/{命名空间}，路径与引擎里的唯一语句库保持一致。 */
+	/** 使用方手写语句目录 = {语句根}/{数据源}/{命名空间}/spec/xml，框架只读、绝不覆盖。 */
 	private Path statementDirectory() {
 		return statementDirectory(MetaMapper.DEFAULT_NAMESPACE);
 	}
 
 	private Path statementDirectory(String namespace) {
-		Path sql = MetaDirectories.of(META_DIRECTORY).sqlDirectory();
-		if (sql == null) {
-			return null;
-		}
-		return sql.resolve(MetaMapper.engine().defaultPoolName()).resolve(namespace);
+		return MetaDirectories.of(META_DIRECTORY).specXmlDirectory("default", namespace);
+	}
+
+	/** 框架生成的默认语句目录 = {语句根}/{数据源}/{命名空间}/auto/xml。 */
+	private Path autoDirectory(String namespace) {
+		return MetaDirectories.of(META_DIRECTORY).autoXmlDirectory("default", namespace);
 	}
 
 	/** 生成的文件名跟着元数据里的表名大小写走（H2 是大写、MySQL 习惯小写），这里按忽略大小写找。 */
@@ -437,7 +443,19 @@ class MetaMapperXmlUsingTest {
 	}
 
 	private Path statementFile(String namespace, String table) {
-		Path directory = statementDirectory(namespace);
+		Path found = findFile(statementDirectory(namespace), table);
+		return found != null ? found : autoStatementFile(namespace, table);
+	}
+
+	private Path autoStatementFile(String table) {
+		return autoStatementFile(MetaMapper.DEFAULT_NAMESPACE, table);
+	}
+
+	private Path autoStatementFile(String namespace, String table) {
+		return findFile(autoDirectory(namespace), table);
+	}
+
+	private static Path findFile(Path directory, String table) {
 		if (directory == null || !Files.isDirectory(directory)) {
 			return null;
 		}

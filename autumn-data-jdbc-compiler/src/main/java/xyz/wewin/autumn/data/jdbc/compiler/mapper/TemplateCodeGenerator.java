@@ -24,7 +24,7 @@ import xyz.wewin.autumn.data.common.mapper.TemplateNode;
  */
 public final class TemplateCodeGenerator {
 
-	private static final String SQL_BUILD_FQN = "xyz.wewin.autumn.data.meta.jdbc.SqlBuild";
+	private static final String SQL_BUILD_FQN = "xyz.wewin.autumn.data.common.mapper.SqlBuild";
 
 	/**
 	 * 生成类自带的结构辅助：{@code <where>} 去掉打头的 AND/OR。

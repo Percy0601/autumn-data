@@ -8,34 +8,21 @@ import xyz.wewin.autumn.data.common.meta.MetaProperty;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTable;
 
 /**
- * 每表一个 XML 文件里「系统自动生成区」的语句生成器。
+ * 框架自动生成区的语句生成器：一张表一份独立 XML 文档。
  *
- * <p>一张表固定生成七条默认语句：{@code findList} / {@code findPage} / {@code findOne} /
+ * <p>每张表固定生成七条默认语句：{@code findList} / {@code findPage} / {@code findOne} /
  * {@code findById} / {@code save} / {@code update} / {@code delete}。语法就是
  * {@code autumn-data-common} 那套 MyBatis 风格 XML，不另起炉灶。</p>
  *
- * <p>七条语句都会<b>写进那份 XML</p>，{@code findOne} 之类的 SQL 在文件里看得见、也改得动。
- * 三条 select 只差执行方式，条件抽成 {@code <sql id="__autumn_where">} 片段共用，
- * 列清单抽成 {@code <sql id="__autumn_columns">}，手改这两处即可，不必在三条语句里各改一遍。</p>
+ * <p>这份文档落在 {@code auto/xml/{表}.xml}，整份归框架所有：表结构变化时整份重写，
+ * 使用方不要改它。自定义语句写在 {@code spec/xml/{表}.xml}，框架从不改写，按 id 覆盖同名默认语句
+ * —— 两份文件由 {@link MetaSqlFileStore} 合并，职责边界干净。</p>
  *
- * <p>文件里用两行注释标记把这一块圈起来：</p>
- * <pre>{@code
- * <!-- ===== AUTUMN-DATA GENERATED START fingerprint=1-xxxx ===== -->
- *   ... 七条默认语句 ...
- * <!-- ===== AUTUMN-DATA GENERATED END ===== -->
- *
- *   <!-- 自定义语句写在这里，框架更新文件时原样保留 -->
- * }</pre>
- *
- * <p>标记头里带结构指纹（{@link MetaTable#fingerprint()} + 生成器版本）。表结构变化时框架
- * <b>只替换标记之间的内容</b>，标记之前的注释、标记之后的自定义语句、缩进与空行全部逐字保留
- * —— 见 {@link #merge(String, MetaTable)}。没有标记的文件第一次被访问时由 {@link #inject} 插入
- * 生成块：默认语句因此也出现在文件里，使用方能看到、也能改；想长期改成自己的版本，就把同名语句
- * 写进标记之后的自定义区，后出现者优先。</p>
+ * <p>三条 select 只差执行方式，条件抽成 {@code <sql id="__autumn_where">} 片段共用，
+ * 列清单抽成 {@code <sql id="__autumn_columns">}。</p>
  *
  * <p>写哪几列由实体的变更集决定：{@code save} / {@code update} 用 {@code changed('col')}
- * 这个框架内置谓词（见 {@link SqlTemplate}），因此「显式置 NULL」和「这一列没动」是两件事，
- * 与纯 {@code col != null} 的 MyBatis 惯用写法相比不丢语义。</p>
+ * 这个框架内置谓词（见 {@link SqlTemplate}），因此「显式置 NULL」和「这一列没动」是两件事。</p>
  */
 public final class MetaSqlGenerator {
 
@@ -51,17 +38,14 @@ public final class MetaSqlGenerator {
 	public static final List<String> DEFAULT_IDS = List.of(FIND_LIST, FIND_PAGE, FIND_ONE, FIND_BY_ID, SAVE,
 			UPDATE, DELETE);
 
-	/** 列清单片段 id，默认语句与自定义语句都能 {@code <include>} 复用。 */
+	/** 列清单片段 id，默认语句都能 {@code <include>} 复用。 */
 	static final String COLUMNS_FRAGMENT = "__autumn_columns";
 
-	/** 查询条件片段 id：findList / findPage / findOne 共用，改条件只改一处。 */
+	/** 查询条件片段 id：findList / findPage / findOne 共用。 */
 	static final String WHERE_FRAGMENT = "__autumn_where";
 
-	/** 生成器版本：改了生成逻辑就 +1，让所有表在下次访问时刷新自动区。 */
-	private static final String VERSION = "3";
-
-	private static final String START_PREFIX = "<!-- ===== AUTUMN-DATA GENERATED START";
-	private static final String END_MARKER = "<!-- ===== AUTUMN-DATA GENERATED END ===== -->";
+	/** 生成器版本：改了生成逻辑就 +1，让所有表在下次访问时重写 auto 文件。 */
+	private static final String VERSION = "4";
 
 	private final Dialect dialect;
 
@@ -72,94 +56,52 @@ public final class MetaSqlGenerator {
 		this.dialect = dialect;
 	}
 
-	/** 结构指纹：表结构 + 生成器版本，写进标记头用于判断是否要重写自动区。 */
+	/** 结构指纹：表结构 + 生成器版本；auto 文件的注释头带它，用于判断要不要重写。 */
 	public String fingerprint(MetaTable table) {
 		return VERSION + "-" + table.fingerprint();
 	}
 
-	/** 完整的自动生成块（含 START / END 标记）。 */
-	public String generatedBlock(MetaTable table) {
-		StringBuilder out = new StringBuilder(4096);
-		out.append(START_PREFIX).append(" fingerprint=").append(fingerprint(table)).append(" ===== -->\n");
-		out.append("<!-- 本块由框架按表结构生成，表结构变化时只重写本块；手工改动会被覆盖。 -->\n");
-		out.append("<!-- 想改查询条件只改 __autumn_where，想改列清单只改 __autumn_columns；整条语句不合适就复制到下方自定义区改。 -->\n");
-		out.append(blockBody(table));
-		out.append(END_MARKER).append('\n');
-		return out.toString();
-	}
-
-	/** 文件不存在时生成的完整 XML 文档。 */
+	/** 生成完整的 auto XML 文档（整份归框架，表结构变化整份重写）。 */
 	public String fullDocument(MetaTable table, String namespace) {
 		StringBuilder out = new StringBuilder(5120);
 		out.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-		out.append("<!-- 一张表一个文件：目录 = 数据源 / 命名空间，文件名 = 表名。 -->\n");
+		out.append("<!-- AUTUMN-DATA GENERATED fingerprint=").append(fingerprint(table)).append(" -->\n");
+		out.append("<!-- 本文件由框架按表结构自动生成，表结构变化会整份重写；不要改这里。 -->\n");
+		out.append("<!-- 自定义语句写在 spec/xml/{表名}.xml，框架从不改写，同名 id 覆盖本文件的默认语句。 -->\n");
 		out.append("<!-- 语法与 MyBatis 一致：#{} 绑定、${} 标识符、<if>/<where>/<trim>/<foreach>/<choose>、<sql>/<include>。 -->\n");
-		out.append("<!-- 在 GENERATED END 之后写自定义语句，框架更新文件时原样保留。 -->\n");
 		out.append("<mapper namespace=\"").append(escape(namespace)).append("\">\n\n");
-		out.append(generatedBlock(table));
-		out.append("\n    <!-- ===== 自定义语句区：写在下面，框架不会改动 ===== -->\n\n");
-		out.append("</mapper>\n");
+		out.append(blockBody(table));
+		out.append("\n</mapper>\n");
 		return out.toString();
 	}
 
-	/** 只含七条默认语句的独立文档，供内存兜底解析（手写文件 / 只读 classpath 缺默认语句时用）。 */
+	/** 只含七条默认语句的文档，供内存兜底解析（auto 文件落不了盘时用）。 */
 	public String statementsDocument(MetaTable table) {
 		return "<mapper namespace=\"meta\">\n" + blockBody(table) + "\n</mapper>\n";
 	}
 
 	/**
-	 * 把已有文件里的生成块替换为最新内容。
-	 *
-	 * @return 改写后的全文；{@code null} 表示不需要改动（文件没有标记，或指纹已是最新）
+	 * 从已有 auto 文件里读出指纹；没有指纹头返回 {@code null}（视为过期，重写）。
 	 */
-	public String merge(String existing, MetaTable table) {
-		int start = existing.indexOf(START_PREFIX);
-		int end = existing.indexOf(END_MARKER);
-		if (start < 0 || end < 0 || end <= start) {
+	public static String fingerprintOf(String content) {
+		if (content == null) {
 			return null;
 		}
-		String header = existing.substring(start, lineEnd(existing, start));
-		if (header.contains("fingerprint=" + fingerprint(table))) {
+		String marker = "AUTUMN-DATA GENERATED fingerprint=";
+		int at = content.indexOf(marker);
+		if (at < 0) {
 			return null;
 		}
-		int after = lineEnd(existing, end);
-		// END 标记后没有换行（文件在这里结束）时，lineEnd 返回 length，不能再 +1
-		int tail = after >= existing.length() ? existing.length() : after + 1;
-		return existing.substring(0, start) + generatedBlock(table) + existing.substring(tail);
-	}
-
-	public boolean hasGeneratedBlock(String text) {
-		return text.contains(START_PREFIX) && text.contains(END_MARKER);
-	}
-
-	/**
-	 * 把自动生成块插进一份<b>还没有标记</b>的现有文件。
-	 *
-	 * <p>这是本版相对上一版的关键变化：手写文件不再只由内存补默认语句，而是把默认语句
-	 * <b>落进文件</b>——{@code findOne/findById/findList/findPage/save/update/delete} 都能在
-	 * XML 里看到、也能被使用方直接改成自己要的样子。插入点在 {@code <mapper ...>} 开标签之后，
-	 * 因此文件后半段的自定义语句仍在生成块之后：同名 id 以自定义语句为准（后出现者覆盖）。</p>
-	 *
-	 * @param namespace 文件没有 {@code <mapper>} 壳、需要补壳时写进 {@code namespace}
-	 * @return 改写后的全文；{@code null} 表示无需改动（已有生成块，交给 {@link #merge}）
-	 */
-	public String inject(String existing, MetaTable table, String namespace) {
-		if (existing == null || existing.isBlank() || hasGeneratedBlock(existing)) {
-			return null;
+		int from = at + marker.length();
+		int end = content.indexOf(' ', from);
+		if (end < 0) {
+			end = content.indexOf('-', from + 1);
 		}
-		int mapperAt = existing.indexOf("<mapper");
-		if (mapperAt < 0) {
-			// 没有 <mapper> 壳：补一个壳，并把原内容整体放在生成块之后（自定义语句仍优先）
-			return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<mapper namespace=\"" + escape(namespace)
-					+ "\">\n\n" + generatedBlock(table) + "\n" + stripDeclaration(existing).trim() + "\n</mapper>\n";
+		int commentEnd = content.indexOf("-->", from);
+		if (commentEnd >= 0 && (end < 0 || end > commentEnd)) {
+			end = commentEnd;
 		}
-		int openTagEnd = existing.indexOf('>', mapperAt);
-		if (openTagEnd < 0) {
-			return null;
-		}
-		String head = existing.substring(0, openTagEnd + 1);
-		String tail = existing.substring(openTagEnd + 1);
-		return head + "\n\n" + generatedBlock(table) + tail;
+		return end < 0 ? content.substring(from).trim() : content.substring(from, end).trim();
 	}
 
 	// ------------------------------------------------------------------
@@ -194,7 +136,6 @@ public final class MetaSqlGenerator {
 
 	/**
 	 * 三条 select 共用的查询条件：逐列等值条件 + 固定的逻辑删除过滤；没展开的条件不产生绑定槽。
-	 * 单独抽成片段，手改条件只动这一处，findList / findPage / findOne 跟着变。
 	 */
 	private void appendWhereFragment(StringBuilder out, MetaTable table) {
 		out.append("    <sql id=\"").append(WHERE_FRAGMENT).append("\">\n");
@@ -340,21 +281,5 @@ public final class MetaSqlGenerator {
 
 	private static String escape(String value) {
 		return value == null ? "meta" : value.replace("&", "&amp;").replace("\"", "&quot;").replace("<", "&lt;");
-	}
-
-	/** 所在行末尾 {@code \n} 的下标（不含）；没有换行则返回文本长度。 */
-	private static int lineEnd(String text, int from) {
-		int at = text.indexOf('\n', from);
-		return at < 0 ? text.length() : at;
-	}
-
-	/** 去掉 {@code <?xml ...?>} 声明：补壳时由生成器自己写一份。 */
-	private static String stripDeclaration(String content) {
-		int at = content.indexOf("<?xml");
-		if (at < 0) {
-			return content;
-		}
-		int end = content.indexOf("?>", at);
-		return end < 0 ? content : content.substring(0, at) + content.substring(end + 2);
 	}
 }

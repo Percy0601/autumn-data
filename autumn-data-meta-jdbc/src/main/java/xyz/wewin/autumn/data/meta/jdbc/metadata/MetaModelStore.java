@@ -2,10 +2,8 @@ package xyz.wewin.autumn.data.meta.jdbc.metadata;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -22,25 +20,19 @@ import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.common.meta.MetaProperty;
 import xyz.wewin.autumn.data.common.meta.MetaType;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
-import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCache;
-import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCaches;
-import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaCache;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaCaches;
 
 /**
- * 元类定义仓库：{@code <root>/meta-class/<表名>.json}，一张表一份，是动态层「定义优先」的那一半。
+ * 实体定义仓库：{@code {根}/{ds}-default/{ns}-default/spec/{表名}.json}。
  *
- * <p>库里读出来的结构是事实，这份文件是使用方对事实的<b>解释</b>：列的 Java 类型、谁是主键、
- * 哪个是逻辑删除列、投影顺序，都可以在这里定下来而不用改表。合并规则是
- * <b>定义里出现的字段以定义为准，定义里没写的字段用库补齐</b>——只改 {@code "type"} 一个键，
- * 其余属性仍然跟着数据库走。</p>
+ * <p>数据库元数据是事实，这份 JSON 是使用方对事实的<b>解释</b>：列的 Java 类型、谁是主键、
+ * 哪个是逻辑删除列、投影顺序都可以在这里定下来而不用改表。合并规则是
+ * <b>定义里出现的字段以定义为准，定义里没写的字段用库补齐</b>。</p>
  *
- * <p>文件第一次访问该表时按库结构生成一份（{@code generateFiles=true}），之后<b>永不重写</b>：
- * 它归使用方所有，改表不会回头覆盖人工编辑过的定义。想让新列进来，一是编辑文件（定义里没写
- * 的新列本来就会从库补齐），二是删掉该表已有快照缓存后重看。定义里的列在库里不存在时直接丢弃并告警——
- * 选一个不存在的列，每条 SQL 都会失败，留着它比丢掉更危险。</p>
- *
- * <p>解析结果按「文件名 + 修改时间 + 大小」进有界 LRU：文件没动不重复解析，动过下次就生效，
- * 不重启、不重新打包。</p>
+ * <p>文件由使用方维护，框架<b>只在缺失时按库结构生成一份模板</b>、之后永不重写；
+ * 定义里的列在库里不存在时丢弃并告警。解析结果按「文件 + 修改时间 + 大小」进有界 LRU，
+ * 改过下次就生效，不重启。</p>
  */
 public final class MetaModelStore {
 
@@ -52,17 +44,17 @@ public final class MetaModelStore {
 
 	private final boolean generateFiles;
 
-	private final BoundedCache<String, Map<String, Object>> definitions;
+	private final MetaCache<String, Map<String, Object>> definitions;
 
 	/**
-	 * @param directory   定义目录（通常是 {@code <root>/meta-class}）；{@code null} 表示不读也不写定义
-	 * @param generateFiles 目录里没有该表的定义时是否按库结构生成一份
-	 * @param maximumSize 定义条目上限（按「文件 + 修改时间」计数）
+	 * @param directory     定义目录（{@code .../{ns}-default/spec}）；{@code null} 表示不读不写
+	 * @param generateFiles 目录里没有该表定义时是否按库结构生成一份模板
+	 * @param maximumSize   定义条目上限
 	 */
 	public MetaModelStore(Path directory, boolean generateFiles, int maximumSize) {
 		this.directory = directory;
 		this.generateFiles = generateFiles;
-		this.definitions = BoundedCaches.lru(maximumSize);
+		this.definitions = MetaCaches.lru(maximumSize);
 	}
 
 	/** 纯内存：没有定义文件，表结构完全以数据库为准。 */
@@ -70,12 +62,7 @@ public final class MetaModelStore {
 		return new MetaModelStore(null, false, 16);
 	}
 
-	/**
-	 * 把库结构快照与该表的元类定义合并成最终快照。
-	 *
-	 * @param fromDatabase 纯数据库元数据得到的快照
-	 * @return 定义优先的快照；没有目录、没有定义也没有补齐权限时原样返回
-	 */
+	/** 把库结构快照与该表的定义合并成最终快照。 */
 	public MetaTable apply(MetaTable fromDatabase) {
 		Path file = file(fromDatabase.name());
 		if (file == null) {
@@ -88,7 +75,7 @@ public final class MetaModelStore {
 		return definition == null ? fromDatabase : merged(fromDatabase, definition);
 	}
 
-	/** 丢掉解析结果（含已改过的文件）；定义文件本身不会被重写。 */
+	/** 丢掉解析结果（定义文件本身不会被重写）。 */
 	public void refresh(String tableName) {
 		this.definitions.invalidateIf(key -> key.startsWith(normalize(tableName) + '@'));
 	}
@@ -97,15 +84,17 @@ public final class MetaModelStore {
 		this.definitions.invalidateAll();
 	}
 
-	/** 已解析的定义条目数（诊断用）。 */
 	public long size() {
 		return this.definitions.estimatedSize();
 	}
 
 	/** 该表的定义文件路径；纯内存模式返回 {@code null}。 */
 	public Path file(String tableName) {
-		return this.directory == null ? null
-				: this.directory.resolve(MetaDirectories.safeFileName(tableName) + SUFFIX);
+		return this.directory == null ? null : this.directory.resolve(safe(tableName) + SUFFIX);
+	}
+
+	private static String safe(String name) {
+		return name.replaceAll("[^A-Za-z0-9_.-]", "_").replace("..", "_");
 	}
 
 	// ------------------------------------------------------------------
@@ -123,7 +112,7 @@ public final class MetaModelStore {
 			String name = text(declared.get("name"));
 			MetaProperty column = name == null ? null : byName.get(normalize(name));
 			if (column == null) {
-				LOG.log(Level.WARNING, "meta-class definition for table ''{0}'' declares column ''{1}'' that the "
+				LOG.log(Level.WARNING, "entity definition for table ''{0}'' declares column ''{1}'' that the "
 						+ "database does not have; the declaration is ignored",
 						new Object[] { fromDatabase.name(), name });
 				continue;
@@ -139,25 +128,38 @@ public final class MetaModelStore {
 			}
 		}
 		MetaClass metaClass = new MetaClass();
+		// 顶层就是类定义：name 必须与物理表一致（不一致只告警，防止 SQL 指错表），
+		// namespace / metaType 按定义覆盖；comment 是给使用方看的说明，框架忽略。
+		String declaredName = text(definition.get("name"));
+		if (declaredName != null && !normalize(declaredName).equals(normalize(fromDatabase.name()))) {
+			LOG.log(Level.WARNING, "entity definition name ''{0}'' differs from table ''{1}''; table name wins",
+					new Object[] { declaredName, fromDatabase.name() });
+		}
 		metaClass.setName(fromDatabase.name());
-		metaClass.setNamespace(fromDatabase.schema());
-		metaClass.setMetaType(MetaType.META_TYPE_ENTITY);
+		String declaredNamespace = text(definition.get("namespace"));
+		metaClass.setNamespace(declaredNamespace == null ? fromDatabase.schema() : declaredNamespace);
+		metaClass.setMetaType(metaType(definition));
 		metaClass.setProperties(merged);
 		return new MetaTable(metaClass, logicDeleteColumn(definition, merged, fromDatabase.logicDeleteColumn()));
 	}
 
+	private static MetaType metaType(Map<String, Object> definition) {
+		String declared = text(definition.get("metaType"));
+		if (declared == null || declared.isBlank()) {
+			return MetaType.META_TYPE_ENTITY;
+		}
+		try {
+			return MetaType.of(declared);
+		}
+		catch (IllegalArgumentException ex) {
+			LOG.log(Level.WARNING, "entity definition has unknown metaType ''{0}''; ENTITY is used", declared);
+			return MetaType.META_TYPE_ENTITY;
+		}
+	}
+
 	/** 只覆盖定义里真的写了的键；没写的键保持库里的值。 */
 	private static MetaProperty override(MetaProperty column, Map<String, Object> declared) {
-		MetaProperty merged = new MetaProperty();
-		merged.setName(column.getName());
-		merged.setType(column.getType());
-		merged.setTypeName(column.getTypeName());
-		merged.setJdbcType(column.getJdbcType());
-		merged.setSqlTypeName(column.getSqlTypeName());
-		merged.setNullable(column.isNullable());
-		merged.setPrimaryKey(column.isPrimaryKey());
-		merged.setAutoIncrement(column.isAutoIncrement());
-		merged.setDefaultValue(column.getDefaultValue());
+		MetaProperty merged = copy(column);
 		if (declared.containsKey("type")) {
 			merged.setType(text(declared.get("type")));
 		}
@@ -185,6 +187,20 @@ public final class MetaModelStore {
 		return merged;
 	}
 
+	private static MetaProperty copy(MetaProperty source) {
+		MetaProperty copy = new MetaProperty();
+		copy.setName(source.getName());
+		copy.setType(source.getType());
+		copy.setTypeName(source.getTypeName());
+		copy.setJdbcType(source.getJdbcType());
+		copy.setSqlTypeName(source.getSqlTypeName());
+		copy.setNullable(source.isNullable());
+		copy.setPrimaryKey(source.isPrimaryKey());
+		copy.setAutoIncrement(source.isAutoIncrement());
+		copy.setDefaultValue(source.getDefaultValue());
+		return copy;
+	}
+
 	private static String logicDeleteColumn(Map<String, Object> definition, List<MetaProperty> columns,
 			String fromDatabase) {
 		String declared = text(definition.get("logicDeleteColumn"));
@@ -196,7 +212,7 @@ public final class MetaModelStore {
 				return column.getName();
 			}
 		}
-		LOG.log(Level.WARNING, "meta-class definition declares logic delete column ''{0}'' which is not a column"
+		LOG.log(Level.WARNING, "entity definition declares logic delete column ''{0}'' which is not a column"
 				+ " of this table; falling back to the configured detection", declared);
 		return fromDatabase;
 	}
@@ -208,12 +224,12 @@ public final class MetaModelStore {
 			return List.of();
 		}
 		if (!(raw instanceof List)) {
-			throw new MetaSqlException("meta-class definition field 'properties' must be a JSON array");
+			throw new MetaSqlException("entity definition field 'properties' must be a JSON array");
 		}
 		List<Map<String, Object>> result = new ArrayList<>();
 		for (Object item : (List<Object>) raw) {
 			if (!(item instanceof Map)) {
-				throw new MetaSqlException("meta-class definition property must be a JSON object");
+				throw new MetaSqlException("entity definition property must be a JSON object");
 			}
 			result.add((Map<String, Object>) item);
 		}
@@ -224,31 +240,25 @@ public final class MetaModelStore {
 	// 读写
 	// ------------------------------------------------------------------
 
-	/** 生成一份定义文件；已存在（并发或人工先建）就不动，返回是否该继续读盘。 */
+	/** 生成一份定义模板；已存在就不动。 */
 	private boolean generate(Path file, MetaTable fromDatabase) {
 		if (!this.generateFiles) {
 			return false;
 		}
-		if (!MetaDirectories.ensure(file.getParent())) {
-			return false;
-		}
 		try {
-			Files.writeString(file, toJson(fromDatabase), StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW,
-					StandardOpenOption.WRITE);
-			return true;
-		}
-		catch (FileAlreadyExistsException won) {
+			Files.createDirectories(file.getParent());
+			Files.writeString(file, toJson(fromDatabase), StandardCharsets.UTF_8);
 			return true;
 		}
 		catch (IOException ex) {
-			LOG.log(Level.WARNING, "failed to write meta-class definition ''{0}''; using database metadata only",
+			LOG.log(Level.WARNING, "failed to write entity definition ''{0}''; using database metadata only",
 					new Object[] { file, ex });
 			return false;
 		}
 	}
 
 	private Map<String, Object> read(Path file) {
-		String key = normalize(fileName(file)) + '@' + stamp(file);
+		String key = normalize(file.getFileName().toString()) + '@' + stamp(file);
 		return this.definitions.get(key, ignored -> parse(file));
 	}
 
@@ -258,11 +268,11 @@ public final class MetaModelStore {
 			content = Files.readString(file, StandardCharsets.UTF_8);
 		}
 		catch (IOException ex) {
-			throw new MetaSqlException("failed to read meta-class definition '" + file + "'", ex);
+			throw new MetaSqlException("failed to read entity definition '" + file + "'", ex);
 		}
 		Object parsed = Configuration.defaultConfiguration().jsonProvider().parse(content);
 		if (!(parsed instanceof Map)) {
-			throw new MetaSqlException("meta-class definition '" + file + "' must be a JSON object");
+			throw new MetaSqlException("entity definition '" + file + "' must be a JSON object");
 		}
 		@SuppressWarnings("unchecked")
 		Map<String, Object> definition = (Map<String, Object>) parsed;
@@ -275,21 +285,20 @@ public final class MetaModelStore {
 			return attrs.lastModifiedTime().toMillis() + ":" + attrs.size();
 		}
 		catch (IOException ex) {
-			throw new MetaSqlException("failed to stat meta-class definition '" + file + "'", ex);
+			throw new MetaSqlException("failed to stat entity definition '" + file + "'", ex);
 		}
 	}
 
-	/** 人类可读的定义：字段顺序与列顺序都按库里的来，编辑的就是看到的。 */
+	/** 人类可读的定义模板：字段顺序与列顺序都按库里的来。 */
 	static String toJson(MetaTable table) {
 		StringBuilder out = new StringBuilder(512);
 		out.append("{\n");
 		out.append("  \"name\" : ").append(string(table.name())).append(",\n");
-		out.append("  \"namespace\" : ").append(table.schema() == null ? "null" : string(table.schema()))
-				.append(",\n");
+		out.append("  \"namespace\" : ").append(table.schema() == null ? "null" : string(table.schema())).append(",\n");
 		out.append("  \"metaType\" : ").append(string(MetaType.META_TYPE_ENTITY.getCode())).append(",\n");
 		out.append("  \"logicDeleteColumn\" : ")
 				.append(table.logicDeleteColumn() == null ? "null" : string(table.logicDeleteColumn())).append(",\n");
-		out.append("  \"comment\" : \"按表结构生成一次；定义优先，只写你想改的键，其余以数据库为准\",\n");
+		out.append("  \"comment\" : \"按表结构生成一次；只写你想改的键，其余以数据库为准\",\n");
 		out.append("  \"properties\" : [\n");
 		List<MetaProperty> columns = table.columns();
 		for (int i = 0; i < columns.size(); i++) {
@@ -308,11 +317,6 @@ public final class MetaModelStore {
 		return out.append("}\n").toString();
 	}
 
-	private static String fileName(Path file) {
-		String name = file.getFileName().toString();
-		return name.endsWith(SUFFIX) ? name.substring(0, name.length() - SUFFIX.length()) : name;
-	}
-
 	private static String text(Object value) {
 		return value == null ? null : String.valueOf(value);
 	}
@@ -329,11 +333,11 @@ public final class MetaModelStore {
 			return Integer.parseInt(text.trim());
 		}
 		catch (NumberFormatException ex) {
-			throw new MetaSqlException("meta-class definition field 'jdbcType' is not a number: " + text, ex);
+			throw new MetaSqlException("entity definition field 'jdbcType' is not a number: " + text, ex);
 		}
 	}
 
-	/** JSON 字符串字面量：控制字符与引号一律转义，人工写的类型名不能截断文件。 */
+	/** JSON 字符串字面量：控制字符与引号一律转义。 */
 	private static String string(String value) {
 		if (value == null) {
 			return "null";

@@ -19,8 +19,8 @@ import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaPlanCache;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlFileStore;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
-import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCache;
-import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCaches;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaCache;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaCaches;
 import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
 
 /**
@@ -29,7 +29,7 @@ import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
  * <p>引擎本身是实例对象（静态门面只持有一个 {@code volatile} 引用），因此多数据源、测试时的
  * 多实例、Spring 容器关闭后的替换都不会互相串。默认池由构造参数固定，其余池名按需创建。</p>
  *
- * <p>所有池<b>共享一个 {@link MetaEntityRegistry}</b>：生成的实体类只由表结构决定，与连的是哪个库
+ * <p>所有池<b>共享一个 {@link MetaEntityRegistry}</b>：实体模型只由表结构决定，与连的是哪个库
  * 无关，同构的表只编译一次。池名 → client 本身也是有界 LRU：低代码/多租户场景下池名可能动态增长，
  * 触顶淘汰冷池，下次访问按需重建（旧 client 上正在执行的操作持有引用，不受影响）。</p>
  *
@@ -47,7 +47,7 @@ public final class MetaMapperEngine {
 
 	private final MetaEntityRegistry entityRegistry;
 
-	private final BoundedCache<String, MetaMapperClient> clients;
+	private final MetaCache<String, MetaMapperClient> clients;
 
 	public MetaMapperEngine(String defaultPoolName, Function<String, MetaMapperClient> clientFactory) {
 		this(defaultPoolName, clientFactory, new MetaEntityRegistry());
@@ -55,10 +55,10 @@ public final class MetaMapperEngine {
 
 	public MetaMapperEngine(String defaultPoolName, Function<String, MetaMapperClient> clientFactory,
 			MetaEntityRegistry entityRegistry) {
-		this(defaultPoolName, clientFactory, entityRegistry, BoundedCache.DEFAULT_MAXIMUM_SIZE);
+		this(defaultPoolName, clientFactory, entityRegistry, MetaCache.DEFAULT_MAXIMUM_SIZE);
 	}
 
-	/** @param poolCacheSize 池名 → client 的缓存上限（默认 {@value BoundedCache#DEFAULT_MAXIMUM_SIZE}） */
+	/** @param poolCacheSize 池名 → client 的缓存上限（默认 {@value MetaCache#DEFAULT_MAXIMUM_SIZE}） */
 	public MetaMapperEngine(String defaultPoolName, Function<String, MetaMapperClient> clientFactory,
 			MetaEntityRegistry entityRegistry, int poolCacheSize) {
 		if (defaultPoolName == null || defaultPoolName.isBlank()) {
@@ -70,7 +70,7 @@ public final class MetaMapperEngine {
 		this.defaultPoolName = defaultPoolName;
 		this.clientFactory = clientFactory;
 		this.entityRegistry = entityRegistry == null ? new MetaEntityRegistry() : entityRegistry;
-		this.clients = BoundedCaches.lru(poolCacheSize);
+		this.clients = MetaCaches.lru(poolCacheSize);
 	}
 
 	/**
@@ -135,10 +135,9 @@ public final class MetaMapperEngine {
 		}, entities, options.tableCacheSize());
 	}
 
-	/** 实体模型注册表：CODE/GENERIC 由 {@link MetaMapperOptions#entityStrategy()} 决定，全引擎共享一份。 */
+	/** 实体模型注册表：统一通用 MetaClass，全引擎共享一份。 */
 	private static MetaEntityRegistry entityRegistry(MetaMapperOptions options) {
-		return new MetaEntityRegistry(options.directories(), options.generateFiles(), options.tableCacheSize(),
-				options.entityStrategy());
+		return new MetaEntityRegistry(options.tableCacheSize());
 	}
 
 	private static MetaMapperClient createClient(String poolName, DataSource dataSource, MetaMapperOptions options,
@@ -148,13 +147,14 @@ public final class MetaMapperEngine {
 				() -> connectionSources.apply(dataSource));
 		AutumnJdbc jdbc = new AutumnJdbc(connectionSource, dialect, options.fetchPolicy());
 		MetaDirectories directories = options.directories();
-		MetaModelStore models = new MetaModelStore(directories.metaClassDirectory(), options.generateFiles(),
-				options.tableCacheSize());
+		String namespace = MetaSqlFileStore.DEFAULT_NAMESPACE;
+		MetaModelStore models = new MetaModelStore(directories.specDirectory(poolName, namespace),
+				options.generateFiles(), options.tableCacheSize());
 		MetaTableRegistry registry = new MetaTableRegistry(dataSource, dialect, options.logicDeleteColumns(),
 				models, options.tableCacheSize());
-		// 唯一的语句库：一张表一个 XML，按 数据源/命名空间/表名 寻址；方言决定生成语句里的标识符引号。
+		// 唯一的语句库：auto/xml（框架生成）+ spec/xml（使用方手写），按 数据源/命名空间/表名 寻址。
 		MetaSqlGenerator generator = new MetaSqlGenerator(dialect);
-		MetaSqlFileStore statements = new MetaSqlFileStore(directories.sqlDirectory(),
+		MetaSqlFileStore statements = new MetaSqlFileStore(directories,
 				MetaMapperEngine.class.getClassLoader(), options.statementCacheSize(), generator,
 				options.generateFiles());
 		return new MetaMapperClient(poolName, jdbc, connectionSource, registry, entities,

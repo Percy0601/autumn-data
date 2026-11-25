@@ -15,17 +15,16 @@ import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 import xyz.wewin.autumn.data.jdbc.runtime.JdbcConnectionSource;
 import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperClient;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityRegistry;
-import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityStrategy;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaPlanCache;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlFileStore;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
 
 /**
  * Native Image 冒烟入口：不依赖 JUnit / Spring，直接跑一遍动态层 CRUD。
  *
- * <p>native 镜像里 {@code MetaEntityStrategy.auto()} 必须是 GENERIC，实体类型必须是
- * {@link MetaClass} 本身，全程没有 javac / defineClass / 反射。构建命令见
+ * <p>实体类型一律是 {@link MetaClass} 本身，全程没有 javac / defineClass / 反射。构建命令见
  * {@code docs/meta-dynamic-crud.md} 的「GraalVM Native Image」一节。</p>
  */
 public final class NativeImageSmoke {
@@ -43,18 +42,14 @@ public final class NativeImageSmoke {
 					+ "deleted_flag INT NOT NULL DEFAULT 0)");
 		}
 
-		MetaEntityStrategy strategy = MetaEntityStrategy.auto();
-		if (strategy != MetaEntityStrategy.GENERIC) {
-			throw new IllegalStateException("native image must use GENERIC entity strategy but was " + strategy);
-		}
-
 		Path mapperDirectory = Files.createTempDirectory("native-mappers");
 		JdbcConnectionSource connections = new JdbcConnectionSource(dataSource);
 		H2Dialect dialect = new H2Dialect();
 		AutumnJdbc jdbc = new AutumnJdbc(connections, dialect, FetchPolicy.defaults());
 		MetaTableRegistry tables = new MetaTableRegistry(dataSource, dialect, Set.of("deleted_flag"));
-		MetaEntityRegistry entities = new MetaEntityRegistry(MetaEntityStrategy.auto());
-		MetaSqlFileStore statements = new MetaSqlFileStore(mapperDirectory,
+		MetaEntityRegistry entities = new MetaEntityRegistry();
+		MetaDirectories directories = MetaDirectories.of(mapperDirectory.toString());
+		MetaSqlFileStore statements = new MetaSqlFileStore(directories,
 				NativeImageSmoke.class.getClassLoader(), 10_000, new MetaSqlGenerator(dialect), true);
 		MetaMapperClient client = new MetaMapperClient("native", jdbc, connections, tables,
 				entities, new MetaPlanCache(), 1000, statements);
@@ -77,7 +72,6 @@ public final class NativeImageSmoke {
 		if (client.findList("native_order", new MetaClass()).size() != 2) {
 			throw new IllegalStateException("expected 2 rows");
 		}
-		System.out.println("NATIVE_SMOKE_OK strategy=" + strategy + " type=" + loaded.getClass().getName()
-				+ " row=" + loaded.toJson());
+		System.out.println("NATIVE_SMOKE_OK type=" + loaded.getClass().getName() + " row=" + loaded.toJson());
 	}
 }

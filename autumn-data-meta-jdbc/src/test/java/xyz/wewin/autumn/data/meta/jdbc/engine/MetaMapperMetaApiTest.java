@@ -29,15 +29,16 @@ import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaPlanCache;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlFileStore;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 统一 XML 语句库：{@code {根}/{数据源}/{命名空间}/{表名}.xml}。
+ * 统一 XML 语句库：spec 手写 + auto 生成两份文件。
  *
- * <p>七条默认语句（findList/findPage/findOne/findById/save/update/delete）始终可用；标记外的
- * 自定义语句逐字保留并优先于同名默认语句；{@code of(数据源, 命名空间)} 把寻址固定在调用边界上。</p>
+ * <p>七条默认语句（findList/findPage/findOne/findById/save/update/delete）始终可用；spec 文件
+ * 由使用方所有，框架只读，同 id 覆盖 auto 里的默认语句；{@code of(数据源, 命名空间)} 把寻址固定在调用边界上。</p>
  */
 class MetaMapperMetaApiTest {
 
@@ -55,7 +56,7 @@ class MetaMapperMetaApiTest {
 
 	private MetaTableRegistry registry;
 
-	/** 语句库根目录：{@code <root>/{数据源}/{命名空间}/{表}.xml}。 */
+	/** 语句库根目录：{@code <root>/{数据源}-default/{命名空间}-default/spec|auto/xml/{表}.xml}。 */
 	@TempDir
 	Path sqlRoot;
 
@@ -205,14 +206,15 @@ class MetaMapperMetaApiTest {
 
 	private MetaMapperClient client(String poolName, MetaTableRegistry tableRegistry, boolean generateFiles) {
 		AutumnJdbc jdbc = new AutumnJdbc(this.connectionSource, new H2Dialect(), FetchPolicy.defaults());
-		MetaSqlFileStore statements = new MetaSqlFileStore(this.sqlRoot, getClass().getClassLoader(),
-				10_000, new MetaSqlGenerator(new H2Dialect()), generateFiles);
+		MetaSqlFileStore statements = new MetaSqlFileStore(MetaDirectories.of(this.sqlRoot.toString()),
+				getClass().getClassLoader(), 10_000, new MetaSqlGenerator(new H2Dialect()), generateFiles);
 		return new MetaMapperClient(poolName, jdbc, this.connectionSource, tableRegistry,
 				ENTITIES, new MetaPlanCache(), 1000, statements);
 	}
 
 	private Path write(String datasource, String namespace, String content) throws IOException {
-		Path file = this.sqlRoot.resolve(datasource).resolve(namespace).resolve("form_order.xml");
+		Path file = MetaDirectories.of(this.sqlRoot.toString())
+				.specXmlDirectory(datasource, namespace).resolve("form_order.xml");
 		Files.createDirectories(file.getParent());
 		Files.writeString(file, content, StandardCharsets.UTF_8);
 		return file;

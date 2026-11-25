@@ -19,8 +19,8 @@ import xyz.wewin.autumn.data.common.meta.MetaClass;
 import xyz.wewin.autumn.data.common.meta.MetaProperty;
 import xyz.wewin.autumn.data.common.meta.MetaType;
 import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
-import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCache;
-import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCaches;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaCache;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaCaches;
 
 /**
  * 动态表元数据注册表：表名 → {@link MetaTable} 快照。
@@ -30,7 +30,7 @@ import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCaches;
  * 元数据默认直接从数据库读取，因此“运行期建表 → 不改代码/不重启服务”即可查询；
  * 建表/加列/删列提交后调用 {@link #refresh(String)} 换新快照。</p>
  *
- * <p>缓存键大小写不敏感，值是不可变 {@link MetaTable}。快照走 {@link BoundedCache} 的有界 LRU：
+ * <p>缓存键大小写不敏感，值是不可变 {@link MetaTable}。快照走 {@link MetaCache} 的有界 LRU：
  * 上限默认一万张表，触顶后淘汰最久未访问的表（下次访问重新读元数据即可，不影响正确性），
  * 因此表数量再大也不会把元数据常驻内存。同一个 key 并发未命中时只加载一次、加载不持有全局锁。</p>
  *
@@ -47,24 +47,29 @@ public final class MetaTableRegistry {
 
 	private final Set<String> logicDeleteColumns;
 
-	/** 元类定义（{@code <root>/meta-class}）：定义优先，缺字段用库补齐。 */
+	/** 使用方的实体定义（spec/{表}.json）：定义优先，缺字段用库补齐。 */
 	private final MetaModelStore models;
 
 	/** 数据库元数据读出来的表结构快照。 */
-	private final BoundedCache<String, MetaTable> cache;
+	private final MetaCache<String, MetaTable> cache;
 
 	/** 使用方手工登记的结构覆盖，同样有界、可淘汰。 */
-	private final BoundedCache<String, MetaTable> overrides;
+	private final MetaCache<String, MetaTable> overrides;
 
 	public MetaTableRegistry(DataSource dataSource, Dialect dialect) {
-		this(dataSource, dialect, Set.of(), MetaModelStore.none(), BoundedCache.DEFAULT_MAXIMUM_SIZE);
+		this(dataSource, dialect, Set.of(), MetaModelStore.none(), MetaCache.DEFAULT_MAXIMUM_SIZE);
 	}
 
 	/**
 	 * @param logicDeleteColumns 逻辑删除列名（大小写不敏感）；查询未显式引用时自动追加 {@code = 0}
 	 */
 	public MetaTableRegistry(DataSource dataSource, Dialect dialect, Set<String> logicDeleteColumns) {
-		this(dataSource, dialect, logicDeleteColumns, MetaModelStore.none(), BoundedCache.DEFAULT_MAXIMUM_SIZE);
+		this(dataSource, dialect, logicDeleteColumns, MetaModelStore.none(), MetaCache.DEFAULT_MAXIMUM_SIZE);
+	}
+
+	public MetaTableRegistry(DataSource dataSource, Dialect dialect, Set<String> logicDeleteColumns,
+			int maximumSize) {
+		this(dataSource, dialect, logicDeleteColumns, MetaModelStore.none(), maximumSize);
 	}
 
 	public MetaTableRegistry(DataSource dataSource, Dialect dialect, Set<String> logicDeleteColumns,
@@ -74,11 +79,11 @@ public final class MetaTableRegistry {
 		this.logicDeleteColumns = Set.copyOf(logicDeleteColumns.stream()
 				.map(name -> name.toLowerCase(Locale.ROOT)).toList());
 		this.models = models == null ? MetaModelStore.none() : models;
-		this.cache = BoundedCaches.lru(maximumSize);
-		this.overrides = BoundedCaches.lru(maximumSize);
+		this.cache = MetaCaches.lru(maximumSize);
+		this.overrides = MetaCaches.lru(maximumSize);
 	}
 
-	/** 取表描述；首次访问从数据库元数据加载，再套用该表的元类定义。 */
+	/** 取表描述；首次访问从数据库元数据加载，再套用该表的实体定义。 */
 	public MetaTable require(String tableName) {
 		if (tableName == null || tableName.isBlank()) {
 			throw new MetaSqlException("table name must not be blank");
@@ -97,7 +102,7 @@ public final class MetaTableRegistry {
 		return table;
 	}
 
-	/** 表结构变化后刷新；下次访问重新读取元数据并重读该表的元类定义。 */
+	/** 表结构变化后刷新；下次访问重新读取元数据与定义。 */
 	public void refresh(String tableName) {
 		this.cache.invalidate(normalize(tableName));
 		this.overrides.invalidate(normalize(tableName));

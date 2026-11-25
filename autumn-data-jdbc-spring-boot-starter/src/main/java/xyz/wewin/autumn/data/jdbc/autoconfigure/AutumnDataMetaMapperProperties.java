@@ -5,7 +5,7 @@ import java.util.Set;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
-import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCache;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaCache;
 
 /**
  * 动态表 CRUD 配置（前缀 {@code autumn.data.meta.mapper}）。
@@ -30,16 +30,15 @@ public class AutumnDataMetaMapperProperties {
 			Set.of("deleted_flag", "del_flag", "is_deleted"));
 
 	/**
-	 * 动态层工作根目录，三类产物在其固定子目录下：{@code meta-class/}（元类定义 JSON）、
-	 * {@code entity/}（生成的实体 .java）、{@code sql/}（一张表一个语句 XML，按
-	 * {@code 数据源/命名空间/表名.xml} 分层）。空串表示纯内存模式：产物一律不落盘。
+	 * 动态层工作根目录；其下按 {@code {数据源}-default/{命名空间}-default/{spec,auto}} 分层：
+	 * {@code spec/} 放实体定义 JSON 与手写语句 XML（使用方资产，框架只读），
+	 * {@code auto/xml} 放框架生成的默认语句。空串表示纯内存模式。
 	 */
-	private String metaDirectory = "autumn-meta";
+	private String metaDirectory = "meta-data";
 
 	/**
-	 * 语句 XML 缺失时是否生成、表结构变化时是否把自动生成块写回磁盘。
-	 * 文件里的 {@code GENERATED START/END} 之间由框架维护，标记之外的自定义语句逐字保留；
-	 * 关掉它只影响「落盘」，七条默认语句仍会在内存补齐。
+	 * auto 语句 XML / 实体定义 JSON 缺失时是否按表结构生成一份模板。
+	 * 关掉它只影响「落盘」，默认语句与表结构仍照常在内存里工作。
 	 */
 	private boolean generateFiles = true;
 
@@ -47,20 +46,13 @@ public class AutumnDataMetaMapperProperties {
 	 * 按表缓存（表结构快照 / 动态实体 / 执行计划）各自的条目上限，默认一万张表。
 	 * 触顶按 LRU 淘汰冷表，下次访问自动重建，内存不随表数量无限增长。
 	 */
-	private int tableCacheSize = BoundedCache.DEFAULT_MAXIMUM_SIZE;
+	private int tableCacheSize = MetaCache.DEFAULT_MAXIMUM_SIZE;
 
 	/**
-	 * 语句 XML 解析结果的缓存上限，默认 1000 张表；实体文件与 VO 文件分开计数。
+	 * 语句 XML 解析结果的缓存上限，默认 1000 张表；auto 文件与 spec 文件分开计数。
 	 * 淘汰后下次访问重新从磁盘读取，磁盘文件是唯一真源，便于人工调整 SQL。
 	 */
 	private int statementCacheSize = 1000;
-
-	/**
-	 * 实体生成模式：{@code auto}（默认，Native Image 里自动退化到 generic）、
-	 * {@code true}/{@code code}（运行期 javac 生成强类型子类，需要完整 JDK）、
-	 * {@code false}/{@code generic}（通用 MetaClass，零反射，可 native 化）。
-	 */
-	private String entityCodegen = "auto";
 
 	public boolean isEnabled() {
 		return this.enabled;
@@ -126,11 +118,4 @@ public class AutumnDataMetaMapperProperties {
 		this.statementCacheSize = statementCacheSize;
 	}
 
-	public String getEntityCodegen() {
-		return this.entityCodegen;
-	}
-
-	public void setEntityCodegen(String entityCodegen) {
-		this.entityCodegen = entityCodegen;
-	}
 }

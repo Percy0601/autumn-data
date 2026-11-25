@@ -33,9 +33,6 @@ import xyz.wewin.autumn.data.meta.jdbc.MetaSqlException;
  *       所以额外切片的开销为零；</li>
  *   <li>{@code <resultMap>/<result>} —— 结果集列名与 {@link xyz.wewin.autumn.data.common.meta.MetaClass}
  *       属性名的对应关系随语句一起带下来，运行期按这份映射逐列取值；</li>
- *   <li>{@code resultType="map"} / {@code resultType="metaclass"} —— 不套生成实体，列由 SELECT 决定，
- *       每行装进一个 {@link xyz.wewin.autumn.data.common.meta.MetaClass}（列名 = 属性名，列类型 = 属性类型），
- *       承载跨表 JOIN / 聚合这类结果形状不由单表结构决定的查询（见 {@link #returnsCustomShape()}）。</li>
  * </ul>
  *
  * <p>关键结构约束：SQL 文本和绑定参数在同一次遍历里按同一顺序产出。写坏模板最多让占位符个数
@@ -60,29 +57,14 @@ public final class SqlTemplate {
 
 	private final List<MapperDefinition.ResultMapping> resultMappings;
 
-	/**
-	 * 语句声明的 {@code resultType}：只用来区分「自定义结果形状」和「按生成实体读取」两档。
-	 *
-	 * <p>动态层不认识编译期实体类（表结构是运行期才有的），所以 {@code resultType} 不作为 Java 类型使用，
-	 * 只承认 {@code "map"} / {@code "metaclass"} 及其常见别名，表示「这一行的列由 SELECT 决定，
-	 * 按结果集列标签逐列装进 {@link xyz.wewin.autumn.data.common.meta.MetaClass}」，
-	 * 用来承载跨表 JOIN、聚合这类<b>结果形状不由单表元数据决定</b>的查询；其余取值按「按生成实体读取」处理。</p>
-	 */
-	private final String resultType;
-
 	SqlTemplate(MapperDefinition.StatementDefinition statement) {
-		this(statement.id(), statement.type(), statement.resultType(), statement.template(),
-				statement.resultMappings());
+		this.id = statement.id();
+		this.type = statement.type();
+		this.nodes = List.copyOf(statement.template());
+		this.resultMappings = statement.resultMappings() == null ? List.of()
+				: List.copyOf(statement.resultMappings());
 	}
 
-	private SqlTemplate(String id, MapperDefinition.StatementType type, String resultType, List<TemplateNode> nodes,
-			List<MapperDefinition.ResultMapping> resultMappings) {
-		this.id = id;
-		this.type = type;
-		this.resultType = resultType == null || resultType.isBlank() ? null : resultType.trim();
-		this.nodes = List.copyOf(nodes);
-		this.resultMappings = resultMappings == null ? List.of() : List.copyOf(resultMappings);
-	}
 
 	/** 语句 id，与 XML 里的 {@code id} 属性一致。 */
 	public String id() {
@@ -94,32 +76,7 @@ public final class SqlTemplate {
 		return this.type;
 	}
 
-	/** 语句声明的 {@code resultType}（原样保留，空白视为没写）；识别规则见 {@link #returnsCustomShape()}。 */
-	public String resultType() {
-		return this.resultType;
-	}
-
-	/**
-	 * 这一行是否按「结果集列 → {@link xyz.wewin.autumn.data.common.meta.MetaClass} 属性」的自定义形状收口。
-	 *
-	 * <p>{@code map} 是这套写法最早的名字，语义已经从「Map」升级为「运行时按列建 MetaClass」；
-	 * {@code metaclass} / {@code meta} 是同一语义的显式写法。{@code hashmap} / {@code java.util.*} 作为历史别名继续兼容，
-	 * 大小写不敏感。其余 {@code resultType} 取值在动态层没有对应类型，一律按生成实体读取，不做静默替换。</p>
-	 */
-	public boolean returnsCustomShape() {
-		if (this.resultType == null) {
-			return false;
-		}
-		String type = this.resultType.toLowerCase(java.util.Locale.ROOT);
-		return switch (type) {
-			case "map", "java.util.map", "hashmap", "java.util.hashmap", "linkedhashmap",
-					"java.util.linkedhashmap", "metaclass", "meta",
-					"xyz.wewin.autumn.data.common.meta.metaclass" -> true;
-			default -> false;
-		};
-	}
-
-	/** 语句声明的结果列映射；空表示按生成实体的固定列读取。 */
+	/** 语句声明的结果列映射；空表示按当前表结构的列清单读取。 */
 	public List<MapperDefinition.ResultMapping> resultMappings() {
 		return this.resultMappings;
 	}

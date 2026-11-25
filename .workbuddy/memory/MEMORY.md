@@ -1,6 +1,17 @@
 # autumn-data 项目长期笔记
 
-## 定位
+## 最新状态（2026-11-25，覆盖下方历史段落）
+动态层已收敛：**删除 VO/shape 与运行期 javac 代码生成，实体统一为 common 的 `MetaClass`**；
+目录为 `{root}/{ds}-default/{ns}-default/{spec,auto}`，`spec/xml` 只读手写、`auto/xml` 整份生成、
+同 id spec 覆盖 auto。实体定义 `spec/{表名}.json` 真读：顶层 name/namespace/metaType/logicDeleteColumn +
+properties 全字段，定义优先缺列库补齐；读行按 `properties[].type` 经 `MetaValueReader.asType` 收口。
+缓存重命名 `MetaCache / MetaCaches / LruMetaCache`。`SqlBuild` 已移到 common。
+`entity-codegen` 配置、`.vo.xml`、`selectShape*`、CODE/GENERIC 双档全部删除；benchmark 的旧标签仅留别名。
+完整可复制示例在 `docs/examples/meta-data/`（DEMO_ORDER.json + spec/xml/DEMO_ORDER.xml），
+由 `MetaExampleDefinitionTest` H2 端到端验证。全 reactor `mvn -B clean test` 232 用例全绿。
+注意约束：JSON 定义按池的 default 命名空间读取，同池其它命名空间视图共享实体定义；SQL 仍按各自命名空间独立寻址。
+
+## 定位（历史背景）
 `autumn-data`：零反射 JDBC 仓储（编译期 APT 生成实现）+ 动态表 CRUD / 运行期实体类生成（`autumn-data-meta-jdbc`）。
 对标 Spring Data 的接口写法 + Micronaut Data 的编译期生成。核心模块零 Spring 运行期依赖，Spring 只在 starter。
 动态 SQL 用 XML AST 解释执行（不引模板引擎）；FreeMarker 只用于运行期生成实体类源码。

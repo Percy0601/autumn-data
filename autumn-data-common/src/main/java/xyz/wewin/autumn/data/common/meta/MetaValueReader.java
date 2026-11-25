@@ -30,6 +30,32 @@ public final class MetaValueReader {
 		return value;
 	}
 
+	/**
+	 * 按实体定义里声明的 Java 类型收口读到的值（支持全限定名与简单名）。
+	 *
+	 * <p>动态层从 JSON 定义里拿到的是字段类型（如 {@code java.math.BigDecimal}），
+	 * JDBC 驱动可能给回更大或更小的类型；这里按声明转换一次，保证属性上
+	 * {@code getType()} 与实际存的值一致。未识别的类型原值透传。</p>
+	 */
+	public static Object asType(Object value, String typeName) {
+		if (value == null || typeName == null || typeName.isBlank()) {
+			return value;
+		}
+		String simple = typeName.substring(typeName.lastIndexOf('.') + 1);
+		return switch (simple) {
+			case "String", "CharSequence" -> asString(value);
+			case "Integer", "int" -> asInt(value);
+			case "Long", "long" -> asLong(value);
+			case "Double", "double" -> asDouble(value);
+			case "BigDecimal" -> asBigDecimal(value);
+			case "Boolean", "boolean" -> asBoolean(value);
+			case "LocalDate" -> asLocalDate(value);
+			case "LocalTime" -> asLocalTime(value);
+			case "LocalDateTime" -> asLocalDateTime(value);
+			default -> value;
+		};
+	}
+
 	public static String asString(Object value) {
 		if (value == null || value instanceof String text) {
 			return (String) value;

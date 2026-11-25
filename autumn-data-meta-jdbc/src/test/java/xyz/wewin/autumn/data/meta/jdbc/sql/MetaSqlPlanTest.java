@@ -27,6 +27,7 @@ import xyz.wewin.autumn.data.meta.jdbc.engine.MetaMapperClient;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTable;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -66,8 +67,8 @@ class MetaSqlPlanTest {
 				() -> new JdbcConnectionSource(this.dataSource));
 		AutumnJdbc jdbc = new AutumnJdbc(connectionSource, new H2Dialect(), FetchPolicy.defaults());
 		MetaTableRegistry registry = new MetaTableRegistry(this.dataSource, new H2Dialect(), Set.of("deleted_flag"));
-		MetaSqlFileStore statements = new MetaSqlFileStore(this.workDirectory, getClass().getClassLoader(),
-				10_000, new MetaSqlGenerator(new H2Dialect()), true);
+		MetaSqlFileStore statements = new MetaSqlFileStore(MetaDirectories.of(this.workDirectory.toString()),
+				getClass().getClassLoader(), 10_000, new MetaSqlGenerator(new H2Dialect()), true);
 		this.client = new MetaMapperClient("test", jdbc, connectionSource, registry,
 				new MetaEntityRegistry(), new MetaPlanCache(), 1000, statements);
 		// 预置一条自定义语句：SQL 只在 XML 里，下面用它验证「换语句 = 换形状」。
@@ -198,7 +199,8 @@ class MetaSqlPlanTest {
 	}
 
 	private Path statementFile() {
-		return this.workDirectory.resolve("test").resolve("default").resolve("form_order.xml");
+		return MetaDirectories.of(this.workDirectory.toString())
+				.specXmlDirectory("test", "default").resolve("form_order.xml");
 	}
 
 	private static MetaClass params(Object... nameValues) {

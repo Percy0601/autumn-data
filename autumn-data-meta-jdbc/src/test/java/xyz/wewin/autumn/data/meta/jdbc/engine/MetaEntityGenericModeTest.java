@@ -18,19 +18,18 @@ import xyz.wewin.autumn.data.jdbc.page.Pageable;
 import xyz.wewin.autumn.data.jdbc.runtime.AutumnJdbc;
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
 import xyz.wewin.autumn.data.jdbc.runtime.JdbcConnectionSource;
-import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityModel;
 import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityRegistry;
-import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityStrategy;
 import xyz.wewin.autumn.data.meta.jdbc.metadata.MetaTableRegistry;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaPlanCache;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlFileStore;
 import xyz.wewin.autumn.data.meta.jdbc.sql.MetaSqlGenerator;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * GENERIC 策略（GraalVM Native Image 用）跑完整链路：不生成类、不编译、不反射，
- * 但对外仍然是 {@link MetaClass}，CRUD / 条件查询 / 命名语句 / 部分更新语义与 CODE 一致。
+ * 统一通用 MetaClass 跑完整链路：不生成类、不编译、不反射，
+ * CRUD / 条件查询 / 命名语句 / 部分更新语义全都走同一层公共契约。
  */
 class MetaEntityGenericModeTest {
 
@@ -54,17 +53,14 @@ class MetaEntityGenericModeTest {
 		JdbcConnectionSource connections = new JdbcConnectionSource(dataSource);
 		AutumnJdbc jdbc = new AutumnJdbc(connections, new H2Dialect(), FetchPolicy.defaults());
 		MetaTableRegistry tables = new MetaTableRegistry(dataSource, new H2Dialect(), Set.of("deleted_flag"));
-		MetaEntityRegistry entities = new MetaEntityRegistry(MetaEntityStrategy.GENERIC);
-		MetaSqlFileStore statements = new MetaSqlFileStore(this.mapperDirectory, getClass().getClassLoader(),
+		MetaEntityRegistry entities = new MetaEntityRegistry();
+		MetaDirectories directories = MetaDirectories.of(this.mapperDirectory.toString());
+		MetaSqlFileStore statements = new MetaSqlFileStore(directories, getClass().getClassLoader(),
 				10_000, new MetaSqlGenerator(new H2Dialect()), true);
 		MetaMapperClient client = new MetaMapperClient("test", jdbc, connections, tables,
 				entities, new MetaPlanCache(), 1000, statements);
 
-		MetaEntityModel model = entities.model(tables.require("generic_order"));
-		assertThat(model.entityType()).isEqualTo(MetaClass.class);
-		assertThat(model.source()).isNull();
-		assertThat(model.qualifiedName()).isEqualTo(MetaClass.class.getName());
-		assertThat(entities.strategy()).isEqualTo(MetaEntityStrategy.GENERIC);
+		assertThat(entities.entityType(tables.require("generic_order"))).isEqualTo(MetaClass.class);
 
 		MetaClass row = client.newEntity("generic_order");
 		assertThat(row.getClass()).isEqualTo(MetaClass.class);
@@ -82,7 +78,6 @@ class MetaEntityGenericModeTest {
 		assertThat(loaded.getString("order_no")).isEqualTo("G001");
 		assertThat(loaded.getBigDecimal("amount")).isEqualByComparingTo("12.50");
 		assertThat(loaded.getInt("status")).isEqualTo(1);
-		// 读出来的行是干净的：后续 update 只写用户真正改过的列
 		assertThat(loaded.hasChanges()).isFalse();
 
 		client.save(entity(client, "G002", 2));
@@ -95,11 +90,10 @@ class MetaEntityGenericModeTest {
 		assertThat(client.update(loaded)).isEqualTo(1);
 		assertThat(client.findById("generic_order", saved.get("id")).orElseThrow().getInt("status")).isEqualTo(3);
 
-		// 默认语句首次访问时生成到 {数据源}/{命名空间}/{表名}.xml，GENERIC 下同样可用。
 		assertThat(client.findPage("generic_order", params(), Pageable.of(0, 1)).total()).isEqualTo(2);
 		assertThat(client.findList("generic_order", params("status", 3)))
 				.extracting(item -> item.getString("order_no")).containsExactly("G001");
-		assertThat(Files.exists(this.mapperDirectory.resolve("test").resolve("default")
+		assertThat(Files.exists(directories.autoXmlDirectory("test", "default")
 				.resolve("generic_order.xml"))).isTrue();
 	}
 

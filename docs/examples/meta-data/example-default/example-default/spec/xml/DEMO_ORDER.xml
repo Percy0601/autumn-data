@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    完整手写语句示例（对应 DEMO_ORDER 表）：一个文件 = 一张表的自定义语句。
+
+    位置：{根}/{数据源}-default/{命名空间}-default/spec/xml/{表名}.xml
+    spec 归使用方，框架只读不写；七条默认语句（findList/findPage/findOne/findById/
+    save/update/delete）由框架生成在 auto/xml/{表名}.xml，同 id 时 spec 覆盖 auto。
+
+    语法约定：
+      #{}  值绑定，解析阶段摘成 JDBC 的 ?，值不进 SQL 文本；
+      ${}  标识符拼接，只接受标识符片段；${table} 由框架按方言填好表名；
+      test 支持 a != null / a == 'x' / !a / a &amp;&amp; b；
+      changed('col') 是内置谓词，区分「这一列没动」和「显式置 NULL」；
+      <sql>/<include> 解析期内联，<resultMap> 解析期展开成列到属性的映射。
+-->
+<mapper namespace="example.demo_order">
+
+    <!-- 复用列清单；解析期内联，运行期没有额外开销 -->
+    <sql id="orderColumns">id, user_id, order_no, amount</sql>
+    <sql id="viewColumns">id, user_id, order_no AS no, amount AS total</sql>
+    <sql id="keywordCondition">
+        <if test="keyword != null">AND order_no LIKE #{keyword}</if>
+    </sql>
+
+    <!-- 结果映射：SQL 起别名后按 column → property 落回 MetaClass 的属性 -->
+    <resultMap id="orderView" type="demo_order">
+        <id column="id" property="id"/>
+        <result column="user_id" property="user_id"/>
+        <result column="no" property="order_no"/>
+        <result column="total" property="amount"/>
+    </resultMap>
+
+    <!-- 查询：where + if + foreach(IN) + include + choose(排序) 的完整结构 -->
+    <select id="search" resultMap="orderView">
+        SELECT <include refid="viewColumns"/> FROM ${table}
+        <where>
+            <if test="order_no != null">AND order_no = #{order_no}</if>
+            <if test="user_id != null">AND user_id = #{user_id}</if>
+            <if test="minAmount != null">AND amount &gt;= #{minAmount}</if>
+            <if test="ids != null">AND id IN
+                <foreach collection="ids" item="one" open="(" separator="," close=")">#{one}</foreach>
+            </if>
+            <include refid="keywordCondition"/>
+        </where>
+        <choose>
+            <when test="latest">ORDER BY id DESC</when>
+            <otherwise>ORDER BY id ASC</otherwise>
+        </choose>
+    </select>
+
+    <!-- 别名列经 resultMap 还原成实体属性；不加 resultMap 时按列名原样匹配 -->
+    <select id="byOrderNo" resultMap="orderView">
+        SELECT <include refid="viewColumns"/> FROM ${table} WHERE order_no = #{order_no}
+    </select>
+
+    <!-- 计数：selectCount 直接读第一列数字 -->
+    <select id="countMatching">
+        SELECT COUNT(*) FROM ${table}
+        <where>
+            <if test="user_id != null">AND user_id = #{user_id}</if>
+            <if test="maxAmount != null">AND amount &lt; #{maxAmount}</if>
+        </where>
+    </select>
+
+    <!-- trim 去掉多余逗号；不传某列就不改它；写 null 才是显式置空 -->
+    <insert id="quickAdd">
+        INSERT INTO ${table}
+        <trim prefix="(" suffix=")" suffixOverrides=",">
+            <if test="order_no != null">order_no,</if>
+            <if test="user_id != null">user_id,</if>
+            <if test="amount != null">amount,</if>
+        </trim>
+        <trim prefix="VALUES (" suffix=")" suffixOverrides=",">
+            <if test="order_no != null">#{order_no},</if>
+            <if test="user_id != null">#{user_id},</if>
+            <if test="amount != null">#{amount},</if>
+        </trim>
+    </insert>
+
+    <!-- 参数是实体时用 changed('col')：读它的变更集，而不是判断值是不是 null -->
+    <update id="patchEntity">
+        UPDATE ${table}
+        <trim prefix="SET " suffixOverrides=",">
+            <if test="changed('user_id')">user_id = #{user_id},</if>
+            <if test="changed('amount')">amount = #{amount},</if>
+        </trim>
+        WHERE id = #{id}
+    </update>
+
+    <update id="setAmount">UPDATE ${table} SET amount = #{amount} WHERE id = #{id}</update>
+
+    <!-- 删除语义由 XML 决定：这里显式写物理删除；改成 UPDATE ... 就是逻辑删除 -->
+    <delete id="purgeById">DELETE FROM ${table} WHERE id = #{id}</delete>
+
+    <!-- 同 id 覆盖 auto 的默认语句：findOne 改为按金额倒序取第一条 -->
+    <select id="findOne">
+        SELECT <include refid="orderColumns"/> FROM ${table}
+        <where>
+            <if test="order_no != null">AND order_no = #{order_no}</if>
+            <if test="user_id != null">AND user_id = #{user_id}</if>
+        </where>
+        ORDER BY amount DESC
+    </select>
+</mapper>

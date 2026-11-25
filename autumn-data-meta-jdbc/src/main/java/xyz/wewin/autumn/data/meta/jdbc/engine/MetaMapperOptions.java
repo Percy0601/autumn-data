@@ -5,8 +5,7 @@ import java.util.Locale;
 import java.util.Set;
 
 import xyz.wewin.autumn.data.jdbc.runtime.FetchPolicy;
-import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityStrategy;
-import xyz.wewin.autumn.data.meta.jdbc.support.BoundedCache;
+import xyz.wewin.autumn.data.meta.jdbc.support.MetaCache;
 import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
 
 /**
@@ -15,20 +14,15 @@ import xyz.wewin.autumn.data.meta.jdbc.support.MetaDirectories;
  * @param defaultListLimit   {@code findList} 未显式限行时的默认上限（防止全表拉取）
  * @param fetchPolicy        批量分块与关联取数上限（复用 autumn-data-jdbc 的策略对象）
  * @param logicDeleteColumns 逻辑删除列名（大小写不敏感）；命中后查询自动追加 {@code = 0}，未命中不追加
- * @param metaDirectory      工作根目录，三类产物在其固定子目录下（{@code meta-class} / {@code entity} /
- *                           {@code sql}）；空串表示纯内存模式，产物一律不落盘
- * @param generateFiles      语句 XML 缺失时是否生成、表结构变化时是否把生成块写回磁盘。
- *                           生成块带结构指纹，只重写 {@code GENERATED START/END} 之间的内容，
- *                           标记之外的自定义语句逐字保留；关掉它只影响「落盘」，默认语句仍会在内存补齐
- * @param tableCacheSize     按表缓存（表结构 / 动态实体 / 执行计划）各自的条目上限
- * @param statementCacheSize 语句 XML 解析结果（实体文件 + VO 文件）各自的条目上限；默认 1000，
- *                           淘汰后下次访问重新从磁盘读取
- * @param entityStrategy     实体形态：{@code CODE} 生成强类型子类，{@code GENERIC} 通用 MetaClass；
- *                           {@code auto} 在 Native Image 里自动选 {@code GENERIC}
+ * @param metaDirectory      工作根目录；其下按 {@code {ds}-default/{ns}-default/{spec,auto}} 分层，
+ *                           空串表示纯内存模式，产物一律不落盘
+ * @param generateFiles      auto 语句 XML / 实体定义 JSON 缺失时是否按库结构生成一份模板；
+ *                           关掉它只影响「落盘」，默认语句与表结构仍照常在内存里工作
+ * @param tableCacheSize     按表缓存（表结构 / 实体 / 执行计划）各自的条目上限
+ * @param statementCacheSize 语句 XML 解析结果（auto 文件 + spec 文件）各自的条目上限；默认 1000
  */
 public record MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,
-		String metaDirectory, boolean generateFiles, int tableCacheSize, int statementCacheSize,
-		MetaEntityStrategy entityStrategy) {
+		String metaDirectory, boolean generateFiles, int tableCacheSize, int statementCacheSize) {
 
 	public MetaMapperOptions {
 		if (defaultListLimit <= 0) {
@@ -51,33 +45,25 @@ public record MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, S
 		}
 		logicDeleteColumns = Set.copyOf(normalized);
 		metaDirectory = metaDirectory == null ? "" : metaDirectory.trim();
-		entityStrategy = entityStrategy == null ? MetaEntityStrategy.auto() : entityStrategy;
-	}
-
-	public MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,
-			String metaDirectory, boolean generateFiles, int tableCacheSize, MetaEntityStrategy entityStrategy) {
-		this(defaultListLimit, fetchPolicy, logicDeleteColumns, metaDirectory, generateFiles, tableCacheSize,
-				1000, entityStrategy);
 	}
 
 	public MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,
 			String metaDirectory, boolean generateFiles, int tableCacheSize) {
-		this(defaultListLimit, fetchPolicy, logicDeleteColumns, metaDirectory, generateFiles, tableCacheSize,
-				1000, MetaEntityStrategy.auto());
+		this(defaultListLimit, fetchPolicy, logicDeleteColumns, metaDirectory, generateFiles, tableCacheSize, 1000);
 	}
 
 	public MetaMapperOptions(int defaultListLimit, FetchPolicy fetchPolicy, Set<String> logicDeleteColumns,
 			String metaDirectory, boolean generateFiles) {
 		this(defaultListLimit, fetchPolicy, logicDeleteColumns, metaDirectory, generateFiles,
-				BoundedCache.DEFAULT_MAXIMUM_SIZE, 1000, MetaEntityStrategy.auto());
+				MetaCache.DEFAULT_MAXIMUM_SIZE, 1000);
 	}
 
-	/** 工作目录（根 + 三个子目录）。 */
+	/** 工作目录。 */
 	public MetaDirectories directories() {
 		return MetaDirectories.of(this.metaDirectory);
 	}
 
-	/** 默认：列表上限 1000、批量 100 一批、不自动识别逻辑删除列、产物落 ./autumn-meta。 */
+	/** 默认：列表上限 1000、表结构不识别逻辑删除列、产物落 ./meta-data。 */
 	public static MetaMapperOptions defaults() {
 		return new MetaMapperOptions(1000, FetchPolicy.defaults(), Set.of(), MetaDirectories.DEFAULT_ROOT, true);
 	}

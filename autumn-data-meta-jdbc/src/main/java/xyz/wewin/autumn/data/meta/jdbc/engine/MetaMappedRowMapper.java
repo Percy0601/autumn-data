@@ -14,13 +14,12 @@ import xyz.wewin.autumn.data.meta.jdbc.entity.MetaEntityColumns;
 /**
  * 按 Mapper 里声明的 {@code <resultMap>} 把结果集映射成 {@link MetaClass}。
  *
- * <p>默认路径（没有 {@code resultMap}）读的是生成实体的 {@code READER}：列标签是元数据里的列名，
- * 逐列直写字段。一旦 SELECT 起了别名（{@code order_no AS no}）、或者列名和属性名对不上，
- * 固定列的 READER 就读不到。这里按映射逐列 {@code getObject}，再走生成类的
+ * <p>默认路径（没有 {@code resultMap}）读的是当前表结构的列读取器：列标签是元数据里的列名，
+ * 逐列写进属性。一旦 SELECT 起了别名（{@code order_no AS no}）、或者列名和属性名对不上，
+ * 默认读取器就读不到。这里按映射逐列 {@code getObject}，再走
  * {@link MetaClass#set(String, Object)} 完成类型收口，所以列标签与属性名可以各自独立命名。</p>
  *
- * <p>逐行只调用生成类的空实体工厂（{@code NEW} 静态字段），列名到下标也只在行内建一次；
- * 真正的反射只发生在模型加载那一刻。</p>
+ * <p>逐行只调用实体模型的空实体工厂，列名到下标也只在行内建一次，全程不反射。</p>
  */
 final class MetaMappedRowMapper implements RowMapper<MetaClass> {
 

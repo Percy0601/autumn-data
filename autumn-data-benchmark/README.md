@@ -1,6 +1,11 @@
 # autumn-data-benchmark
 
-`autumn-data-meta-jdbc`（零反射、代码生成的元数据 JDBC 框架）与 MyBatis 3.5.19 的对照基准。
+`autumn-data-meta-jdbc`（元数据驱动的 JDBC 框架）与 MyBatis 3.5.19 的对照基准。
+
+> **历史数据说明**：下面的结果测于实体还有 CODE / GENERIC 两档的旧版本。现在动态层统一为通用
+> `MetaClass`，不再有运行期代码生成；基准脚本里的 `meta-code` / `meta-generic` 标签只作兼容保留，
+> 二者都指向同一个引擎，**不能再用这组标签比较两档实体形态**。结论中关于 CODE/GENERIC 的段落
+> 仅作为历史取舍记录。
 
 这个模块只为回答一个问题：**"没有反射，就一定比 MyBatis 快吗？"**
 

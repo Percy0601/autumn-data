@@ -3,6 +3,26 @@
 本文收录 README 精简前的开发进度清单（迁移于 2026-11-23），保留当时的实现细节与技术取舍。
 当前能力以 [README.md](../README.md) 与 [docs/meta-dynamic-crud.md](meta-dynamic-crud.md) 为准。
 
+## 2026-11-25 动态层收敛（以本节为准，下面为历史记录）
+
+- [x] 目录统一为 `{root}/{数据源}-default/{命名空间}-default/{spec,auto}`：`spec/xml` 手写只读，
+      `auto/xml` 框架生成整份重写，`spec/vo` 只是使用方约定的 VO 目录（框架不读写）。
+- [x] 删除 VO / shape 整套逻辑（`selectShape*` / `registerShapeStatement(s)` / `.vo.xml` /
+      `MetaShape*`）、删除运行期 javac 代码生成（`MetaEntityCompiler` / `MetaEntitySource` /
+      `MetaEntityStrategy` / CODE / GENERIC 双档）。实体统一为 common 的 `MetaClass`。
+- [x] `MetaModelStore` 落地为 `spec/{表名}.json` 类定义：顶层 name / namespace / metaType /
+      logicDeleteColumn / properties 全字段解析，定义优先、缺列由数据库补齐；读行按
+      `properties[].type` 收口（`MetaValueReader.asType`）。
+- [x] `MetaSqlGenerator` 不再维护 GENERATED START/END 块；auto XML 整份生成，指纹头
+      `AUTUMN-DATA GENERATED fingerprint=...`，版本升到 4；spec 同 id 覆盖 auto。
+- [x] 缓存重命名：`BoundedCache → MetaCache`、`BoundedCaches → MetaCaches`、
+      `LruCache → LruMetaCache`（含文件名与测试）。
+- [x] `SqlBuild` 从 meta-jdbc 迁到 common（compiler 生成代码共用），`entity-codegen` 配置删除。
+- [x] using 模块清理 demo 业务（library / training / vo / 多数据源示例），只保留动态表
+      HTTP 端点与集成测试；配置示例与文档同步重写。
+- [x] 新增完整可复制示例：`docs/examples/meta-data/.../DEMO_ORDER.json` 与
+      `.../spec/xml/DEMO_ORDER.xml`，由 `MetaExampleDefinitionTest` 在 H2 上端到端验证。
+
 ## 初始化阶段进度（原 README「当前进度」章节，逐条保留）
 
 - [x] 根 POM / `.gitignore` / `.gitattributes` / Maven Wrapper
