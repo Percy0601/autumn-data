@@ -22,6 +22,8 @@
       HTTP 端点与集成测试；配置示例与文档同步重写。
 - [x] 新增完整可复制示例：`docs/examples/meta-data/.../DEMO_ORDER.json` 与
       `.../spec/xml/DEMO_ORDER.xml`，由 `MetaExampleDefinitionTest` 在 H2 上端到端验证。
+- [x] Spring Boot 父 POM 从 4.1.2 升到 4.2.0（4.2 线最新正式版），实际解析到 Spring Framework
+      7.1.0；全 reactor 232 用例通过。
 
 ## 初始化阶段进度（原 README「当前进度」章节，逐条保留）
 

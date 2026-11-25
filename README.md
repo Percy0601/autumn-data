@@ -105,7 +105,7 @@ curl http://localhost:8080/metadata/summary
 
 ## 技术栈
 
-- Java 25，Spring Boot 4.1.2 父 POM（仅 BOM / 构建约定）
+- Java 25，Spring Boot 4.2.0 父 POM（仅 BOM / 构建约定）
 - HikariCP 连接池，核心模块直接声明，不经 `spring-boot-starter-jdbc`
 - MyBatis 式 XML 方言由 `autumn-data-common` 解析成同一棵 AST：静态实体编译期生成 Java，动态表运行期解释
 - MySQL / PostgreSQL / H2 方言可扩展

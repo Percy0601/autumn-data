@@ -12,13 +12,13 @@
 
 	<!--
 		兼容 Maven 4.x：本项目沿用 POM Model 4.0.0（Maven 3 / 4 通用），
-		父 POM 采用 spring-boot-starter-parent 4.1.1（已支持 Maven 4 构建）。
+		父 POM 采用 spring-boot-starter-parent 4.2.0（已支持 Maven 4 构建）。
 		后续如需启用 Maven 4 专属特性，可平滑迁移到 4.1.0 model。
 	-->
 	<parent>
 		<groupId>org.springframework.boot</groupId>
 		<artifactId>spring-boot-starter-parent</artifactId>
-		<version>4.1.2</version>
+		<version>4.2.0</version>
 		<relativePath/> <!-- lookup parent from repository -->
 	</parent>
 
